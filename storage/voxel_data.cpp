@@ -895,7 +895,11 @@ void VoxelData::update_lods(Span<const Vector3i> modified_lod0_blocks, StdVector
 				dst_block = dst_data_lod.map.get_block(dst_bpos);
 			}
 
-			ZN_ASSERT(src_block != nullptr);
+			//ZN_ASSERT(src_block != nullptr);
+			if (src_block == nullptr) {
+				// Block was unloaded before LOD propagation could run, skip
+				continue;
+			}
 			src_block->set_needs_lodding(false);
 
 			struct L {

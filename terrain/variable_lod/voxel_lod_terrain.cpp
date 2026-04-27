@@ -1777,6 +1777,14 @@ void VoxelLodTerrain::apply_data_block_response(VoxelEngine::BlockDataOutput &ob
 		return;
 	}
 
+	if (ob.lod_index == 0 && ob.type == VoxelEngine::BlockDataOutput::TYPE_LOADED) {
+		// Only propagate if block actually has voxel data attached
+		if (ob.voxels != nullptr && ob.voxels->get_size() != Vector3i()) {
+			MutexLock lock(_update_data->state.edit_notifications.mutex);
+			_update_data->state.edit_notifications.edited_blocks_lod0.push_back(ob.position);
+		}
+	}
+
 	{
 		// We have to do this after adding the block to the map, otherwise there would be a small period of time where
 		// the threaded update task could request the block again needlessly
