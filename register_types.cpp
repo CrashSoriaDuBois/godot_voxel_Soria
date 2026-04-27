@@ -82,6 +82,7 @@
 #include "generators/simple/voxel_generator_noise.h"
 #include "generators/simple/voxel_generator_noise_2d.h"
 #include "generators/simple/voxel_generator_waves.h"
+#include "generators/simple/voxel_generator_custom.h"
 #endif
 
 #ifdef ZN_GODOT_EXTENSION
@@ -361,6 +362,7 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_class<VoxelGeneratorImage>();
 		ClassDB::register_class<VoxelGeneratorNoise2D>();
 		ClassDB::register_class<VoxelGeneratorNoise>();
+		ClassDB::register_class<VoxelGeneratorCustom>();
 #endif
 
 #ifdef VOXEL_ENABLE_MESH_SDF

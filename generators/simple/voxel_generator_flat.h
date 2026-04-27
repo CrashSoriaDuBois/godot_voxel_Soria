@@ -36,7 +36,7 @@ private:
 	godot::VoxelBuffer::ChannelId _b_get_channel() const;
 
 	struct Parameters {
-		VoxelBuffer::ChannelId channel = VoxelBuffer::CHANNEL_SDF;
+		VoxelBuffer::ChannelId channel = VoxelBuffer::CHANNEL_TYPE;
 		int voxel_type = 1;
 		float height = 0;
 		float iso_scale = 1.f;

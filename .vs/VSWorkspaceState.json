@@ -1,0 +1,12 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\generators",
+    "\\generators\\simple",
+    "\\storage",
+    "\\terrain",
+    "\\terrain\\variable_lod"
+  ],
+  "SelectedNode": "\\generators\\simple\\voxel_generator_custom.h",
+  "PreviewInSolutionExplorer": false
+}
