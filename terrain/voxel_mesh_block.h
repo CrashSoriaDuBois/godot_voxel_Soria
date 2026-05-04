@@ -76,6 +76,11 @@ public:
 	void set_collision_enabled(bool enable);
 	bool is_collision_enabled() const;
 
+	// Navigation ADD:
+	void update_navmesh(const PackedVector3Array &vertices, const Transform3D &terrain_transform);
+	void drop_navmesh();
+	bool has_navmesh() const;
+
 protected:
 	void _set_visible(bool visible);
 
@@ -91,6 +96,9 @@ protected:
 
 	zylann::godot::DirectMeshInstance _mesh_instance;
 	zylann::godot::DirectStaticBody _static_body;
+
+	RID _nav_region;
+
 	Ref<World3D> _world;
 
 	// Must match default value of `active`
@@ -101,6 +109,11 @@ protected:
 };
 
 Ref<ConcavePolygonShape3D> make_collision_shape_from_mesher_output(
+		const VoxelMesher::Output &mesher_output,
+		const VoxelMesher &mesher
+);
+
+PackedVector3Array make_navmesh_vertices_from_mesher_output(
 		const VoxelMesher::Output &mesher_output,
 		const VoxelMesher &mesher
 );

@@ -6,6 +6,8 @@
 #include "../util/macros.h"
 #include "../util/profiling.h"
 #include "free_mesh_task.h"
+#include "../util/godot/classes/navigation_server_3d.h"
+#include "../util/godot/classes/navigation_mesh.h"
 
 namespace zylann::voxel {
 
@@ -15,6 +17,7 @@ VoxelMeshBlock::VoxelMeshBlock(Vector3i bpos) {
 
 VoxelMeshBlock::~VoxelMeshBlock() {
 	FreeMeshTask::try_add_and_destroy(_mesh_instance);
+	drop_navmesh(); // ADD — frees the NavigationServer3D region
 }
 
 void VoxelMeshBlock::set_world(Ref<World3D> p_world) {
@@ -215,6 +218,57 @@ bool VoxelMeshBlock::is_collision_enabled() const {
 	return _collision_enabled;
 }
 
+
+bool VoxelMeshBlock::has_navmesh() const {
+	return _nav_region.is_valid();
+}
+
+void VoxelMeshBlock::drop_navmesh() {
+	if (_nav_region.is_valid()) {
+		NavigationServer3D::get_singleton()->free_rid(_nav_region);
+		_nav_region = RID();
+	}
+}
+
+void VoxelMeshBlock::update_navmesh(const PackedVector3Array &vertices, const Transform3D &terrain_transform) {
+	if (vertices.is_empty()) {
+		drop_navmesh();
+		return;
+	}
+
+	NavigationServer3D *nav = NavigationServer3D::get_singleton();
+
+    if (!_nav_region.is_valid()) {
+		_nav_region = nav->region_create();
+		nav->region_set_enabled(_nav_region, true);
+		if (_world.is_valid()) {
+			nav->region_set_map(_nav_region, _world->get_navigation_map());
+		}
+	}
+
+	// _position_in_voxels is Vector3i — must cast to Vector3 explicitly
+	const Vector3 local_pos((float)_position_in_voxels.x, (float)_position_in_voxels.y, (float)_position_in_voxels.z);
+	const Transform3D local_transform(Basis(), local_pos);
+	nav->region_set_transform(_nav_region, terrain_transform * local_transform);
+
+	Ref<NavigationMesh> nav_mesh;
+	nav_mesh.instantiate();
+	nav_mesh->set_vertices(vertices);
+
+	const int tri_count = vertices.size() / 3;
+	for (int i = 0; i < tri_count; ++i) {
+		PackedInt32Array tri;
+		tri.resize(3);
+		int32_t *w = tri.ptrw();
+		w[0] = i * 3;
+		w[1] = i * 3 + 1;
+		w[2] = i * 3 + 2;
+		nav_mesh->add_polygon(tri);
+	}
+
+	nav->region_set_navigation_mesh(_nav_region, nav_mesh);
+}
+
 Ref<ConcavePolygonShape3D> make_collision_shape_from_mesher_output(
 		const VoxelMesher::Output &mesher_output,
 		const VoxelMesher &mesher
@@ -266,6 +320,74 @@ Ref<ConcavePolygonShape3D> make_collision_shape_from_mesher_output(
 	}
 
 	return shape;
+}
+
+PackedVector3Array make_navmesh_vertices_from_mesher_output(
+		const VoxelMesher::Output &mesher_output,
+		const VoxelMesher &mesher
+) {
+	PackedVector3Array vertices;
+
+	if (mesher.is_generating_collision_surface()) {
+		if (mesher_output.collision_surface.submesh_vertex_end != -1) {
+			// The collision geometry is a sub-region of surface 0 of the render mesh.
+			// Extract only up to the vertex count the collision surface uses.
+			if (mesher_output.surfaces.size() > 0) {
+				const Array &arrays = mesher_output.surfaces[0].arrays;
+				const PackedVector3Array all_verts = arrays[Mesh::ARRAY_VERTEX];
+				const PackedInt32Array all_indices = arrays[Mesh::ARRAY_INDEX];
+
+				const int vert_end = mesher_output.collision_surface.submesh_vertex_end;
+				const int idx_end = mesher_output.collision_surface.submesh_index_end;
+
+				// Unpack indexed triangles into a flat vertex list (3 verts per triangle)
+				// NavigationMesh polygons need consistent winding so we respect the index buffer
+				for (int i = 0; i + 2 < idx_end; i += 3) {
+					const int i0 = all_indices[i];
+					const int i1 = all_indices[i + 1];
+					const int i2 = all_indices[i + 2];
+					if (i0 < vert_end && i1 < vert_end && i2 < vert_end) {
+						vertices.push_back(all_verts[i0]);
+						vertices.push_back(all_verts[i1]);
+						vertices.push_back(all_verts[i2]);
+					}
+				}
+			}
+
+		} else {
+			// Specialized collision surface — positions and indices are already separate
+			const auto &positions = mesher_output.collision_surface.positions;
+			const auto &indices = mesher_output.collision_surface.indices;
+
+			for (int i = 0; i + 2 < (int)indices.size(); i += 3) {
+				vertices.push_back(zylann::to_vec3(positions[indices[i]]));
+				vertices.push_back(zylann::to_vec3(positions[indices[i + 1]]));
+				vertices.push_back(zylann::to_vec3(positions[indices[i + 2]]));
+			}
+		}
+
+	} else {
+		// No specialized collision surface — use render mesh surface 0
+		if (mesher_output.surfaces.size() > 0) {
+			const Array &arrays = mesher_output.surfaces[0].arrays;
+			const PackedVector3Array all_verts = arrays[Mesh::ARRAY_VERTEX];
+			const PackedInt32Array all_indices = arrays[Mesh::ARRAY_INDEX];
+
+			if (all_indices.size() > 0) {
+				// Indexed mesh — unpack triangles
+				for (int i = 0; i + 2 < all_indices.size(); i += 3) {
+					vertices.push_back(all_verts[all_indices[i]]);
+					vertices.push_back(all_verts[all_indices[i + 1]]);
+					vertices.push_back(all_verts[all_indices[i + 2]]);
+				}
+			} else {
+				// Non-indexed mesh — already flat triangles
+				vertices = all_verts;
+			}
+		}
+	}
+
+	return vertices;
 }
 
 } // namespace zylann::voxel

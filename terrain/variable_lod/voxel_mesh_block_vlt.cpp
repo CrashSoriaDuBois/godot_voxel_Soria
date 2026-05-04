@@ -130,6 +130,7 @@ void VoxelMeshBlockVLT::drop_visuals() {
 		_mesh_instance.set_material_override(Ref<Material>());
 	}
 	FreeMeshTask::try_add_and_destroy(_mesh_instance);
+	drop_navmesh(); // ADD — navmesh is a visual/gameplay feature, not needed collision-only
 
 	if (_shadow_occluder.is_valid()) {
 		_shadow_occluder.destroy();

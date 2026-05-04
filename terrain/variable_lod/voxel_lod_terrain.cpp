@@ -1452,6 +1452,7 @@ void VoxelLodTerrain::apply_main_thread_update_tasks() {
 			}
 			block->drop_collision();
 			block->set_collision_enabled(false);
+			block->drop_navmesh();
 		}
 		lod.mesh_blocks_to_drop_collision.clear();
 
@@ -2135,6 +2136,12 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 			set_block_collision_shape(*this, *block, collision_shape, now);
 			block->set_collision_enabled(collision_active);
 
+			// Navmesh injection — same ob.surfaces, already on main thread
+			if (ob.lod == 0) { // only LOD0 for navmesh, higher LODs are too coarse
+				PackedVector3Array nav_verts = make_navmesh_vertices_from_mesher_output(ob.surfaces, **_mesher);
+				block->update_navmesh(nav_verts, get_global_transform());
+			}
+
 		} else {
 			if (block->deferred_collider_data == nullptr) {
 				_deferred_collision_updates_per_lod[ob.lod].push_back(ob.position);
@@ -2386,6 +2393,12 @@ void VoxelLodTerrain::process_deferred_collision_updates(uint32_t timeout_msec) 
 				}
 
 				set_block_collision_shape(*this, *block, collision_shape, now);
+
+				if (lod_index == 0) {
+					PackedVector3Array nav_verts =
+							make_navmesh_vertices_from_mesher_output(*block->deferred_collider_data, **_mesher);
+					block->update_navmesh(nav_verts, get_global_transform());
+				}
 
 				unordered_remove(deferred_collision_updates, i);
 				--i;
