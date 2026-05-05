@@ -2136,7 +2136,7 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 			set_block_collision_shape(*this, *block, collision_shape, now);
 			block->set_collision_enabled(collision_active);
 
-			// Navmesh injection — same ob.surfaces, already on main thread
+			// Navmesh injection - same ob.surfaces, already on main thread
 			if (ob.lod == 0) { // only LOD0 for navmesh, higher LODs are too coarse
 				PackedVector3Array nav_verts = make_navmesh_vertices_from_mesher_output(ob.surfaces, **_mesher);
 				block->update_navmesh(nav_verts, get_global_transform());

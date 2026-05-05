@@ -73,9 +73,9 @@ private:
 	Ref<Curve> _curve;
 	int _seed = 1337;
 	float _frequency = 0.02f;
-	float _frequency2 = 0.02f;
-	String _encoded_graph = "EwDD9Sg/DQAEAAAAAAAgQAkAAGZmJj8AAAAAPw==";
-	String _encoded_graph2 = "EQACAAAAAADgQBAAAACIQRMAmpmZPh8AFgABAAAACwADAAAAAgAAAAMAAAAEAAAAAAAAAD8BFAD//wAAAAAAAD8AAAAAPwAAAAA/AAAAAD8BFwAAAIC/AACAPz0KF0BSuB5AEwAAAKBABgAAj8J1PACamZk+AAAAAAA=";
+	float _frequency2 = 0.01f;
+	String _encoded_graph = "EwDNzMw+KQA=";
+	String _encoded_graph2 = "BgA=";
 
 	struct Parameters {
 		//Ref<Noise> noise;
@@ -83,9 +83,9 @@ private:
 
 		int seed = 1337;
 		float frequency = 0.02f;
-		float frequency2 = 0.02f;
-		String encoded_graph = "EwDD9Sg/DQAEAAAAAAAgQAkAAGZmJj8AAAAAPw==";
-		String encoded_graph2 = "EQACAAAAAADgQBAAAACIQRMAmpmZPh8AFgABAAAACwADAAAAAgAAAAMAAAAEAAAAAAAAAD8BFAD//wAAAAAAAD8AAAAAPwAAAAA/AAAAAD8BFwAAAIC/AACAPz0KF0BSuB5AEwAAAKBABgAAj8J1PACamZk+AAAAAAA=";
+		float frequency2 = 0.01f;
+		String encoded_graph = "EwDNzMw+KQA=";
+		String encoded_graph2 = "BgA=";
 
 	};
 

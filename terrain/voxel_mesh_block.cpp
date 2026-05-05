@@ -17,7 +17,7 @@ VoxelMeshBlock::VoxelMeshBlock(Vector3i bpos) {
 
 VoxelMeshBlock::~VoxelMeshBlock() {
 	FreeMeshTask::try_add_and_destroy(_mesh_instance);
-	drop_navmesh(); // ADD — frees the NavigationServer3D region
+	drop_navmesh(); // ADD - frees the NavigationServer3D region
 }
 
 void VoxelMeshBlock::set_world(Ref<World3D> p_world) {
@@ -246,13 +246,15 @@ void VoxelMeshBlock::update_navmesh(const PackedVector3Array &vertices, const Tr
 		}
 	}
 
-	// _position_in_voxels is Vector3i — must cast to Vector3 explicitly
+	// _position_in_voxels is Vector3i - must cast to Vector3 explicitly
 	const Vector3 local_pos((float)_position_in_voxels.x, (float)_position_in_voxels.y, (float)_position_in_voxels.z);
 	const Transform3D local_transform(Basis(), local_pos);
 	nav->region_set_transform(_nav_region, terrain_transform * local_transform);
 
 	Ref<NavigationMesh> nav_mesh;
 	nav_mesh.instantiate();
+	nav_mesh->set_cell_size(0.5f);
+	nav_mesh->set_cell_height(0.25f);
 	nav_mesh->set_vertices(vertices);
 
 	const int tri_count = vertices.size() / 3;
@@ -322,6 +324,55 @@ Ref<ConcavePolygonShape3D> make_collision_shape_from_mesher_output(
 	return shape;
 }
 
+
+enum FaceDirection {
+	FACE_TOP, // +Y
+	FACE_BOTTOM, // -Y
+	FACE_NORTH, // +Z
+	FACE_SOUTH, // -Z
+	FACE_EAST, // +X
+	FACE_WEST, // -X
+	FACE_COUNT
+};
+
+FaceDirection classify_normal(const Vector3 &normal) {
+	// Find the dominant axis
+	float ax = Math::abs(normal.x);
+	float ay = Math::abs(normal.y);
+	float az = Math::abs(normal.z);
+
+	if (ay >= ax && ay >= az) {
+		return normal.y > 0 ? FACE_TOP : FACE_BOTTOM;
+	} else if (ax >= az) {
+		return normal.x > 0 ? FACE_EAST : FACE_WEST;
+	} else {
+		return normal.z > 0 ? FACE_NORTH : FACE_SOUTH;
+	}
+}
+
+// Returns an array of 6 PackedVector3Arrays, one per direction
+FixedArray<PackedVector3Array, FACE_COUNT> split_mesh_by_face_direction(const PackedVector3Array &flat_vertices) {
+	FixedArray<PackedVector3Array, FACE_COUNT> buckets;
+
+	const Vector3 *src = flat_vertices.ptr();
+	const int tri_count = flat_vertices.size() / 3;
+
+	for (int i = 0; i < tri_count; ++i) {
+		const Vector3 &a = src[i * 3 + 0];
+		const Vector3 &b = src[i * 3 + 1];
+		const Vector3 &c = src[i * 3 + 2];
+
+		const Vector3 normal = (c - a).cross(b - a).normalized();
+		const FaceDirection dir = classify_normal(normal);
+
+		buckets[dir].push_back(a);
+		buckets[dir].push_back(b);
+		buckets[dir].push_back(c);
+	}
+
+	return buckets;
+}
+
 PackedVector3Array make_navmesh_vertices_from_mesher_output(
 		const VoxelMesher::Output &mesher_output,
 		const VoxelMesher &mesher
@@ -355,7 +406,7 @@ PackedVector3Array make_navmesh_vertices_from_mesher_output(
 			}
 
 		} else {
-			// Specialized collision surface — positions and indices are already separate
+			// Specialized collision surface - positions and indices are already separate
 			const auto &positions = mesher_output.collision_surface.positions;
 			const auto &indices = mesher_output.collision_surface.indices;
 
@@ -367,27 +418,30 @@ PackedVector3Array make_navmesh_vertices_from_mesher_output(
 		}
 
 	} else {
-		// No specialized collision surface — use render mesh surface 0
+		// No specialized collision surface - use render mesh surface 0
 		if (mesher_output.surfaces.size() > 0) {
 			const Array &arrays = mesher_output.surfaces[0].arrays;
 			const PackedVector3Array all_verts = arrays[Mesh::ARRAY_VERTEX];
 			const PackedInt32Array all_indices = arrays[Mesh::ARRAY_INDEX];
 
 			if (all_indices.size() > 0) {
-				// Indexed mesh — unpack triangles
+				// Indexed mesh - unpack triangles
 				for (int i = 0; i + 2 < all_indices.size(); i += 3) {
 					vertices.push_back(all_verts[all_indices[i]]);
 					vertices.push_back(all_verts[all_indices[i + 1]]);
 					vertices.push_back(all_verts[all_indices[i + 2]]);
 				}
 			} else {
-				// Non-indexed mesh — already flat triangles
+				// Non-indexed mesh - already flat triangles
 				vertices = all_verts;
 			}
 		}
 	}
 
-	return vertices;
+	auto buckets = split_mesh_by_face_direction(vertices);
+	PackedVector3Array top_faces = buckets[FACE_TOP];
+
+	return top_faces;
 }
 
 } // namespace zylann::voxel
