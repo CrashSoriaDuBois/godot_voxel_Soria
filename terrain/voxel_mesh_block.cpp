@@ -335,40 +335,39 @@ enum FaceDirection {
 	FACE_COUNT
 };
 
-FaceDirection classify_normal(const Vector3 &normal) {
-	// Find the dominant axis
-	float ax = Math::abs(normal.x);
-	float ay = Math::abs(normal.y);
-	float az = Math::abs(normal.z);
-
-	if (ay >= ax && ay >= az) {
-		return normal.y > 0 ? FACE_TOP : FACE_BOTTOM;
-	} else if (ax >= az) {
-		return normal.x > 0 ? FACE_EAST : FACE_WEST;
-	} else {
-		return normal.z > 0 ? FACE_NORTH : FACE_SOUTH;
-	}
+FaceDirection classify_normal(const Vector3 &a, const Vector3 &b, const Vector3 &c) {
+    // Raw cross product, no normalize needed for axis-aligned geometry
+    const Vector3 n = (c - a).cross(b - a);
+    float ax = Math::abs(n.x);
+    float ay = Math::abs(n.y);
+    float az = Math::abs(n.z);
+    if (ay >= ax && ay >= az) {
+        return n.y > 0 ? FACE_TOP : FACE_BOTTOM;
+    } else if (ax >= az) {
+        return n.x > 0 ? FACE_EAST : FACE_WEST;
+    } else {
+        return n.z > 0 ? FACE_NORTH : FACE_SOUTH;
+    }
 }
 
 // Returns an array of 6 PackedVector3Arrays, one per direction
 FixedArray<PackedVector3Array, FACE_COUNT> split_mesh_by_face_direction(const PackedVector3Array &flat_vertices) {
-	FixedArray<PackedVector3Array, FACE_COUNT> buckets;
+    FixedArray<PackedVector3Array, FACE_COUNT> buckets;
 
-	const Vector3 *src = flat_vertices.ptr();
-	const int tri_count = flat_vertices.size() / 3;
+    const Vector3 *src = flat_vertices.ptr();
 
-	for (int i = 0; i < tri_count; ++i) {
-		const Vector3 &a = src[i * 3 + 0];
-		const Vector3 &b = src[i * 3 + 1];
-		const Vector3 &c = src[i * 3 + 2];
+    const int tri_count = flat_vertices.size() / 3;
 
-		const Vector3 normal = (c - a).cross(b - a).normalized();
-		const FaceDirection dir = classify_normal(normal);
+    for (int i = 0; i < tri_count; ++i) {
+        const Vector3 &a = src[i * 3 + 0];
+        const Vector3 &b = src[i * 3 + 1];
+        const Vector3 &c = src[i * 3 + 2];
 
-		buckets[dir].push_back(a);
-		buckets[dir].push_back(b);
-		buckets[dir].push_back(c);
-	}
+        const FaceDirection dir = classify_normal_fast(a, b, c);  // changed
+        buckets[dir].push_back(a);
+        buckets[dir].push_back(b);
+        buckets[dir].push_back(c);
+    }
 
 	return buckets;
 }
