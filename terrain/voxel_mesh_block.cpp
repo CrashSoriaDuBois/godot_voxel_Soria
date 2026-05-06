@@ -450,40 +450,76 @@ static uint64_t encode_edge(const Vector3 &va, const Vector3 &vb) {
 			((uint64_t)(uint16_t)b2.y << 48);
 }
 
-static PackedVector3Array apply_step_ramps(const PackedVector3Array &top_quads) {
-    const int quad_count = top_quads.size() / 4;
-    if (quad_count == 0) return top_quads;
+static PackedVector3Array apply_step_ramps(const PackedVector3Array &top_quads, float voxel_size = 1.0f) {
+	const int quad_count = top_quads.size() / 4;
+	if (quad_count == 0)
+		return top_quads;
 
-    const Vector3 *src = top_quads.ptr();
-    HashMap<uint64_t, float> edge_max_y;
+	const Vector3 *src = top_quads.ptr();
+	HashMap<Vector2i, float> height_map;
+	for (int i = 0; i < quad_count; ++i) {
+		// Center of quad
+		Vector3 center = (src[i * 4 + 0] + src[i * 4 + 1] + src[i * 4 + 2] + src[i * 4 + 3]) * 0.25f;
+		Vector2i grid(Math::round(center.x / voxel_size), Math::round(center.z / voxel_size));
+		height_map[grid] = Math::round(center.y / voxel_size) * voxel_size;
+	}
 
-    for (int i = 0; i < quad_count; ++i) {
-        float y = src[i*4].y;
-        for (int e = 0; e < 4; ++e) {
-            uint64_t key = encode_edge(src[i*4+e], src[i*4+(e+1)%4]);
-            float *ex = edge_max_y.getptr(key);
-            if (ex == nullptr || *ex < y) edge_max_y.insert(key, y);
-        }
-    }
+	HashMap<Vector2i, float> vertex_lift;
 
-    PackedVector3Array result = top_quads;
-    Vector3 *dst = result.ptrw();
+	const Vector2i dirs[4] = { Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1) };
 
-    for (int i = 0; i < quad_count; ++i) {
-        float quad_y = dst[i*4].y;
-        for (int e = 0; e < 4; ++e) {
-            int en = (e + 1) % 4;
-            uint64_t key = encode_edge(dst[i*4+e], dst[i*4+en]);
-            const float *max_y = edge_max_y.getptr(key);
-            if (max_y != nullptr && *max_y > quad_y + 0.001f) {
-                dst[i*4+e].y = *max_y;
-                dst[i*4+en].y = *max_y;
-            }
-        }
-    }
+	for (int i = 0; i < quad_count; ++i) {
+		Vector3 center = (src[i * 4 + 0] + src[i * 4 + 1] + src[i * 4 + 2] + src[i * 4 + 3]) * 0.25f;
+		Vector2i grid(Math::round(center.x / voxel_size), Math::round(center.z / voxel_size));
+		float my_y = Math::round(center.y / voxel_size) * voxel_size;
 
-    return result;
+		for (const Vector2i &dir : dirs) {
+			Vector2i neighbor_grid = grid + dir;
+			float *neighbor_y_ptr = height_map.getptr(neighbor_grid);
+			if (neighbor_y_ptr == nullptr)
+				continue;
+			float neighbor_y = *neighbor_y_ptr;
+
+			// Only handle exactly 1 block up
+			if (Math::abs(neighbor_y - my_y - voxel_size) > 0.01f)
+				continue;
+
+			for (int v = 0; v < 4; ++v) {
+				const Vector3 &vert = src[i * 4 + v];
+				float vert_dot = vert.x * dir.x + vert.z * dir.y;
+				float center_dot = center.x * dir.x + center.z * dir.y;
+				if (vert_dot > center_dot) {
+					Vector2i vert_key(Math::round(vert.x / voxel_size), Math::round(vert.z / voxel_size));
+					float *existing = vertex_lift.getptr(vert_key);
+					if (existing == nullptr) {
+						vertex_lift[vert_key] = neighbor_y;
+					} else {
+						// Take the maximum - handles corner vertices shared by 2 rising edges
+						*existing = MAX(*existing, neighbor_y);
+					}
+				}
+			}
+		}
+	}
+
+	// Build result: copy quads with lifted vertices applied
+	PackedVector3Array result = top_quads;
+	Vector3 *dst = result.ptrw();
+
+	for (int i = 0; i < quad_count; ++i) {
+		for (int v = 0; v < 4; ++v) {
+			Vector3 &vert = dst[i * 4 + v];
+			Vector2i vert_key(Math::round(vert.x / voxel_size), Math::round(vert.z / voxel_size));
+			float *lift = vertex_lift.getptr(vert_key);
+			if (lift != nullptr) {
+				vert.y = *lift;
+			}
+		}
+	}
+
+	return result;
 }
+
 //navmesh
 PackedVector3Array make_navmesh_vertices_from_mesher_output(
 		const VoxelMesher::Output &mesher_output,
