@@ -230,7 +230,7 @@ void VoxelMeshBlock::drop_navmesh() {
 	}
 }
 
-void VoxelMeshBlock::update_navmesh(const PackedVector3Array &vertices, const Transform3D &terrain_transform) {
+void VoxelMeshBlock::update_navmesh(const PackedVector3Array &vertices, const Transform3D &terrain_transform, RID navigation_map) {
 	if (vertices.is_empty()) {
 		drop_navmesh();
 		return;
@@ -257,15 +257,14 @@ void VoxelMeshBlock::update_navmesh(const PackedVector3Array &vertices, const Tr
 	nav_mesh->set_cell_height(0.25f);
 	nav_mesh->set_vertices(vertices);
 
-const int quad_count = vertices.size() / 4;
-	for (int i = 0; i < quad_count; ++i) {
+const int tri_count = vertices.size() / 3;
+	for (int i = 0; i < tri_count; ++i) {
 		PackedInt32Array poly;
-		poly.resize(4);
+		poly.resize(3);
 		int32_t *w = poly.ptrw();
-		w[0] = i * 4;
-		w[1] = i * 4 + 1;
-		w[2] = i * 4 + 2;
-		w[3] = i * 4 + 3;
+		w[0] = i * 3;
+		w[1] = i * 3 + 1;
+		w[2] = i * 3 + 2;
 		nav_mesh->add_polygon(poly);
 	}
 
@@ -551,11 +550,11 @@ PackedVector3Array make_navmesh_vertices_from_mesher_output(
 	}
 
 	PackedVector3Array quads = merge_triangles_to_quads(vertices);
-	auto buckets = split_mesh_by_face_direction(quads);
-	//PackedVector3Array top_faces = buckets[FACE_TOP];
+	//auto buckets = split_mesh_by_face_direction(quads);
+	PackedVector3Array top_faces = buckets[FACE_TOP];
 	PackedVector3Array ramped_top = apply_step_ramps(buckets[FACE_TOP]);
 
-	return ramped_top;
+	return vertices;
 }
 
 } // namespace zylann::voxel

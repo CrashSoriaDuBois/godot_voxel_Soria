@@ -38,6 +38,7 @@ template <typename Type_T>
 void generate_mesh(
 		StdVector<VoxelMesherBlocky::Arrays> &out_arrays_per_material,
 		VoxelMesher::Output::CollisionSurface *collision_surface,
+		VoxelMesher::Output::NavmeshSurface *navmesh_surface,
 		const Span<const Type_T> type_buffer,
 		const Vector3i block_size,
 		const BakedLibrary &library,
@@ -403,6 +404,26 @@ void generate_mesh(
 							}
 
 							collision_surface_index_offset += vertex_count;
+							// navmesh part
+							if (navmesh_surface != nullptr && surface.collision_enabled && side == Cube::SIDE_TOP) {
+								StdVector<Vector3f> &dst_positions = navmesh_surface->positions;
+								StdVector<int> &dst_indices = navmesh_surface->indices;
+								int nav_index_offset = dst_positions.size();
+
+								const unsigned int append_index = dst_positions.size();
+								dst_positions.resize(dst_positions.size() + vertex_count);
+								Vector3f *w = dst_positions.data() + append_index;
+								for (unsigned int i = 0; i < vertex_count; ++i) {
+									w[i] = side_positions[i] + pos;
+								}
+
+								int idx = dst_indices.size();
+								dst_indices.resize(dst_indices.size() + index_count);
+								int *wi = dst_indices.data();
+								for (unsigned int j = 0; j < index_count; ++j) {
+									wi[idx++] = nav_index_offset + side_indices[j];
+								}
+							}
 						}
 
 						index_offset += vertex_count;
@@ -633,6 +654,11 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 		collision_surface = &output.collision_surface;
 	}
 
+	VoxelMesher::Output::NavmeshSurface *navmesh_surface = nullptr;
+	if (input.navmesh_hint) {
+		navmesh_surface = &output.navmesh_surface;
+	}
+
 	unsigned int material_count = 0;
 	{
 		// We can only access baked data. Only this data is made for multithreaded access.
@@ -653,6 +679,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 				blocky::generate_mesh(
 						arrays_per_material,
 						collision_surface,
+						navmesh_surface,
 						raw_channel,
 						block_size,
 						library_baked_data,
@@ -672,6 +699,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 				blocky::generate_mesh(
 						arrays_per_material,
 						collision_surface,
+						navmesh_surface,
 						model_ids,
 						block_size,
 						library_baked_data,
@@ -700,6 +728,11 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 		}
 		if (collision_surface != nullptr) {
 			for (Vector3f &p : collision_surface->positions) {
+				p = p * lod_scale;
+			}
+		}
+		if (navmesh_surface != nullptr) {
+			for (Vector3f &p : navmesh_surface->positions) {
 				p = p * lod_scale;
 			}
 		}

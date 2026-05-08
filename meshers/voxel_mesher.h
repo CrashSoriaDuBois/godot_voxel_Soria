@@ -41,6 +41,8 @@ public:
 		bool collision_hint = false;
 		// If true, the mesher is told that the mesh will be used in a context with variable level of detail.
 		// For example, transition meshes will or will not be generated based on this (overriding mesher settings).
+		bool navmesh_hint = false;
+
 		bool lod_hint = false;
 		// If true, the mesher can collect some extra information which can be useful to speed up detail texture
 		// baking. Depends on the mesher.
@@ -68,6 +70,12 @@ public:
 			int32_t submesh_index_end = -1;
 		};
 		CollisionSurface collision_surface;
+
+		struct NavmeshSurface {
+			StdVector<Vector3f> positions;
+			StdVector<int> indices;
+		};
+		NavmeshSurface navmesh_surface;
 
 		Array shadow_occluder;
 

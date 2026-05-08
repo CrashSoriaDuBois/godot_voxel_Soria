@@ -511,6 +511,8 @@ void MeshBlockTask::build_mesh() {
 		origin_in_voxels,
 		lod_index,
 		collision_hint,
+		(lod_index == 0), // this skips adding navmesh_hint as a member of MeshBlockTask in mesh_block_task.h, that's why it's not consistent with the rest of the code
+
 		lod_hint,
 		// TODO Gathering detail texture information is not always necessary
 		true // detail_texture_hint
