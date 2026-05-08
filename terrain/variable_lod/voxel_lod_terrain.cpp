@@ -1832,17 +1832,6 @@ inline void set_block_collision_shape(
 	block.deferred_collider_data.reset();
 }
 
-static PackedVector3Array navmesh_surface_to_packed(const VoxelMesher::Output::NavmeshSurface &surface) {
-	PackedVector3Array result;
-	const auto &positions = surface.positions;
-	const auto &indices = surface.indices;
-	result.resize(indices.size());
-	Vector3 *dst = result.ptrw();
-	for (int i = 0; i < (int)indices.size(); ++i) {
-		dst[i] = to_vec3(positions[indices[i]]);
-	}
-	return result;
-}
 
 void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 	// The following is done on the main thread because Godot doesn't really support everything done here.
@@ -2152,9 +2141,8 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 			if (ob.lod == 0) { // only LOD0 for navmesh, higher LODs are too coarse
 				//PackedVector3Array nav_verts = make_navmesh_vertices_from_mesher_output(ob.surfaces, **_mesher);
 				//block->update_navmesh(nav_verts, get_global_transform());
-				PackedVector3Array nav_verts = navmesh_surface_to_packed(ob.surfaces.navmesh_surface);
 				RID nav_map = get_world_3d().is_valid() ? get_world_3d()->get_navigation_map() : RID();
-				block->update_navmesh(nav_verts, get_global_transform(), nav_map);
+				block->update_navmesh(ob.surfaces.navmesh_surface_mesh, get_global_transform(), nav_map);
 			}
 
 		} else {
@@ -2410,9 +2398,8 @@ void VoxelLodTerrain::process_deferred_collision_updates(uint32_t timeout_msec) 
 				set_block_collision_shape(*this, *block, collision_shape, now);
 
 				if (lod_index == 0) {
-					PackedVector3Array nav_verts = navmesh_surface_to_packed(block->deferred_collider_data->navmesh_surface);
-					RID nav_map = get_world_3d().is_valid() ? get_world_3d()->get_navigation_map() : RID();
-					block->update_navmesh(nav_verts, get_global_transform(), nav_map);
+						RID nav_map = get_world_3d().is_valid() ? get_world_3d()->get_navigation_map() : RID();
+						block->update_navmesh(block->deferred_collider_data->navmesh_surface_mesh, get_global_transform(), nav_map);
 				}
 
 				unordered_remove(deferred_collision_updates, i);

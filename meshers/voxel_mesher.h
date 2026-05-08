@@ -8,6 +8,7 @@
 #include "../util/godot/classes/image.h"
 #include "../util/godot/classes/mesh.h"
 #include "../util/macros.h"
+#include "../util/godot/classes/navigation_mesh.h"
 
 ZN_GODOT_FORWARD_DECLARE(class ShaderMaterial)
 
@@ -69,14 +70,9 @@ public:
 			int32_t submesh_vertex_end = -1;
 			int32_t submesh_index_end = -1;
 		};
+
 		CollisionSurface collision_surface;
-
-		struct NavmeshSurface {
-			StdVector<Vector3f> positions;
-			StdVector<int> indices;
-		};
-		NavmeshSurface navmesh_surface;
-
+		Ref<NavigationMesh> navmesh_surface_mesh;
 		Array shadow_occluder;
 
 		// May be used to store extra information needed in shader to render the mesh properly

@@ -34,11 +34,16 @@ StdVector<int> &get_tls_index_offsets() {
 	return tls_index_offsets;
 }
 
+struct NavmeshSurface {
+	StdVector<Vector3f> positions;
+	StdVector<int> indices;
+};
+
 template <typename Type_T>
 void generate_mesh(
 		StdVector<VoxelMesherBlocky::Arrays> &out_arrays_per_material,
 		VoxelMesher::Output::CollisionSurface *collision_surface,
-		VoxelMesher::Output::NavmeshSurface *navmesh_surface,
+		NavmeshSurface *navmesh_surface,
 		const Span<const Type_T> type_buffer,
 		const Vector3i block_size,
 		const BakedLibrary &library,
@@ -694,9 +699,10 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 		collision_surface = &output.collision_surface;
 	}
 
-	VoxelMesher::Output::NavmeshSurface *navmesh_surface = nullptr;
+	blocky::NavmeshSurface navmesh_surface_;
+	blocky::NavmeshSurface *navmesh_surface = nullptr;
 	if (input.navmesh_hint) {
-		navmesh_surface = &output.navmesh_surface;
+		navmesh_surface = &navmesh_surface_;
 	}
 
 	unsigned int material_count = 0;
@@ -776,6 +782,35 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 				p = p * lod_scale;
 			}
 		}
+	}
+	if (navmesh_surface != nullptr && !navmesh_surface_.positions.empty()) {
+		const auto &positions = navmesh_surface_.positions;
+		const auto &indices = navmesh_surface_.indices;
+
+		PackedVector3Array tri_soup;
+		tri_soup.resize(indices.size());
+		Vector3 *dst = tri_soup.ptrw();
+		for (int i = 0; i < (int)indices.size(); ++i) {
+			dst[i] = to_vec3(positions[indices[i]]);
+		}
+
+		// For now build directly from triangles
+		Ref<NavigationMesh> nav_mesh;
+		nav_mesh.instantiate();
+		nav_mesh->set_cell_size(0.5f);
+		nav_mesh->set_cell_height(0.25f);
+		nav_mesh->set_vertices(tri_soup);
+		const int tri_count = tri_soup.size() / 3;
+		for (int i = 0; i < tri_count; ++i) {
+			PackedInt32Array poly;
+			poly.resize(3);
+			int32_t *w = poly.ptrw();
+			w[0] = i * 3;
+			w[1] = i * 3 + 1;
+			w[2] = i * 3 + 2;
+			nav_mesh->add_polygon(poly);
+		}
+		output.navmesh_surface_mesh = nav_mesh;
 	}
 
 	// TODO Optimization: we could return a single byte array and use Mesh::add_surface down the line?

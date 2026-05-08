@@ -77,7 +77,7 @@ public:
 	bool is_collision_enabled() const;
 
 	// Navigation ADD:
-	void update_navmesh(const PackedVector3Array &vertices, const Transform3D &terrain_transform, RID navigation_map);
+	void update_navmesh(Ref<NavigationMesh> nav_mesh, const Transform3D &terrain_transform, RID navigation_map);
 	void drop_navmesh();
 	bool has_navmesh() const;
 
