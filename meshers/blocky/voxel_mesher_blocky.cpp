@@ -38,6 +38,163 @@ struct NavmeshSurface {
 	StdVector<Vector3f> positions;
 	StdVector<int> indices;
 };
+//used by navmesh to desimate inner verts
+static void merge_navmesh_polygons(
+		const PackedVector3Array &tri_soup,
+		PackedVector3Array &out_vertices,
+		TypedArray<PackedInt32Array> &out_polygons
+) {
+	// Step 1: deduplicate vertices
+	HashMap<Vector3, int> vert_map;
+
+	for (int i = 0; i < tri_soup.size(); i++) {
+		Vector3 v = tri_soup[i];
+		if (!vert_map.has(v)) {
+			vert_map[v] = out_vertices.size();
+			out_vertices.push_back(v);
+		}
+	}
+
+	// Build index list from deduplicated verts
+	PackedInt32Array indices;
+	indices.resize(tri_soup.size());
+	int32_t *idx_w = indices.ptrw();
+	for (int i = 0; i < tri_soup.size(); i++) {
+		idx_w[i] = vert_map[tri_soup[i]];
+	}
+
+	const int tri_count = indices.size() / 3;
+
+	// Step 2: build edge → triangle map
+	// key: edge as (min_vert, max_vert)
+	// value: up to 2 triangle indices
+	struct Edge {
+		int a, b;
+		bool operator==(const Edge &o) const {
+			return a == o.a && b == o.b;
+		}
+	};
+	struct EdgeHasher {
+		static uint32_t hash(const Edge &e) {
+			return hash_murmur3_one_32(e.a) ^ hash_murmur3_one_32(e.b);
+		}
+	};
+
+	HashMap<Edge, Vector<int>, EdgeHasher> edge_to_tris;
+	// also store directed version for winding order recovery
+	HashMap<Edge, std::pair<int, int>, EdgeHasher> edge_directed;
+
+	for (int t = 0; t < tri_count; t++) {
+		int v[3] = { indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2] };
+		for (int e = 0; e < 3; e++) {
+			int ea = v[e];
+			int eb = v[(e + 1) % 3];
+			Edge edge{ MIN(ea, eb), MAX(ea, eb) };
+			edge_to_tris[edge].push_back(t);
+			edge_directed[edge] = { ea, eb };
+		}
+	}
+
+	// Step 3: mark dissolvable edges
+	// dissolve if: shared by exactly 2 tris with same normal
+	auto get_normal = [&](int t) -> Vector3 {
+		Vector3 a = out_vertices[indices[t * 3 + 0]];
+		Vector3 b = out_vertices[indices[t * 3 + 1]];
+		Vector3 c = out_vertices[indices[t * 3 + 2]];
+		return (b - a).cross(c - a).normalized();
+	};
+
+	HashSet<Edge, EdgeHasher> dissolvable;
+	for (const auto &kv : edge_to_tris) {
+		if (kv.value.size() == 2) {
+			Vector3 n0 = get_normal(kv.value[0]);
+			Vector3 n1 = get_normal(kv.value[1]);
+			if (n0.is_equal_approx(n1)) {
+				dissolvable.insert(kv.key);
+			}
+		}
+		// size == 1 → boundary/air edge → keep automatically
+	}
+
+	// Step 4: union-find to group triangles across dissolvable edges
+	Vector<int> parent;
+	parent.resize(tri_count);
+	for (int i = 0; i < tri_count; i++) parent.write[i] = i;
+
+	std::function<int(int)> find = [&](int x) -> int {
+		if (parent[x] != x) parent.write[x] = find(parent[x]);
+		return parent[x];
+	};
+
+	for (const auto &kv : edge_to_tris) {
+		if (!dissolvable.has(kv.key))
+			continue;
+		int ra = find(kv.value[0]);
+		int rb = find(kv.value[1]);
+		if (ra != rb) parent.write[ra] = rb;
+	}
+
+	// Step 5: group triangles by root
+	HashMap<int, Vector<int>> groups;
+	for (int t = 0; t < tri_count; t++) {
+		groups[find(t)].push_back(t);
+	}
+
+	// Step 6: for each group extract boundary polygon
+	for (const auto &kv : groups) {
+		const Vector<int> &group_tris = kv.value;
+
+		if (group_tris.size() == 1) {
+			// single triangle, no merging
+			int t = group_tris[0];
+			PackedInt32Array poly;
+			poly.resize(3);
+			int32_t *w = poly.ptrw();
+			w[0] = indices[t * 3 + 0];
+			w[1] = indices[t * 3 + 1];
+			w[2] = indices[t * 3 + 2];
+			out_polygons.push_back(poly);
+			continue;
+		}
+
+		// count edge appearances within this group
+		HashMap<Edge, int, EdgeHasher> edge_count;
+		HashMap<Edge, std::pair<int, int>, EdgeHasher> group_edge_directed;
+		for (int t : group_tris) {
+			int v[3] = { indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2] };
+			for (int e = 0; e < 3; e++) {
+				int ea = v[e];
+				int eb = v[(e + 1) % 3];
+				Edge edge{ MIN(ea, eb), MAX(ea, eb) };
+				edge_count[edge]++;
+				group_edge_directed[edge] = { ea, eb };
+			}
+		}
+
+		// boundary edges appear exactly once
+		HashMap<int, int> next_vert;
+		for (const auto &ec : edge_count) {
+			if (ec.value == 1) {
+				auto &d = group_edge_directed[ec.key];
+				next_vert[d.first] = d.second;
+			}
+		}
+
+		if (next_vert.is_empty())
+			continue;
+
+		// walk boundary loop
+		PackedInt32Array poly;
+		int start = next_vert.begin()->key;
+		int cur = start;
+		do {
+			poly.push_back(cur);
+			cur = next_vert[cur];
+		} while (cur != start && poly.size() < 64);
+
+		out_polygons.push_back(poly);
+	}
+}
 
 template <typename Type_T>
 void generate_mesh(
@@ -794,21 +951,18 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 			dst[i] = to_vec3(positions[indices[i]]);
 		}
 
-		// For now build directly from triangles
+		PackedVector3Array merged_verts;
+		TypedArray<PackedInt32Array> merged_polys;
+		blocky::merge_navmesh_polygons(tri_soup, merged_verts, merged_polys);
+		
 		Ref<NavigationMesh> nav_mesh;
 		nav_mesh.instantiate();
 		nav_mesh->set_cell_size(0.5f);
 		nav_mesh->set_cell_height(0.25f);
-		nav_mesh->set_vertices(tri_soup);
-		const int tri_count = tri_soup.size() / 3;
-		for (int i = 0; i < tri_count; ++i) {
-			PackedInt32Array poly;
-			poly.resize(3);
-			int32_t *w = poly.ptrw();
-			w[0] = i * 3;
-			w[1] = i * 3 + 1;
-			w[2] = i * 3 + 2;
-			nav_mesh->add_polygon(poly);
+
+		nav_mesh->set_vertices(merged_verts);
+		for (int i = 0; i < (int)merged_polys.size(); ++i) {
+			nav_mesh->add_polygon(merged_polys[i]);
 		}
 		output.navmesh_surface_mesh = nav_mesh;
 	}
