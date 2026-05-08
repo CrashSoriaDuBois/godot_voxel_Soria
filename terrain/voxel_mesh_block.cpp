@@ -550,8 +550,8 @@ PackedVector3Array make_navmesh_vertices_from_mesher_output(
 	}
 
 	PackedVector3Array quads = merge_triangles_to_quads(vertices);
-	//auto buckets = split_mesh_by_face_direction(quads);
-	PackedVector3Array top_faces = buckets[FACE_TOP];
+	auto buckets = split_mesh_by_face_direction(quads);
+	//PackedVector3Array top_faces = buckets[FACE_TOP];
 	PackedVector3Array ramped_top = apply_step_ramps(buckets[FACE_TOP]);
 
 	return vertices;

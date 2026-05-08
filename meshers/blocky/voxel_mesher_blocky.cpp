@@ -380,7 +380,7 @@ void generate_mesh(
 								w[i++] = index_offset + side_indices[j];
 							}
 						}
-
+						//collition part
 						if (collision_surface != nullptr && surface.collision_enabled) {
 							StdVector<Vector3f> &dst_positions = collision_surface->positions;
 							StdVector<int> &dst_indices = collision_surface->indices;
@@ -422,6 +422,46 @@ void generate_mesh(
 								int *wi = dst_indices.data();
 								for (unsigned int j = 0; j < index_count; ++j) {
 									wi[idx++] = nav_index_offset + side_indices[j];
+								}
+							}
+							// WALL faces - include only if neighbor is air with solid below (step down)
+							if (navmesh_surface != nullptr && surface.collision_enabled 
+								&& side != Cube::SIDE_TOP && side != Cube::SIDE_BOTTOM) {
+    
+								// Must have air above itself
+								const uint32_t above_self = type_buffer[voxel_index + side_neighbor_lut[Cube::SIDE_TOP]];
+								const bool self_is_surface = (above_self == AIR_ID || !library.has_model(above_self));
+
+								if (self_is_surface) {
+									const uint32_t horiz_neighbor = type_buffer[voxel_index + side_neighbor_lut[side]];
+									const bool horiz_is_air = (horiz_neighbor == AIR_ID || !library.has_model(horiz_neighbor));
+
+									if (horiz_is_air) {
+										const uint32_t below_neighbor = type_buffer[
+											voxel_index + side_neighbor_lut[side] + side_neighbor_lut[Cube::SIDE_BOTTOM]
+										];
+										const bool has_solid_below = (below_neighbor != AIR_ID && library.has_model(below_neighbor));
+
+										if (has_solid_below) {
+											StdVector<Vector3f> &dst_positions = navmesh_surface->positions;
+											StdVector<int> &dst_indices = navmesh_surface->indices;
+											int nav_index_offset = dst_positions.size();
+
+											const unsigned int append_index = dst_positions.size();
+											dst_positions.resize(dst_positions.size() + vertex_count);
+											Vector3f *w = dst_positions.data() + append_index;
+											for (unsigned int i = 0; i < vertex_count; ++i) {
+												w[i] = side_positions[i] + pos;
+											}
+
+											int idx = dst_indices.size();
+											dst_indices.resize(dst_indices.size() + index_count);
+											int *wi = dst_indices.data();
+											for (unsigned int j = 0; j < index_count; ++j) {
+												wi[idx++] = nav_index_offset + side_indices[j];
+											}
+										}
+									}
 								}
 							}
 						}
