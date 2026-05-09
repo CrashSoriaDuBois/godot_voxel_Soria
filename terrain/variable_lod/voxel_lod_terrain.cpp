@@ -194,6 +194,14 @@ inline int encode_lod_info_for_shader_uniform(int lod_index, int lod_count) {
 	return lod_index | (lod_count << 8);
 }
 
+void VoxelLodTerrain::set_channel_depth(int channel, int depth) {
+	ERR_FAIL_INDEX(channel, VoxelBuffer::MAX_CHANNELS);
+	ERR_FAIL_INDEX(depth, VoxelBuffer::DEPTH_COUNT);
+	VoxelFormat format = _data->get_format();
+	format.depths[static_cast<VoxelBuffer::ChannelId>(channel)] = static_cast<VoxelBuffer::Depth>(depth);
+	_data->set_format(format);
+}
+
 void VoxelLodTerrain::set_material(Ref<Material> p_material) {
 	if (_material == p_material) {
 		return;
@@ -3854,6 +3862,10 @@ void VoxelLodTerrain::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_material", "material"), &Self::set_material);
 	ClassDB::bind_method(D_METHOD("get_material"), &Self::get_material);
+
+	// Color Channel Depth
+
+	ClassDB::bind_method(D_METHOD("set_channel_depth", "channel", "depth"), &VoxelLodTerrain::set_channel_depth);
 
 	// Bounds
 

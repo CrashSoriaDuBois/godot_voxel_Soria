@@ -6,7 +6,7 @@ namespace zylann::voxel {
 VoxelFormat::VoxelFormat() {
 	depths[VoxelBuffer::CHANNEL_TYPE] = VoxelBuffer::DEFAULT_TYPE_CHANNEL_DEPTH;
 	depths[VoxelBuffer::CHANNEL_SDF] = VoxelBuffer::DEFAULT_SDF_CHANNEL_DEPTH;
-	depths[VoxelBuffer::CHANNEL_COLOR] = VoxelBuffer::DEFAULT_CHANNEL_DEPTH;
+	depths[VoxelBuffer::CHANNEL_COLOR] = VoxelBuffer::DEPTH_16_BIT;
 	depths[VoxelBuffer::CHANNEL_INDICES] = VoxelBuffer::DEFAULT_INDICES_CHANNEL_DEPTH;
 	depths[VoxelBuffer::CHANNEL_WEIGHTS] = VoxelBuffer::DEFAULT_WEIGHTS_CHANNEL_DEPTH;
 	depths[VoxelBuffer::CHANNEL_DATA5] = VoxelBuffer::DEFAULT_CHANNEL_DEPTH;

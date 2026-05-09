@@ -98,7 +98,7 @@ uint64_t VoxelBuffer::get_default_raw_value(const VoxelBuffer::ChannelId channel
 		case CHANNEL_SDF:
 			return get_default_sdf_raw_value(depth);
 		case CHANNEL_COLOR:
-			return 0;
+			return 0xFFFF;
 		case CHANNEL_INDICES:
 			return get_default_indices_raw_value(depth);
 		case CHANNEL_WEIGHTS:
@@ -225,7 +225,7 @@ void VoxelBuffer::clear(const VoxelFormat *new_format) {
 
 	_channels[CHANNEL_TYPE].defval = 0;
 	_channels[CHANNEL_SDF].defval = get_default_sdf_raw_value(_channels[CHANNEL_SDF].depth);
-	_channels[CHANNEL_COLOR].defval = 0;
+	_channels[CHANNEL_COLOR].defval = 0xFFFF;
 	_channels[CHANNEL_INDICES].defval = get_default_indices_raw_value(_channels[CHANNEL_INDICES].depth);
 	_channels[CHANNEL_WEIGHTS].defval = MIXEL4_DEFAULT_WEIGHTS;
 	_channels[CHANNEL_DATA5].defval = 0;

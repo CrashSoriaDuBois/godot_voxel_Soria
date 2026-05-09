@@ -38,6 +38,8 @@ public:
 	VoxelLodTerrain();
 	~VoxelLodTerrain();
 
+	void set_channel_depth(int channel, int depth);
+
 	Ref<Material> get_material() const;
 	void set_material(Ref<Material> p_material);
 
