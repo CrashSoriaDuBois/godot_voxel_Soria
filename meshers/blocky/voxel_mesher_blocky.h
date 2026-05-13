@@ -118,6 +118,7 @@ private:
 
 	struct Cache {
 		StdVector<Arrays> arrays_per_material;
+		StdVector<uint8_t> light_buffer;
 	};
 
 	// Parameters

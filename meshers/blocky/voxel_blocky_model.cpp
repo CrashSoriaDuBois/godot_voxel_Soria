@@ -234,6 +234,8 @@ void VoxelBlockyModel::bake(blocky::ModelBakingContext &ctx) const {
 	baked_data.tags_mask = _tags_mask;
 	baked_data.box_collision_aabbs = _collision_aabbs;
 	baked_data.lod_skirts = _lod_skirts;
+	baked_data.light_emission = _light_emission;
+	baked_data.light_color_index = _light_color_index;
 
 	blocky::BakedModel::Model &model = baked_data.model;
 
@@ -351,6 +353,8 @@ void VoxelBlockyModel::copy_base_properties_from(const VoxelBlockyModel &src) {
 	_color = src._color;
 	_collision_aabbs = src._collision_aabbs;
 	_collision_mask = src._collision_mask;
+	_light_emission = src._light_emission;
+	_light_color_index = src._light_color_index;
 }
 
 Ref<Mesh> VoxelBlockyModel::get_preview_mesh() const {
@@ -573,6 +577,16 @@ void VoxelBlockyModel::_b_rotate_90(Vector3i::Axis axis, bool clockwise) {
 // It could be very effective on mesh collisions with the blocky mesher.
 // }
 
+void VoxelBlockyModel::set_light_emission(int value) {
+	_light_emission = math::clamp(value, 0, 15);
+	emit_changed();
+}
+
+void VoxelBlockyModel::set_light_color_index(int value) {
+	_light_color_index = math::clamp(value, 0, 15);
+	emit_changed();
+}
+
 void VoxelBlockyModel::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_color", "color"), &VoxelBlockyModel::set_color);
 	ClassDB::bind_method(D_METHOD("get_color"), &VoxelBlockyModel::get_color);
@@ -621,6 +635,12 @@ void VoxelBlockyModel::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_lod_skirts_enabled", "enabled"), &VoxelBlockyModel::set_lod_skirts_enabled);
 	ClassDB::bind_method(D_METHOD("get_lod_skirts_enabled"), &VoxelBlockyModel::get_lod_skirts_enabled);
 
+	//
+	ClassDB::bind_method(D_METHOD("set_light_emission", "value"), &VoxelBlockyModel::set_light_emission);
+	ClassDB::bind_method(D_METHOD("get_light_emission"), &VoxelBlockyModel::get_light_emission);
+	ClassDB::bind_method(D_METHOD("set_light_color_index", "value"), &VoxelBlockyModel::set_light_color_index);
+	ClassDB::bind_method(D_METHOD("get_light_color_index"), &VoxelBlockyModel::get_light_color_index);
+
 	// TODO Update to StringName in Godot 4
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "color"), "set_color", "get_color");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "transparency_index"), "set_transparency_index", "get_transparency_index");
@@ -635,6 +655,18 @@ void VoxelBlockyModel::_bind_methods() {
 	);
 
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "lod_skirts_enabled"), "set_lod_skirts_enabled", "get_lod_skirts_enabled");
+
+	ADD_GROUP("Lighting", "light_");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::INT, "light_emission", PROPERTY_HINT_RANGE, "0,15,1"),
+			"set_light_emission",
+			"get_light_emission"
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::INT, "light_color_index", PROPERTY_HINT_RANGE, "0,15,1"),
+			"set_light_color_index",
+			"get_light_color_index"
+	);
 
 	ADD_GROUP("Box collision", "");
 

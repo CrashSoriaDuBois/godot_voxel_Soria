@@ -48,6 +48,9 @@ public:
 		// If true, the mesher can collect some extra information which can be useful to speed up detail texture
 		// baking. Depends on the mesher.
 		bool detail_texture_hint = false;
+
+		//
+		bool light_dirty = false;
 	};
 
 	struct Output {
@@ -74,6 +77,12 @@ public:
 		CollisionSurface collision_surface;
 		Ref<NavigationMesh> navmesh_surface_mesh;
 		Array shadow_occluder;
+
+		struct LightSurface {
+			StdVector<uint8_t> data;
+			bool was_computed = false;
+		};
+		LightSurface light_surface;
 
 		// May be used to store extra information needed in shader to render the mesh properly
 		// (currently used only by the cubes mesher when baking colors)

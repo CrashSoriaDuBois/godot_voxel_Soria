@@ -93,6 +93,15 @@ public:
 	void set_lod_skirts_enabled(bool rt);
 	bool get_lod_skirts_enabled() const;
 
+	void set_light_emission(int value);
+	int get_light_emission() const {
+		return _light_emission;
+	}
+	void set_light_color_index(int value);
+	int get_light_color_index() const {
+		return _light_color_index;
+	}
+
 	//------------------------------------------
 	// Properties for internal usage only
 
@@ -185,6 +194,8 @@ private:
 	uint8_t _mesh_ortho_rotation = 0;
 
 	bool _lod_skirts = true;
+	uint8_t _light_emission = 0; // 0-15
+	uint8_t _light_color_index = 0; // 0-15
 
 	Color _color;
 

@@ -2152,6 +2152,23 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 				RID nav_map = get_world_3d().is_valid() ? get_world_3d()->get_navigation_map() : RID();
 				block->update_navmesh(ob.surfaces.navmesh_surface_mesh, get_global_transform(), nav_map);
 			}
+			if (ob.lod == 0 && ob.surfaces.light_surface.was_computed && !ob.surfaces.light_surface.data.empty()) {
+				SpatialLock3D::Write swlock(
+						_data->get_spatial_lock(0), BoxBounds3i(ob.position, ob.position + Vector3i(1, 1, 1))
+				);
+				std::shared_ptr<VoxelBuffer> vb = _data->try_get_block_voxels(ob.position);
+				if (vb != nullptr) {
+					const size_t expected = ob.surfaces.light_surface.data.size();
+					const size_t actual = vb->get_volume();
+					if (expected == actual) {
+						vb->decompress_channel(VoxelBuffer::CHANNEL_DATA5);
+						Span<uint8_t> dst;
+						if (vb->get_channel_as_bytes(VoxelBuffer::CHANNEL_DATA5, dst)) {
+							memcpy(dst.data(), ob.surfaces.light_surface.data.data(), expected);
+						}
+					}
+				}
+			}
 
 		} else {
 			if (block->deferred_collider_data == nullptr) {
