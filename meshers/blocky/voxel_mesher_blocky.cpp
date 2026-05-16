@@ -1,4 +1,4 @@
-﻿#include "voxel_mesher_blocky.h"
+#include "voxel_mesher_blocky.h"
 #include "../../constants/cube_tables.h"
 #include "../../storage/voxel_buffer.h"
 #include "../../util/containers/span.h"
@@ -14,6 +14,7 @@
 #include "blocky_fluids_meshing_impl.h"
 #include "blocky_lod_skirts.h"
 #include "blocky_shadow_occluders.h"
+#include "blocky_light.h"
 #include <queue>
 #include "../../util/string/format.h"
 
@@ -49,86 +50,6 @@ inline uint8_t get_light_color(uint8_t v) {
 }
 inline uint8_t get_light_intensity(uint8_t v) {
 	return v & 0xF;
-}
-
-template <typename Type_T>
-static void flood_fill_light(
-		const Span<const Type_T> type_buffer,
-		const Vector3i block_size,
-		const BakedLibrary &library,
-		StdVector<uint8_t> &out_light
-) {
-	const int volume = block_size.x * block_size.y * block_size.z;
-	out_light.assign(volume, 0);
-
-	struct LightNode {
-		int index;
-		uint8_t value;
-	};
-
-	// use std::queue — already included transitively, or add #include <queue>
-	std::queue<LightNode> queue;
-
-	const int row_size = block_size.y;
-	const int deck_size = block_size.x * row_size;
-	const int neighbor_offsets[6] = { row_size, -row_size, deck_size, -deck_size, 1, -1 };
-
-	// scan entire padded buffer for light emitters
-	for (int i = 0; i < volume; i++) {
-		const uint32_t voxel_id = static_cast<uint32_t>(type_buffer[i]);
-		if (voxel_id == AIR_ID || !library.has_model(voxel_id)) {
-			continue;
-		}
-		const BakedModel &model = library.models[voxel_id];
-		if (model.light_emission > 0) {
-			const uint8_t encoded = encode_light(model.light_color_index, model.light_emission);
-			out_light[i] = encoded;
-			queue.push({ i, encoded });
-
-			 print_line(
-					String("Found emitter at flat index ") + itos(i) + String(" voxel_id=") + itos(voxel_id) +
-					String(" emission=") + itos(model.light_emission)
-			);
-		}
-	}
-
-	print_line(String("FLOOD: seeds=") + itos((int)queue.size()) + String(" volume=") + itos(volume));
-
-	// BFS flood from all seeds simultaneously
-	while (!queue.empty()) {
-		const LightNode node = queue.front();
-		queue.pop();
-
-		const uint8_t intensity = get_light_intensity(node.value);
-		const uint8_t color = get_light_color(node.value);
-
-		if (intensity == 0) {
-			continue;
-		}
-		const uint8_t next_intensity = intensity - 1;
-
-		for (int n = 0; n < 6; n++) {
-			const int neighbor_idx = node.index + neighbor_offsets[n];
-			if (neighbor_idx < 0 || neighbor_idx >= volume) {
-				continue;
-			}
-
-			const uint32_t neighbor_type = static_cast<uint32_t>(type_buffer[neighbor_idx]);
-			if (neighbor_type != AIR_ID && library.has_model(neighbor_type)) {
-				// opaque blocks stop light
-				if (!library.models[neighbor_type].is_transparent) {
-					continue;
-				}
-			}
-
-			const uint8_t current_intensity = get_light_intensity(out_light[neighbor_idx]);
-			if (next_intensity > current_intensity) {
-				const uint8_t new_value = encode_light(color, next_intensity);
-				out_light[neighbor_idx] = new_value;
-				queue.push({ neighbor_idx, new_value });
-			}
-		}
-	}
 }
 
 //used by navmesh to desimate inner verts
@@ -964,17 +885,41 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 		navmesh_surface = &navmesh_surface_;
 	}
 
-	// light flood fill
+	// light
+	// The flood fill is NOT done here. It is done in mesh_block_task::build_mesh()
+	// on the large 46^3 buffer BEFORE calling mesher->build().
+	// Here we only read whatever light data was placed into CHANNEL_DATA5.
 	const int padded_volume = block_size.x * block_size.y * block_size.z;
 	bool has_light = false;
-	if (input.light_dirty) {
-		cache.light_buffer.assign(padded_volume, 0);
-	} else {
-		// read existing light from CHANNEL_DATA5 if available
+	{
 		Span<const uint8_t> existing_light;
 		has_light = voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_DATA5, existing_light);
 		if (has_light) {
 			cache.light_buffer.assign(existing_light.data(), existing_light.data() + existing_light.size());
+
+			// ── PRINT 5: what did the mesher receive? ──
+			int non_zero = 0;
+			uint8_t max_val = 0;
+			for (uint8_t v : cache.light_buffer) {
+				if (v != 0) {
+					++non_zero;
+					if (v > max_val)
+						max_val = v;
+				}
+			}
+			print_line(
+					String("MESHER_READ_LIGHT has_light=true") + String(" non_zero=") + itos(non_zero) +
+					String(" max_intensity=") + itos(max_val & 0xF) + String(" light_dirty=") +
+					(input.light_dirty ? "true" : "false") + String(" buf_size=") + itos(cache.light_buffer.size()) +
+					String(" voxels_size=") + String(voxels.get_size())
+			);
+		} else {
+			cache.light_buffer.assign(padded_volume, 0);
+			print_line(
+					String("MESHER_READ_LIGHT has_light=false") + String(" light_dirty=") +
+					(input.light_dirty ? "true" : "false") + String(" padded_volume=") + itos(padded_volume) +
+					String(" voxels_size=") + String(voxels.get_size())
+			);
 		}
 	}
 
@@ -995,10 +940,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 
 		switch (channel_depth) {
 			case VoxelBuffer::DEPTH_8_BIT:
-				if (input.light_dirty) {
-					blocky::flood_fill_light(raw_channel, block_size, library_baked_data, cache.light_buffer);
-					has_light = true;
-				}
+
 				blocky::generate_mesh(
 						arrays_per_material,
 						collision_surface,
@@ -1021,10 +963,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 
 			case VoxelBuffer::DEPTH_16_BIT: {
 				Span<const uint16_t> model_ids = raw_channel.reinterpret_cast_to<const uint16_t>();
-				if (input.light_dirty) {
-					blocky::flood_fill_light(model_ids, block_size, library_baked_data, cache.light_buffer);
-					has_light = true;
-				}
+
 				blocky::generate_mesh(
 						arrays_per_material,
 						collision_surface,
@@ -1069,25 +1008,25 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 		}
 	}
 
-	if (input.light_dirty && has_light) {
-		const int pad = VoxelMesherBlocky::PADDING;
-		const Vector3i inner = block_size - Vector3i(pad, pad, pad) * 2;
-		const int inner_volume = inner.x * inner.y * inner.z;
-		output.light_surface.data.resize(inner_volume);
-
-		for (int z = 0; z < inner.z; z++) {
-			for (int x = 0; x < inner.x; x++) {
-				for (int y = 0; y < inner.y; y++) {
-					const int pi = (y + pad) + (x + pad) * block_size.y + (z + pad) * block_size.x * block_size.y;
-					const int ii = y + x * inner.y + z * inner.x * inner.y;
-					output.light_surface.data[ii] = cache.light_buffer[pi];
-				}
-			}
-		}
-		output.light_surface.was_computed = true;
-	} else {
-		output.light_surface.was_computed = false;
-	}
+//	if (input.light_dirty && has_light) {
+	//	const int pad = VoxelMesherBlocky::PADDING;
+	//	const Vector3i inner = block_size - Vector3i(pad, pad, pad) * 2;
+	//	const int inner_volume = inner.x * inner.y * inner.z;
+	//	output.light_surface.data.resize(inner_volume);
+//
+	//	for (int z = 0; z < inner.z; z++) {
+	//		for (int x = 0; x < inner.x; x++) {
+	//			for (int y = 0; y < inner.y; y++) {
+	//				const int pi = (y + pad) + (x + pad) * block_size.y + (z + pad) * block_size.x * block_size.y;
+	//				const int ii = y + x * inner.y + z * inner.x * inner.y;
+	//				output.light_surface.data[ii] = cache.light_buffer[pi];
+	//			}
+	//		}
+	//	}
+		//output.light_surface.was_computed = true;
+	//} else {
+		//output.light_surface.was_computed = false;
+	// }
 
 	if (navmesh_surface != nullptr && !navmesh_surface_.positions.empty()) {
 		const auto &positions = navmesh_surface_.positions;

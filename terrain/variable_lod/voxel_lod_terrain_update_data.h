@@ -127,6 +127,7 @@ struct VoxelLodTerrainUpdateData {
 		uint8_t transition_mask;
 		bool visual_active;
 		bool collision_active;
+		bool light_dirty = true; //false to tests
 
 		// Tells whether the first meshing was done since this block was added.
 		// Written by the main thread only, when it receives mesh updates or when it unloads resources.

@@ -32,6 +32,8 @@ class MeshBlockTask
 #endif
 {
 public:
+	bool light_dirty = false;
+	static const int LIGHT_PADDING = 15;
 	MeshBlockTask();
 	~MeshBlockTask();
 
@@ -90,10 +92,12 @@ private:
 	bool _has_run = false;
 	bool _too_far = false;
 	bool _has_mesh_resource = false;
+	bool _needs_light_recompute = false;
 #ifdef VOXEL_ENABLE_GPU
 	uint8_t _stage = 0;
 #endif
-	VoxelBuffer _voxels;
+	VoxelBuffer _voxels; // existing: 18^3 for mesher (padding=1)
+	VoxelBuffer _light_voxels; // new: 46^3 for flood (padding=15)
 	VoxelMesher::Output _surfaces_output;
 	Ref<Mesh> _mesh;
 	Ref<Mesh> _shadow_occluder_mesh;

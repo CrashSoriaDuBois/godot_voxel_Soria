@@ -331,6 +331,28 @@ void send_mesh_requests(
 
 			// We'll allocate this quite often. If it becomes a problem, it should be easy to pool.
 			MeshBlockTask *task = ZN_NEW(MeshBlockTask);
+			task->light_dirty = true; // default for safety
+			
+			{
+				RWLockWrite rlock(lod.mesh_map_state.map_lock); // wlock or rlock i dont know
+				auto state_it = lod.mesh_map_state.map.find(mesh_to_update.position);
+				if (state_it != lod.mesh_map_state.map.end()) {
+					task->light_dirty = state_it->second.light_dirty;
+					state_it->second.light_dirty = false;
+
+					print_line(
+							String("TASK_CREATED pos=") + String(mesh_to_update.position) + String(" light_dirty=") +
+							(task->light_dirty ? "true" : "false")
+					);
+				} else {
+					// ADD THIS:
+					print_line(
+							String("TASK_CREATED pos=") + String(mesh_to_update.position) +
+							String(" state_not_found, using default light_dirty=true")
+					);
+				}
+			}
+			
 			task->volume_id = volume_id;
 			task->mesh_block_position = mesh_to_update.position;
 			task->lod_index = lod_index;
@@ -670,6 +692,7 @@ void VoxelLodTerrainUpdateTask::flush_pending_lod_edits(
 				if (mesh_block_it != lod.mesh_map_state.map.end()) {
 					// If a mesh block state exists here, it will need an update.
 					// If there is none, it will probably get created later when we come closer to it
+					mesh_block_it->second.light_dirty = true; // ADD THIS
 					schedule_mesh_update( //
 							mesh_block_it->second, //
 							mesh_block_pos, //

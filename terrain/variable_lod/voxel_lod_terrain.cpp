@@ -2170,6 +2170,52 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 				}
 			}
 
+			if (ob.lod == 0 && ob.surfaces.light_surface.was_computed) {
+				for (int i = 0; i < 26; ++i) {
+					const VoxelMesher::Output::NeighborLightSurface &nl = ob.surfaces.neighbor_light_surfaces[i];
+
+					if (!nl.valid || nl.data.empty()) {
+						continue;
+					}
+
+					const Vector3i neighbor_pos = ob.position + nl.offset;
+
+					// Write light data into neighbor's CHANNEL_DATA5
+					{
+						SpatialLock3D::Write swlock(
+								_data->get_spatial_lock(0), BoxBounds3i(neighbor_pos, neighbor_pos + Vector3i(1, 1, 1))
+						);
+						std::shared_ptr<VoxelBuffer> vb = _data->try_get_block_voxels(neighbor_pos);
+						if (vb != nullptr && nl.data.size() == vb->get_volume()) {
+							vb->decompress_channel(VoxelBuffer::CHANNEL_DATA5);
+							Span<uint8_t> dst;
+							if (vb->get_channel_as_bytes(VoxelBuffer::CHANNEL_DATA5, dst)) {
+								memcpy(dst.data(), nl.data.data(), nl.data.size());
+							}
+						}
+					}
+
+					// Schedule neighbor re-mesh with light_dirty=false
+					// so it reads CHANNEL_DATA5 instead of re-flooding
+					{
+						VoxelLodTerrainUpdateData::Lod &lod = _update_data->state.lods[ob.lod];
+						RWLockRead rlock(lod.mesh_map_state.map_lock);
+						auto it = lod.mesh_map_state.map.find(neighbor_pos);
+						if (it != lod.mesh_map_state.map.end()) {
+							VoxelLodTerrainUpdateData::MeshBlockState &neighbor_state = it->second;
+							// Mark as needing visual update but NOT light recompute
+							neighbor_state.light_dirty = false;
+							VoxelLodTerrainUpdateTask::schedule_mesh_update(
+									neighbor_state,
+									neighbor_pos,
+									lod.mesh_blocks_pending_update,
+									neighbor_state.mesh_viewers.get() > 0
+							);
+						}
+					}
+				}
+			}
+
 		} else {
 			if (block->deferred_collider_data == nullptr) {
 				_deferred_collision_updates_per_lod[ob.lod].push_back(ob.position);
