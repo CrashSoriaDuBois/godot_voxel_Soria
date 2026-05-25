@@ -1,0 +1,520 @@
+#include "voxel_sub_grid.h"
+#include "terrain/variable_lod/voxel_lod_terrain.h"
+#include "core/math/math_defs.h"
+#include "edition/voxel_tool.h"
+namespace zylann::voxel {
+
+const float VoxelSubGrid::LOD_DISTANCES[4] = { 32.f, 64.f, 128.f, 256.f };
+static constexpr double ZN_TAU = 6.28318530717958647692;
+
+//___________________________________________________________________________
+// Godot hooks
+
+void VoxelSubGrid::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_viewer", "viewer"), &VoxelSubGrid::set_viewer);
+	ClassDB::bind_method(D_METHOD("destroy"), &VoxelSubGrid::destroy);
+	ClassDB::bind_method(D_METHOD("disassemble_to_terrain", "terrain"), &VoxelSubGrid::disassemble_to_terrain);
+	ClassDB::bind_method(D_METHOD("flush_dirty_chunks"), &VoxelSubGrid::flush_dirty_chunks);
+	ClassDB::bind_method(D_METHOD("set_angular_speed_rpm", "rpm"), &VoxelSubGrid::set_angular_speed_rpm);
+	ClassDB::bind_method(D_METHOD("is_root"), &VoxelSubGrid::is_root);
+	ClassDB::bind_method(D_METHOD("is_tree_grid_aligned", "tolerance_degrees"), &VoxelSubGrid::is_tree_grid_aligned);
+}
+
+void VoxelSubGrid::_notification(int p_what) {
+	switch (p_what) {
+		case NOTIFICATION_ENTER_TREE:
+			set_process(true);
+			set_physics_process(true);
+			break;
+
+		case NOTIFICATION_PROCESS:
+			_process_lod();
+			break;
+
+		case NOTIFICATION_PHYSICS_PROCESS:
+			_process_rotation();
+			break;
+
+		case NOTIFICATION_EXIT_TREE:
+			flush_dirty_chunks();
+			SubGridStreamHelper::close(_stream);
+			break;
+	}
+}
+
+//___________________________________________________________________________
+// Lifecycle
+
+void VoxelSubGrid::initialize_root(
+		const SubGridMetadata &meta,
+		SubGridChunkMap &&chunks,
+		const String &saves_dir,
+		Ref<VoxelMesherBlocky> mesher,
+		Ref<VoxelBlockyLibrary> library
+) {
+	_meta = meta;
+	_chunks = std::move(chunks);
+	_saves_dir = saves_dir;
+	_mesher = mesher;
+	_library = library;
+
+	_stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
+	flush_dirty_chunks();
+	rebuild_all_meshes();
+
+	set_global_position(_meta.world_position);
+	set_global_basis(Basis(_meta.world_rotation));
+}
+
+void VoxelSubGrid::initialize_root_from_disk(
+        const SubGridMetadata &meta,
+        const String &saves_dir,
+        Ref<VoxelMesherBlocky> mesher,
+        Ref<VoxelBlockyLibrary> library) {
+    _meta = meta;
+    _saves_dir = saves_dir;
+    _mesher = mesher;
+    _library = library;
+
+    _stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
+	load_chunks_from_stream(); // correct location
+	rebuild_all_meshes();
+
+    set_global_position(_meta.world_position);
+    set_global_basis(Basis(_meta.world_rotation));
+}
+
+void VoxelSubGrid::initialize_child(const SubGridMetadata &meta, SubGridChunkMap &&chunks, const String &saves_dir) {
+	_meta = meta;
+	_chunks = std::move(chunks);
+	_saves_dir = saves_dir;
+
+	// Ensure parent_uuid is set from actual parent node
+	VoxelSubGrid *parent_sg = Object::cast_to<VoxelSubGrid>(get_parent());
+	if (parent_sg != nullptr) {
+		memcpy(_meta.parent_uuid, parent_sg->get_metadata().uuid, 16);
+		parent_sg->_children.push_back(this);
+	}
+
+	VoxelSubGrid *root = get_root();
+	_mesher = root->_mesher;
+	_library = root->_library;
+
+	_stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
+	flush_dirty_chunks();
+	rebuild_all_meshes();
+	_apply_transform_from_angle(_meta.target_angle_rad);
+}
+
+VoxelSubGrid *VoxelSubGrid::get_root() {
+	Node *p = get_parent();
+	while (p != nullptr) {
+		VoxelSubGrid *vsg = Object::cast_to<VoxelSubGrid>(p);
+		if (vsg != nullptr) {
+			if (vsg->is_root()) {
+				return vsg;
+			}
+			p = vsg->get_parent();
+		} else {
+			break;
+		}
+	}
+	return this;
+}
+
+//___________________________________________________________________________
+// Editing
+
+uint32_t VoxelSubGrid::get_voxel(Vector3i local_pos, int channel) const {
+	return _chunks.get_voxel(local_pos, channel);
+}
+
+void VoxelSubGrid::set_voxel(uint32_t value, Vector3i local_pos, int channel) {
+	_chunks.set_voxel(value, local_pos, channel);
+}
+
+void VoxelSubGrid::set_redstone_signal(bool powered) {
+	_redstone_signal = powered;
+}
+
+//___________________________________________________________________________
+// Persistence
+
+void VoxelSubGrid::flush_dirty_chunks() {
+	Vector<Vector3i> dirty = _chunks.get_dirty_chunks();
+	for (Vector3i chunk_pos : dirty) {
+		_save_chunk(chunk_pos);
+		_chunks.mark_chunk_clean(chunk_pos);
+
+		// Keep chunk list in metadata up to date
+		if (!_meta.chunk_positions.has(chunk_pos)) {
+			_meta.chunk_positions.push_back(chunk_pos);
+		}
+	}
+}
+
+void VoxelSubGrid::load_chunks_from_stream() {
+	for (Vector3i chunk_pos : _meta.chunk_positions) {
+		// Allocate a buffer for this chunk
+		std::shared_ptr<VoxelBuffer> buf = std::make_shared<VoxelBuffer>(VoxelBuffer::ALLOCATOR_POOL);
+		int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+		buf->create(cs, cs, cs);
+
+		VoxelStream::VoxelQueryData q{ *buf, chunk_pos, 0, VoxelStream::RESULT_BLOCK_NOT_FOUND };
+		_stream->load_voxel_block(q);
+
+		if (q.result == VoxelStream::RESULT_BLOCK_FOUND) {
+			_chunks.set_block_buffer(chunk_pos, buf);
+		} else {
+			print_line(String("Warning: chunk not found in stream at ") + String(chunk_pos));
+		}
+	}
+}
+
+void VoxelSubGrid::save_and_close() {
+	flush_dirty_chunks();
+	SubGridStreamHelper::close(_stream);
+}
+
+void VoxelSubGrid::destroy() {
+	flush_dirty_chunks();
+	SubGridStreamHelper::close_and_delete(_stream, _saves_dir, _meta.uuid);
+	queue_free();
+}
+
+void VoxelSubGrid::_save_chunk(Vector3i chunk_pos) {
+	std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
+	if (!buf) {
+		return;
+	}
+	// Dereference shared_ptr to get VoxelBuffer &
+	VoxelStream::VoxelQueryData q{ *buf, chunk_pos, 0, VoxelStream::RESULT_BLOCK_NOT_FOUND };
+	_stream->save_voxel_block(q);
+}
+
+
+//___________________________________________________________________________
+// Rendering
+
+void VoxelSubGrid::rebuild_all_meshes() {
+	_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) { _build_chunk_mesh_at_lod(chunk_pos, 0); });
+}
+
+void VoxelSubGrid::_build_chunk_mesh_at_lod(Vector3i chunk_pos, int lod) {
+	std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
+	if (!buf) {
+		return;
+	}
+
+	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+	const int pad = 1;
+	const int ps = cs + pad * 2;
+
+	VoxelBuffer padded(VoxelBuffer::ALLOCATOR_DEFAULT);
+	padded.create(ps, ps, ps);
+	padded.fill(0, VoxelBuffer::CHANNEL_TYPE); // explicitly zero - fixes phantom faces
+
+	// Copy center chunk into padded buffer
+	for (int z = 0; z < cs; z++) {
+		for (int y = 0; y < cs; y++) {
+			for (int x = 0; x < cs; x++) {
+				uint32_t v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
+				padded.set_voxel(v, x + pad, y + pad, z + pad, VoxelBuffer::CHANNEL_TYPE);
+			}
+		}
+	}
+
+	VoxelMesher::Output output;
+	VoxelMesher::Input input{
+		padded,		  nullptr, (chunk_pos << SubGridChunkMap::CHUNK_SIZE_PO2) - Vector3i(pad, pad, pad),
+		(uint8_t)lod, false,   false,
+		false,		  false
+	};
+	_mesher->build(output, input);
+
+	if (output.surfaces.empty()) {
+		uint64_t key = _chunk_mesh_key(chunk_pos, lod);
+		MeshInstance3D **existing = _mesh_nodes.getptr(key);
+		if (existing != nullptr) {
+			(*existing)->queue_free();
+			_mesh_nodes.erase(key);
+		}
+		return;
+	}
+
+	Ref<ArrayMesh> mesh;
+	mesh.instantiate();
+	for (size_t i = 0; i < output.surfaces.size(); i++) {
+		if (output.surfaces[i].arrays.size() == 0) {
+			continue;
+		}
+		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, output.surfaces[i].arrays);
+		uint16_t mat_idx = output.surfaces[i].material_index;
+		Ref<Material> mat = _mesher->get_material_by_index(mat_idx);
+		if (mat.is_valid()) {
+			mesh->surface_set_material(i, mat);
+		}
+	}
+
+	uint64_t key = _chunk_mesh_key(chunk_pos, lod);
+	MeshInstance3D *mi = nullptr;
+	MeshInstance3D **existing = _mesh_nodes.getptr(key);
+	if (existing != nullptr) {
+		mi = *existing;
+	} else {
+		mi = memnew(MeshInstance3D);
+		add_child(mi);
+		_mesh_nodes[key] = mi;
+	}
+	mi->set_mesh(mesh);
+	int cs_world = (1 << SubGridChunkMap::CHUNK_SIZE_PO2) << lod;
+	mi->set_position(Vector3(chunk_pos * cs_world));
+}
+
+//___________________________________________________________________________
+// LOD
+
+void VoxelSubGrid::_process_lod() {
+	if (_viewer == nullptr) {
+		return;
+	}
+
+	Vector3 viewer_local = get_global_transform().affine_inverse().xform(_viewer->get_global_position());
+
+	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+
+	_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) {
+		Vector3 chunk_center = Vector3(chunk_pos * cs) + Vector3(cs * 0.5f, cs * 0.5f, cs * 0.5f);
+		float dist = viewer_local.distance_to(chunk_center);
+
+		int desired_lod = 3;
+		for (int i = 0; i < 4; i++) {
+			if (dist < LOD_DISTANCES[i]) {
+				desired_lod = i;
+				break;
+			}
+		}
+
+		int *current = _chunk_current_lod.getptr(chunk_pos);
+		if (current == nullptr || *current != desired_lod) {
+			int prev = (current != nullptr) ? *current : -1;
+			print_line(
+					String("Chunk ") + String(chunk_pos) + String(" LOD: ") + itos(prev) + String(" -> ") +
+					itos(desired_lod) + String(" dist=") + String::num(dist, 1)
+			);
+			// Remove ALL other LOD meshes for this chunk before building new one
+			for (int old_lod = 0; old_lod < 4; old_lod++) {
+				if (old_lod == desired_lod) {
+					continue;
+				}
+				uint64_t old_key = _chunk_mesh_key(chunk_pos, old_lod);
+				MeshInstance3D **old_mi = _mesh_nodes.getptr(old_key);
+				if (old_mi != nullptr) {
+					(*old_mi)->queue_free();
+					_mesh_nodes.erase(old_key);
+				}
+			}
+
+		    _chunk_current_lod[chunk_pos] = desired_lod;
+			_build_chunk_mesh_at_lod(chunk_pos, desired_lod);
+		}
+	});
+}
+
+int VoxelSubGrid::_lod_for_chunk(Vector3i chunk_pos) const {
+	if (_viewer == nullptr) {
+		return 0;
+	}
+	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+	Vector3 viewer_local = get_global_transform().affine_inverse().xform(_viewer->get_global_position());
+	Vector3 chunk_center = Vector3(chunk_pos * cs) + Vector3(cs * 0.5f, cs * 0.5f, cs * 0.5f);
+	float dist = viewer_local.distance_to(chunk_center);
+	for (int i = 0; i < 4; i++) {
+		if (dist < LOD_DISTANCES[i]) {
+			return i;
+		}
+	}
+	return 3;
+}
+
+//___________________________________________________________________________
+// Sub-contraption rotation
+
+void VoxelSubGrid::_process_rotation() {
+	if (is_root()) {
+		return;
+	}
+	_update_rotation(get_physics_process_delta_time());
+}
+
+void VoxelSubGrid::_update_rotation(double delta) {
+	_last_target_angle_rad = _target_angle_rad;
+
+	if (_should_lock()) {
+		float rad_per_sec = _angular_speed_rpm * (float)ZN_TAU / 60.0f;
+		if (_meta.rotation_axis.x < 0 || _meta.rotation_axis.y < 0 || _meta.rotation_axis.z < 0) {
+			rad_per_sec *= -1.0f;
+		}
+		_target_angle_rad += rad_per_sec * delta;
+		_target_angle_rad = Math::fmod(_target_angle_rad, ZN_TAU);
+	}
+
+	// Keep metadata in sync so save_all gets the current angle
+	_meta.target_angle_rad = _target_angle_rad;
+
+	_apply_transform_from_angle(_target_angle_rad);
+}
+
+void VoxelSubGrid::_apply_transform_from_angle(double angle_rad) {
+	// Facing direction as float
+	Vector3 facing = Vector3(_meta.rotation_axis).normalized();
+
+	// Pivot point in child's local space
+	// = center of the face where child attaches to bearing
+	// = (0.5, 0.5, 0.5) - facing * 0.5
+	Vector3 pivot_in_child_local = Vector3(0.5f, 0.5f, 0.5f) - facing * 0.5f;
+
+	// Where the child's origin sits in parent local space
+	// = bearing block position + facing (one block in front)
+	Vector3 child_origin_in_parent = Vector3(_meta.pivot_in_parent_local) + facing;
+
+	// Rotation basis
+	Vector3 axis = facing;
+	Basis rotation_basis = Basis(axis, (real_t)angle_rad);
+
+	// The transform places the child so that pivot_in_child_local
+	// stays fixed at child_origin_in_parent + facing*0.5 in parent space
+	// T = translate_to_pivot * rotate * translate_back
+	Transform3D t;
+	t.basis = rotation_basis;
+
+	// After rotation, pivot_in_child_local maps to rotation_basis * pivot_in_child_local
+	// We want it to land at child_origin_in_parent in parent space
+	// So: origin = child_origin_in_parent - rotation_basis * pivot_in_child_local
+	// But since pivot is on the bearing face which doesn't move:
+	Vector3 bearing_face_center = Vector3(_meta.pivot_in_parent_local) + Vector3(0.5f, 0.5f, 0.5f) + facing * 0.5f;
+	t.origin = bearing_face_center - rotation_basis.xform(pivot_in_child_local);
+
+	set_transform(t);
+}
+
+bool VoxelSubGrid::_should_lock() const {
+	if (_lock_mode == LOCKED_ALWAYS)
+		return true;
+	if (_lock_mode == UNLOCKED_ALWAYS)
+		return false;
+	return _redstone_signal != (_lock_mode == LOCKED_DEFAULT);
+}
+
+//___________________________________________________________________________
+// Disassembly
+bool VoxelSubGrid::is_rotation_grid_aligned(float tolerance_degrees) const {
+	if (is_root())
+		return true; // root is always aligned
+
+	// Project current angle onto nearest 90-degree increment
+	double angle_deg = Math::rad_to_deg(_target_angle_rad);
+	double nearest_90 = Math::round(angle_deg / 90.0) * 90.0;
+	double diff = Math::abs(angle_deg - nearest_90);
+	// Wrap diff to [0, 45]
+	diff = Math::fmod(diff, 90.0);
+	if (diff > 45.0)
+		diff = 90.0 - diff;
+	return diff <= tolerance_degrees;
+}
+
+// Recursive check - all children must be aligned
+bool VoxelSubGrid::is_tree_grid_aligned(float tolerance_degrees) const {
+	if (!is_rotation_grid_aligned(tolerance_degrees))
+		return false;
+	for (VoxelSubGrid *child : _children) {
+		if (!child->is_tree_grid_aligned(tolerance_degrees))
+			return false;
+	}
+	return true;
+}
+
+void VoxelSubGrid::disassemble_to_terrain(VoxelLodTerrain *terrain) {
+    // Check all sub-contraptions are grid-aligned before proceeding
+    if (!is_tree_grid_aligned(5.0f)) { // 5 degree tolerance
+        print_line("Cannot disassemble: sub-contraptions are not grid-aligned. "
+                   "Rotate them to 0/90/180/270 degrees first.");
+        return;
+    }
+	ERR_FAIL_COND_MSG(terrain == nullptr, "terrain is null");
+
+	// Disassemble children first - depth first, leaves first
+	for (VoxelSubGrid *child : _children) {
+		child->disassemble_to_terrain(terrain);
+	}
+
+	Ref<VoxelTool> tool = terrain->get_voxel_tool();
+	ERR_FAIL_COND_MSG(!tool.is_valid(), "get_voxel_tool returned null");
+
+	tool->set_channel(VoxelBuffer::CHANNEL_TYPE);
+	tool->set_mode(VoxelTool::MODE_SET);
+
+	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+
+	if (is_root()) {
+		// Root: use integer world origin - no rotation
+		Vector3i world_origin = Vector3i(
+				Math::round(_meta.world_position.x),
+				Math::round(_meta.world_position.y),
+				Math::round(_meta.world_position.z)
+		);
+
+		_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) {
+			std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
+			if (!buf)
+				return;
+			Vector3i block_origin = chunk_pos << SubGridChunkMap::CHUNK_SIZE_PO2;
+			for (int z = 0; z < cs; z++) {
+				for (int x = 0; x < cs; x++) {
+					for (int y = 0; y < cs; y++) {
+						uint32_t v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
+						if (v == 0)
+							continue;
+						Vector3i local = block_origin + Vector3i(x, y, z);
+						tool->set_voxel(local + world_origin, v);
+					}
+				}
+			}
+		});
+	} else {
+		// Child: snap to nearest 90 degree increment before placing blocks
+		// This prevents floating point drift from causing misaligned blocks
+		double snapped_angle = Math::round(_target_angle_rad / (Math::PI * 0.5)) * (Math::PI * 0.5);
+
+		// Temporarily apply the snapped transform so get_global_transform
+		// returns a perfectly grid-aligned matrix
+		_apply_transform_from_angle(snapped_angle);
+		Transform3D world_t = get_global_transform();
+
+		_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) {
+			std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
+			if (!buf)
+				return;
+			Vector3i block_origin = chunk_pos << SubGridChunkMap::CHUNK_SIZE_PO2;
+			for (int z = 0; z < cs; z++) {
+				for (int x = 0; x < cs; x++) {
+					for (int y = 0; y < cs; y++) {
+						uint32_t v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
+						if (v == 0)
+							continue;
+						Vector3i local = block_origin + Vector3i(x, y, z);
+						Vector3 world_f = world_t.xform(Vector3(local) + Vector3(0.5f, 0.5f, 0.5f));
+						Vector3i world_i =
+								Vector3i(Math::round(world_f.x), Math::round(world_f.y), Math::round(world_f.z));
+						tool->set_voxel(world_i, v);
+					}
+				}
+			}
+		});
+	}
+
+	SubGridStreamHelper::close(_stream);
+	queue_free();
+}
+
+} // namespace zylann::voxel

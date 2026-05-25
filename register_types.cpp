@@ -39,6 +39,8 @@
 #include "terrain/fixed_lod/voxel_terrain.h"
 #include "terrain/fixed_lod/voxel_terrain_multiplayer_synchronizer.h"
 #include "terrain/variable_lod/voxel_lod_terrain.h"
+#include "subgrid/voxel_sub_grid.h"
+#include "subgrid/sub_grid_manager.h"
 #include "terrain/voxel_a_star_grid_3d.h"
 #include "terrain/voxel_mesh_block.h"
 #include "terrain/voxel_save_completion_tracker.h"
@@ -64,6 +66,8 @@
 
 #ifdef VOXEL_ENABLE_SQLITE
 #include "streams/sqlite/voxel_stream_sqlite.h"
+#include "subgrid/voxel_sub_grid.h" 
+#include "subgrid/sub_grid_test_spawner.h"
 #endif
 
 #ifdef VOXEL_ENABLE_INSTANCER
@@ -288,6 +292,8 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_class<VoxelTerrain>();
 		ClassDB::register_class<VoxelLodTerrain>();
 		ClassDB::register_class<VoxelViewer>();
+		ClassDB::register_class<VoxelSubGrid>();
+		ClassDB::register_class<SubGridManager>();
 
 		// Streams
 		ClassDB::register_abstract_class<VoxelStream>();
@@ -341,6 +347,8 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 
 #ifdef VOXEL_ENABLE_SQLITE
 		ClassDB::register_class<VoxelStreamSQLite>();
+		ClassDB::register_class<VoxelSubGrid>();
+		ClassDB::register_class<SubGridTestSpawner>();
 #endif
 
 #ifdef VOXEL_ENABLE_INSTANCER

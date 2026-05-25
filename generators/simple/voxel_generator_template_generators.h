@@ -298,7 +298,7 @@ template <typename Noise_F, typename Height_F>
 
 							out_buffer.set_voxel(material, x, y, z, channel);
 						}
-						// else leave it as cleared (air) — carving happens here.
+						// else leave it as cleared (air) - carving happens here.
 					}
 				}
 			}

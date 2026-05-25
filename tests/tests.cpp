@@ -26,6 +26,7 @@
 #include "voxel/test_voxel_graph.h"
 #include "voxel/test_voxel_instancer.h"
 #include "voxel/test_voxel_mesher_cubes.h"
+#include "voxel/test_subgrid.h" 
 
 #ifdef VOXEL_ENABLE_SMOOTH_MESHING
 #include "voxel/test_transvoxel.h"
@@ -62,6 +63,11 @@ void run_voxel_tests(const testing::TestOptions &options) {
 	VOXEL_TEST(test_wrap);
 	VOXEL_TEST(test_int32_to_string_base10);
 	VOXEL_TEST(test_string_base10_to_int32);
+
+	VOXEL_TEST(test_subgrid_chunk_map_set_get);
+	VOXEL_TEST(test_subgrid_sqlite_lifecycle);
+	VOXEL_TEST(test_subgrid_metadata_serialization);
+
 	VOXEL_TEST(test_voxel_buffer_metadata);
 	VOXEL_TEST(test_voxel_buffer_metadata_gd);
 	VOXEL_TEST(test_voxel_buffer_paste_masked);

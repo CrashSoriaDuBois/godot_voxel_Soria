@@ -239,9 +239,17 @@ def get_sources(env, is_editor_build):
             env.Append(CPPDEFINES={"SQLITE_WIN32_GETVERSIONEX": 0})
         
         sources += ["streams/sqlite/*.cpp"]
+
+        sources += [
+        "subgrid/*.cpp",
+        "subgrid/assembly/*.cpp",
+        "subgrid/lod/*.cpp",
+        "subgrid/streaming/*.cpp",
+        "sub_grid_metadata.cpp",
+    ]
         
         if tests_enabled:
-            sources += ["tests/voxel/test_stream_sqlite.cpp"]
+            sources += ["tests/voxel/test_stream_sqlite.cpp", "tests/voxel/test_subgrid.cpp",]
     
     if instancer_enabled:
         env.Append(CPPDEFINES={"VOXEL_ENABLE_INSTANCER": 1})
