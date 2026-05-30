@@ -41,6 +41,7 @@
 #include "terrain/variable_lod/voxel_lod_terrain.h"
 #include "subgrid/voxel_sub_grid.h"
 #include "subgrid/sub_grid_manager.h"
+#include "subgrid/voxel_tool_sub_grid.h"
 #include "terrain/voxel_a_star_grid_3d.h"
 #include "terrain/voxel_mesh_block.h"
 #include "terrain/voxel_save_completion_tracker.h"
@@ -313,6 +314,7 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_abstract_class<VoxelTool>();
 		ClassDB::register_abstract_class<VoxelToolTerrain>();
 		ClassDB::register_abstract_class<VoxelToolLodTerrain>();
+		ClassDB::register_abstract_class<VoxelToolSubGrid>();
 		// I had to bind this one despite it being useless as-is because otherwise Godot lazily initializes its class.
 		// And this can happen in a thread, causing crashes due to the concurrent access
 		ClassDB::register_abstract_class<VoxelToolBuffer>();

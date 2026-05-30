@@ -11,6 +11,9 @@
 
 namespace zylann::voxel {
 
+class VoxelToolSubGrid;
+class SubGridManager;
+
 class VoxelSubGrid : public Node3D {
 	GDCLASS(VoxelSubGrid, Node3D)
 
@@ -43,6 +46,9 @@ public:
 	// --- editing ---
 	uint32_t get_voxel(Vector3i local_pos, int channel) const;
 	void set_voxel(uint32_t value, Vector3i local_pos, int channel);
+
+	Ref<VoxelToolSubGrid> get_voxel_tool();
+	void set_manager(SubGridManager *manager);
 
 	// --- kinetics (children only) ---
 	void set_angular_speed_rpm(float rpm) {
@@ -139,6 +145,8 @@ private:
 	void _update_rotation(double delta);
 	void _apply_transform_from_angle(double angle_rad);
 	bool _should_lock() const;
+
+	SubGridManager *_manager = nullptr;
 
 	//int _lod_for_chunk(Vector3i chunk_pos) const;
 

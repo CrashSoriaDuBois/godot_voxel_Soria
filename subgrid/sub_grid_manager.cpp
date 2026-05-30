@@ -69,6 +69,7 @@ void SubGridManager::_register_single(VoxelSubGrid *sg) {
 	state.in_flight_chunks.clear();
 	state.current_lod.clear();
 	_mark_all_dirty(state);
+	sg->set_manager(this);
 }
 
 void SubGridManager::register_ship_tree(VoxelSubGrid *root) {

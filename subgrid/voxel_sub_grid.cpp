@@ -3,6 +3,7 @@
 #include "core/math/math_defs.h"
 #include "edition/voxel_tool.h"
 #include "sub_grid_manager.h"
+#include "voxel_tool_sub_grid.h"
 
 namespace zylann::voxel {
 
@@ -23,6 +24,8 @@ void VoxelSubGrid::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_target_angle_rad", "angle"), &VoxelSubGrid::set_target_angle_rad);
 	ClassDB::bind_method(D_METHOD("get_target_angle_rad"), &VoxelSubGrid::get_target_angle_rad);
+
+	ClassDB::bind_method(D_METHOD("get_voxel_tool"), &VoxelSubGrid::get_voxel_tool);
 }
 
 void VoxelSubGrid::_notification(int p_what) {
@@ -149,6 +152,19 @@ static String uuid_to_string(const uint8_t *uuid) {
 		s += String::num_int64(uuid[i] & 0xF, 16);
 	}
 	return s;
+}
+//
+
+void VoxelSubGrid::set_manager(SubGridManager *manager) {
+	_manager = manager;
+}
+
+Ref<VoxelToolSubGrid> VoxelSubGrid::get_voxel_tool() {
+	ERR_FAIL_COND_V_MSG(_manager == nullptr, Ref<VoxelToolSubGrid>(), "No manager set on this VoxelSubGrid.");
+	Ref<VoxelToolSubGrid> tool;
+	tool.instantiate();
+	tool->init(this, _manager);
+	return tool;
 }
 
 //___________________________________________________________________________
