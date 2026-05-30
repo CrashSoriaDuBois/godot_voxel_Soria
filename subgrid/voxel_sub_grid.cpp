@@ -2,9 +2,11 @@
 #include "terrain/variable_lod/voxel_lod_terrain.h"
 #include "core/math/math_defs.h"
 #include "edition/voxel_tool.h"
+#include "sub_grid_manager.h"
+
 namespace zylann::voxel {
 
-const float VoxelSubGrid::LOD_DISTANCES[4] = { 32.f, 64.f, 128.f, 256.f };
+//const float VoxelSubGrid::LOD_DISTANCES[4] = { 32.f, 64.f, 128.f, 256.f };
 static constexpr double ZN_TAU = 6.28318530717958647692;
 
 //___________________________________________________________________________
@@ -18,6 +20,9 @@ void VoxelSubGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_angular_speed_rpm", "rpm"), &VoxelSubGrid::set_angular_speed_rpm);
 	ClassDB::bind_method(D_METHOD("is_root"), &VoxelSubGrid::is_root);
 	ClassDB::bind_method(D_METHOD("is_tree_grid_aligned", "tolerance_degrees"), &VoxelSubGrid::is_tree_grid_aligned);
+
+	ClassDB::bind_method(D_METHOD("set_target_angle_rad", "angle"), &VoxelSubGrid::set_target_angle_rad);
+	ClassDB::bind_method(D_METHOD("get_target_angle_rad"), &VoxelSubGrid::get_target_angle_rad);
 }
 
 void VoxelSubGrid::_notification(int p_what) {
@@ -27,9 +32,9 @@ void VoxelSubGrid::_notification(int p_what) {
 			set_physics_process(true);
 			break;
 
-		case NOTIFICATION_PROCESS:
-			_process_lod();
-			break;
+//		case NOTIFICATION_PROCESS:
+//			_process_lod();
+//			break;
 
 		case NOTIFICATION_PHYSICS_PROCESS:
 			_process_rotation();
@@ -60,7 +65,7 @@ void VoxelSubGrid::initialize_root(
 
 	_stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
 	flush_dirty_chunks();
-	rebuild_all_meshes();
+	//rebuild_all_meshes();
 
 	set_global_position(_meta.world_position);
 	set_global_basis(Basis(_meta.world_rotation));
@@ -78,7 +83,7 @@ void VoxelSubGrid::initialize_root_from_disk(
 
     _stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
 	load_chunks_from_stream(); // correct location
-	rebuild_all_meshes();
+	//rebuild_all_meshes();
 
     set_global_position(_meta.world_position);
     set_global_basis(Basis(_meta.world_rotation));
@@ -102,7 +107,7 @@ void VoxelSubGrid::initialize_child(const SubGridMetadata &meta, SubGridChunkMap
 
 	_stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
 	flush_dirty_chunks();
-	rebuild_all_meshes();
+	//rebuild_all_meshes();
 	_apply_transform_from_angle(_meta.target_angle_rad);
 }
 
@@ -135,6 +140,15 @@ void VoxelSubGrid::set_voxel(uint32_t value, Vector3i local_pos, int channel) {
 
 void VoxelSubGrid::set_redstone_signal(bool powered) {
 	_redstone_signal = powered;
+}
+
+static String uuid_to_string(const uint8_t *uuid) {
+	String s;
+	for (int i = 0; i < 16; i++) {
+		s += String::num_int64(uuid[i] >> 4, 16);
+		s += String::num_int64(uuid[i] & 0xF, 16);
+	}
+	return s;
 }
 
 //___________________________________________________________________________
@@ -196,146 +210,10 @@ void VoxelSubGrid::_save_chunk(Vector3i chunk_pos) {
 //___________________________________________________________________________
 // Rendering
 
-void VoxelSubGrid::rebuild_all_meshes() {
-	_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) { _build_chunk_mesh_at_lod(chunk_pos, 0); });
-}
-
-void VoxelSubGrid::_build_chunk_mesh_at_lod(Vector3i chunk_pos, int lod) {
-	std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
-	if (!buf) {
-		return;
-	}
-
-	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
-	const int pad = 1;
-	const int ps = cs + pad * 2;
-
-	VoxelBuffer padded(VoxelBuffer::ALLOCATOR_DEFAULT);
-	padded.create(ps, ps, ps);
-	padded.fill(0, VoxelBuffer::CHANNEL_TYPE); // explicitly zero - fixes phantom faces
-
-	// Copy center chunk into padded buffer
-	for (int z = 0; z < cs; z++) {
-		for (int y = 0; y < cs; y++) {
-			for (int x = 0; x < cs; x++) {
-				uint32_t v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
-				padded.set_voxel(v, x + pad, y + pad, z + pad, VoxelBuffer::CHANNEL_TYPE);
-			}
-		}
-	}
-
-	VoxelMesher::Output output;
-	VoxelMesher::Input input{
-		padded,		  nullptr, (chunk_pos << SubGridChunkMap::CHUNK_SIZE_PO2) - Vector3i(pad, pad, pad),
-		(uint8_t)lod, false,   false,
-		false,		  false
-	};
-	_mesher->build(output, input);
-
-	if (output.surfaces.empty()) {
-		uint64_t key = _chunk_mesh_key(chunk_pos, lod);
-		MeshInstance3D **existing = _mesh_nodes.getptr(key);
-		if (existing != nullptr) {
-			(*existing)->queue_free();
-			_mesh_nodes.erase(key);
-		}
-		return;
-	}
-
-	Ref<ArrayMesh> mesh;
-	mesh.instantiate();
-	for (size_t i = 0; i < output.surfaces.size(); i++) {
-		if (output.surfaces[i].arrays.size() == 0) {
-			continue;
-		}
-		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, output.surfaces[i].arrays);
-		uint16_t mat_idx = output.surfaces[i].material_index;
-		Ref<Material> mat = _mesher->get_material_by_index(mat_idx);
-		if (mat.is_valid()) {
-			mesh->surface_set_material(i, mat);
-		}
-	}
-
-	uint64_t key = _chunk_mesh_key(chunk_pos, lod);
-	MeshInstance3D *mi = nullptr;
-	MeshInstance3D **existing = _mesh_nodes.getptr(key);
-	if (existing != nullptr) {
-		mi = *existing;
-	} else {
-		mi = memnew(MeshInstance3D);
-		add_child(mi);
-		_mesh_nodes[key] = mi;
-	}
-	mi->set_mesh(mesh);
-	int cs_world = (1 << SubGridChunkMap::CHUNK_SIZE_PO2) << lod;
-	mi->set_position(Vector3(chunk_pos * cs_world));
-}
 
 //___________________________________________________________________________
 // LOD
 
-void VoxelSubGrid::_process_lod() {
-	if (_viewer == nullptr) {
-		return;
-	}
-
-	Vector3 viewer_local = get_global_transform().affine_inverse().xform(_viewer->get_global_position());
-
-	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
-
-	_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) {
-		Vector3 chunk_center = Vector3(chunk_pos * cs) + Vector3(cs * 0.5f, cs * 0.5f, cs * 0.5f);
-		float dist = viewer_local.distance_to(chunk_center);
-
-		int desired_lod = 3;
-		for (int i = 0; i < 4; i++) {
-			if (dist < LOD_DISTANCES[i]) {
-				desired_lod = i;
-				break;
-			}
-		}
-
-		int *current = _chunk_current_lod.getptr(chunk_pos);
-		if (current == nullptr || *current != desired_lod) {
-			int prev = (current != nullptr) ? *current : -1;
-			print_line(
-					String("Chunk ") + String(chunk_pos) + String(" LOD: ") + itos(prev) + String(" -> ") +
-					itos(desired_lod) + String(" dist=") + String::num(dist, 1)
-			);
-			// Remove ALL other LOD meshes for this chunk before building new one
-			for (int old_lod = 0; old_lod < 4; old_lod++) {
-				if (old_lod == desired_lod) {
-					continue;
-				}
-				uint64_t old_key = _chunk_mesh_key(chunk_pos, old_lod);
-				MeshInstance3D **old_mi = _mesh_nodes.getptr(old_key);
-				if (old_mi != nullptr) {
-					(*old_mi)->queue_free();
-					_mesh_nodes.erase(old_key);
-				}
-			}
-
-		    _chunk_current_lod[chunk_pos] = desired_lod;
-			_build_chunk_mesh_at_lod(chunk_pos, desired_lod);
-		}
-	});
-}
-
-int VoxelSubGrid::_lod_for_chunk(Vector3i chunk_pos) const {
-	if (_viewer == nullptr) {
-		return 0;
-	}
-	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
-	Vector3 viewer_local = get_global_transform().affine_inverse().xform(_viewer->get_global_position());
-	Vector3 chunk_center = Vector3(chunk_pos * cs) + Vector3(cs * 0.5f, cs * 0.5f, cs * 0.5f);
-	float dist = viewer_local.distance_to(chunk_center);
-	for (int i = 0; i < 4; i++) {
-		if (dist < LOD_DISTANCES[i]) {
-			return i;
-		}
-	}
-	return 3;
-}
 
 //___________________________________________________________________________
 // Sub-contraption rotation
@@ -514,7 +392,54 @@ void VoxelSubGrid::disassemble_to_terrain(VoxelLodTerrain *terrain) {
 	}
 
 	SubGridStreamHelper::close(_stream);
+
+
+	SubGridManager *mgr =
+			Object::cast_to<SubGridManager>(get_parent() ? get_parent()->get_node_or_null(String("SubGridManager")) : nullptr);
+	if (mgr != nullptr) {
+		mgr->unregister_ship(uuid_to_string(_meta.uuid));
+	}
 	queue_free();
+}
+
+void VoxelSubGrid::apply_chunk_mesh(Vector3i chunk_pos, int lod, Ref<ArrayMesh> mesh) {
+	uint64_t key = _chunk_mesh_key(chunk_pos, lod);
+
+	if (mesh.is_null() || mesh->get_surface_count() == 0) {
+		MeshInstance3D **mi = _mesh_nodes.getptr(key);
+		if (mi != nullptr) {
+			(*mi)->queue_free();
+			_mesh_nodes.erase(key);
+		}
+		return;
+	}
+
+	MeshInstance3D *mi = nullptr;
+	MeshInstance3D **existing = _mesh_nodes.getptr(key);
+	if (existing != nullptr) {
+		mi = *existing;
+	} else {
+		mi = memnew(MeshInstance3D);
+		add_child(mi);
+		_mesh_nodes[key] = mi;
+	}
+	mi->set_mesh(mesh);
+	int cs_world = (1 << SubGridChunkMap::CHUNK_SIZE_PO2) << lod;
+	mi->set_position(Vector3(chunk_pos * cs_world));
+}
+
+void VoxelSubGrid::remove_chunk_meshes_except(Vector3i chunk_pos, int keep_lod) {
+	for (int old_lod = 0; old_lod < 4; old_lod++) {
+		if (old_lod == keep_lod) {
+			continue;
+		}
+		uint64_t old_key = _chunk_mesh_key(chunk_pos, old_lod);
+		MeshInstance3D **mi = _mesh_nodes.getptr(old_key);
+		if (mi != nullptr) {
+			(*mi)->queue_free();
+			_mesh_nodes.erase(old_key);
+		}
+	}
 }
 
 } // namespace zylann::voxel

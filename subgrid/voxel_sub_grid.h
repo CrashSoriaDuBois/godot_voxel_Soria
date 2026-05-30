@@ -73,8 +73,24 @@ public:
 	bool is_rotation_grid_aligned(float tolerance_degrees) const;
 	bool is_tree_grid_aligned(float tolerance_degrees) const;
 
-	void rebuild_all_meshes();
+	//void rebuild_all_meshes();
 	void load_chunks_from_stream();
+
+	// Called by SubGridManager on the main thread after a mesh task completes.
+	void apply_chunk_mesh(Vector3i chunk_pos, int lod, Ref<ArrayMesh> mesh);
+
+	// Removes all LOD variants of a chunk's mesh EXCEPT the given lod.
+	// Called by SubGridManager when a LOD transition is detected.
+	void remove_chunk_meshes_except(Vector3i chunk_pos, int keep_lod);
+	
+	// Read-only access to chunk data for SubGridManager (padding, LOD queries).
+	const SubGridChunkMap &get_chunk_map() const { return _chunks; }
+	
+	// Read-only access to the viewer so SubGridManager can compute LOD.
+	Node3D *get_viewer() const { return _viewer; }
+
+	void set_target_angle_rad(double a) {_target_angle_rad = a;_meta.target_angle_rad = a;_apply_transform_from_angle(a);}
+	double get_target_angle_rad() const {return _target_angle_rad;}
 
 protected:
 	// Godot virtuals - must be inside the class body
@@ -83,7 +99,7 @@ protected:
 	static void _bind_methods();
 
 private:
-	void _process_lod();
+	//void _process_lod();
 	void _process_rotation(); 
 
 	// --- data ---
@@ -101,7 +117,7 @@ private:
 
 	// --- LOD ---
 	Node3D *_viewer = nullptr;
-	HashMap<Vector3i, int> _chunk_current_lod;
+	//HashMap<Vector3i, int> _chunk_current_lod;
 
 	static const float LOD_DISTANCES[4]; // {32, 64, 128, 256}
 
@@ -117,14 +133,14 @@ private:
 	Vector<VoxelSubGrid *> _children;
 
 	// --- internal methods ---
-	void _build_chunk_mesh_at_lod(Vector3i chunk_pos, int lod);
+	//void _build_chunk_mesh_at_lod(Vector3i chunk_pos, int lod);
 	void _save_chunk(Vector3i chunk_pos);
 
 	void _update_rotation(double delta);
 	void _apply_transform_from_angle(double angle_rad);
 	bool _should_lock() const;
 
-	int _lod_for_chunk(Vector3i chunk_pos) const;
+	//int _lod_for_chunk(Vector3i chunk_pos) const;
 
 	static uint64_t _chunk_mesh_key(Vector3i p, int lod) {
 		return ((uint64_t)(uint16_t)p.x) | ((uint64_t)(uint16_t)p.y << 16) | ((uint64_t)(uint16_t)p.z << 32) |

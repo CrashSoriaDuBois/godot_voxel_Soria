@@ -4,6 +4,7 @@
 #include "voxel_sub_grid.h"
 #include "scene/main/viewport.h"
 #include "scene/3d/camera_3d.h"
+#include "sub_grid_manager.h"
 
 namespace zylann::voxel {
 
@@ -61,6 +62,15 @@ void SubGridTestSpawner::assemble_at(Node *terrain_node, Vector3i world_pos) {
 	Node3D *cam = Object::cast_to<Node3D>(get_viewport()->get_camera_3d());
 	if (cam != nullptr) {
 		root_sg->set_viewer(cam);
+	}
+
+	// Register full tree with SubGridManager now that all children exist.
+	SubGridManager *mgr = Object::cast_to<SubGridManager>(get_parent()->get_node_or_null(String("SubGridManager")));
+	if (mgr != nullptr) {
+		mgr->register_ship_tree(root_sg);
+		print_line("Registered ship tree with SubGridManager");
+	} else {
+		print_line("WARNING: SubGridManager not found - mesh will not generate");
 	}
 
 	SubGridAssembler::_free_tree(body);

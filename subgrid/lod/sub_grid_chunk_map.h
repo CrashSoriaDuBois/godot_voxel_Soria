@@ -30,9 +30,15 @@ public:
 		return _map.get_block_count();
 	}
 
+	const HashSet<Vector3i> &get_all_chunk_positions() const {
+		return _all_chunk_positions;
+	}
+
 private:
 	VoxelDataMap _map;
 	HashSet<Vector3i> _dirty_chunks;
+
+	HashSet<Vector3i> _all_chunk_positions;
 
 	static Vector3i voxel_to_chunk(Vector3i voxel_pos) {
 		return voxel_pos >> CHUNK_SIZE_PO2;

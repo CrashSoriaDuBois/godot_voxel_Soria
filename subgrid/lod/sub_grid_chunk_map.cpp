@@ -5,6 +5,7 @@ namespace zylann::voxel {
 void SubGridChunkMap::set_block_buffer(Vector3i chunk_pos, std::shared_ptr<VoxelBuffer> buf) {
 	_map.set_block_buffer(chunk_pos, buf, false);
 	// Not marked dirty - it was just loaded from disk
+	_all_chunk_positions.insert(chunk_pos);
 }
 
 void SubGridChunkMap::set_voxel(uint32_t value, Vector3i local_pos, int channel) {
@@ -22,6 +23,7 @@ void SubGridChunkMap::set_voxel(uint32_t value, Vector3i local_pos, int channel)
 
 	block->get_voxels().set_voxel(value, voxel_in_chunk.x, voxel_in_chunk.y, voxel_in_chunk.z, channel);
 	_dirty_chunks.insert(chunk_pos);
+	_all_chunk_positions.insert(chunk_pos);
 }
 
 uint32_t SubGridChunkMap::get_voxel(Vector3i local_pos, int channel) const {
