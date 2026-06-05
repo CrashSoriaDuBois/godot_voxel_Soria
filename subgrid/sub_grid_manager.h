@@ -5,14 +5,18 @@
 #include "meshers/blocky/voxel_blocky_library.h"
 #include "meshers/blocky/voxel_mesher_blocky.h"
 #include "scene/main/node.h"
+#include "sub_grid_collision_builder.h"
 #include "sub_grid_mesh_task.h"
 #include "sub_grid_metadata.h"
-#include "voxel_sub_grid.h"
 #include <future>
 #include <vector>
 
+// Forward declare Godot types to avoid heavy includes in header
+class AnimatableBody3D;
+
 namespace zylann::voxel {
 
+class VoxelSubGrid;
 class VoxelLodTerrain;
 
 class SubGridManager : public Node {
@@ -29,20 +33,20 @@ public:
 			Ref<VoxelBlockyLibrary> library
 	);
 
+	// Block mass table. call before ships are assembled or loaded.
+	// Any voxel ID not listed uses default_mass.
+	void set_block_mass(int voxel_id, float mass);
+	void set_default_block_mass(float mass);
+
 	// -----------------------------------------------------------------------
 	// Ship lifecycle
-	//
-	// Call register_ship_tree() after assembly or load to enqueue initial meshes.
-	// Call unregister_ship() before destroying the root node.
 
 	void register_ship_tree(VoxelSubGrid *root);
 	void unregister_ship(const String &uuid_str);
-
-	// Mark a specific chunk dirty for a ship (call after editing voxels).
 	void mark_chunk_dirty(const String &uuid_str, Vector3i chunk_pos);
 
 	// -----------------------------------------------------------------------
-	// Persistence (unchanged API)
+	// Persistence
 
 	void save_all();
 	void load_all();
@@ -53,40 +57,75 @@ protected:
 
 private:
 	// -----------------------------------------------------------------------
-	// Per-ship state, tracked for every VoxelSubGrid node (root and children).
+	// Rendering data per chunk
 
-	struct ShipState {
-		VoxelSubGrid *node = nullptr;
-		HashSet<Vector3i> dirty_chunks; // need mesh rebuild
-		HashSet<Vector3i> in_flight_chunks; // task submitted, not yet applied
-		HashMap<Vector3i, int> current_lod; // last built lod per chunk
+	struct ChunkRenderData {
+		RID instance_rid;
+		Ref<ArrayMesh> mesh;
 	};
 
 	// -----------------------------------------------------------------------
-	// Main-thread data (never touched from worker threads)
+	// Collision data per chunk. updated when collision results arrive.
+	// Stored so we can recalculate ship-wide CoM incrementally.
+
+	struct ChunkCollisionData {
+		Vector<RID> shape_rids;
+		Vector3 weighted_pos; // center_of_mass * mass for this chunk
+		float mass = 0.f;
+	};
+
+	// -----------------------------------------------------------------------
+	// Per-ship state
+
+	enum LoadState { SLEEPING, LOADED };
+
+	struct ShipState {
+		VoxelSubGrid *node = nullptr;
+		LoadState load_state = SLEEPING;
+		String parent_uuid; // empty for root ships
+
+		// Rendering
+		HashSet<Vector3i> dirty_chunks;
+		HashSet<Vector3i> in_flight_chunks;
+		HashMap<Vector3i, int> current_lod;
+		HashMap<uint64_t, ChunkRenderData> chunk_renders;
+
+		// Physics. root ships own a RigidBody via server RID.
+		// Child sub-contraptions own an AnimatableBody3D node (driven manually,
+		// avoids joint constraint overhead).
+		RID body_rid; // rigid body (roots only)
+		AnimatableBody3D *animatable_body = nullptr; // kinematic body (children only)
+
+		// Per-chunk collision shapes and mass data.
+		// Keyed by chunk_pos (un-padded chunk grid coordinates).
+		HashMap<Vector3i, ChunkCollisionData> chunk_collision;
+	};
+
+	// -----------------------------------------------------------------------
+	// Main-thread data
 
 	VoxelLodTerrain *_terrain = nullptr;
 	String _saves_dir;
 	Ref<VoxelMesherBlocky> _mesher;
 	Ref<VoxelBlockyLibrary> _library;
+	BlockWeightTable _weight_table;
 
-	// uuid string -> per-ship state
 	HashMap<String, ShipState> _ships;
+
+	float _load_distance = 200.f;
+	float _unload_distance = 250.f;
 
 	// -----------------------------------------------------------------------
 	// Threading
-	//
-	// Futures are polled every _process() with zero timeout.
-	// Completed results are applied immediately on the main thread.
-	// MAX_CONCURRENT_TASKS prevents unbounded thread spawning.
 
 	static constexpr int MAX_CONCURRENT_TASKS = 8;
 	std::vector<std::future<SubGridMeshTaskResult>> _pending_futures;
 
 	// -----------------------------------------------------------------------
-	// _process() helpers
+	// _process(). mesh, LOD, streaming, task poll
 
-	void _process_all_ships();
+	void _process_mesh(double delta);
+	void _process_streaming();
 	void _process_lod_for_ship(const String &uuid, ShipState &state);
 	void _submit_pending_tasks(const String &uuid, ShipState &state);
 	void _poll_completed_tasks();
@@ -94,25 +133,59 @@ private:
 	void _submit_one_task(const String &uuid, ShipState &state, Vector3i chunk_pos, int lod);
 	void _apply_mesh_result(const SubGridMeshTaskResult &result);
 
-	// Builds the padded VoxelBuffer for one chunk on the main thread.
-	// Returns nullptr if the chunk buffer doesn't exist yet.
 	std::shared_ptr<VoxelBuffer> _build_padded_buffer(VoxelSubGrid *node, Vector3i chunk_pos) const;
 
-	// LOD distance thresholds copied from VoxelSubGrid (keep in sync).
-	static const float LOD_DISTANCES[4];
+	// -----------------------------------------------------------------------
+	// _physics_process(). rotation, transform sync
 
-	int _compute_lod(VoxelSubGrid *node, Vector3i chunk_pos) const;
+	void _process_physics(double delta);
+	void _update_rotations(double delta);
+	void _sync_all_transforms();
 
 	// -----------------------------------------------------------------------
-	// Registration helpers
+	// Physics body management
 
-	void _register_single(VoxelSubGrid *sg);
-	void _mark_all_dirty(ShipState &state);
+	void _create_root_body(const String &uuid, ShipState &state);
+	void _create_child_body(const String &uuid, ShipState &state);
+	void _destroy_body(ShipState &state);
 
+	void _apply_collision_result(ShipState &state, Vector3i chunk_pos, const SubGridCollisionOutput &col);
+	void _remove_chunk_collision(ShipState &state, Vector3i chunk_pos);
+	void _recalculate_com(const String &uuid, ShipState &state);
+
+	// -----------------------------------------------------------------------
+	// Streaming
+
+	void _load_ship(const String &uuid, ShipState &state);
+	void _unload_ship(const String &uuid, ShipState &state);
+	void _free_chunk_renders(ShipState &state);
+
+	// -----------------------------------------------------------------------
+	// LOD
+
+	static const float LOD_DISTANCES[4];
+	int _compute_lod(VoxelSubGrid *node, Vector3i chunk_pos) const;
 	int _total_in_flight() const;
 
 	// -----------------------------------------------------------------------
-	// Persistence helpers (unchanged from original)
+	// Registration
+
+	void _register_single(VoxelSubGrid *sg, const String &parent_uuid);
+	void _mark_all_dirty(ShipState &state);
+
+	// -----------------------------------------------------------------------
+	// Helpers
+
+	static uint64_t _chunk_mesh_key(Vector3i p, int lod) {
+		return ((uint64_t)(uint16_t)p.x) | ((uint64_t)(uint16_t)p.y << 16) | ((uint64_t)(uint16_t)p.z << 32) |
+				((uint64_t)(uint8_t)lod << 48);
+	}
+	static Vector3i _key_to_chunk_pos(uint64_t key) {
+		return Vector3i((int16_t)(key & 0xFFFF), (int16_t)((key >> 16) & 0xFFFF), (int16_t)((key >> 32) & 0xFFFF));
+	}
+	static int _key_to_lod(uint64_t key) {
+		return (int)((key >> 48) & 0xFF);
+	}
 
 	void _save_metadata_index(const Vector<SubGridMetadata> &metas);
 	Vector<SubGridMetadata> _load_metadata_index();

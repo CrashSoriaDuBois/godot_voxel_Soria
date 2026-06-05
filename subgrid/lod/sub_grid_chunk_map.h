@@ -26,6 +26,8 @@ public:
 
 	void for_each_chunk(std::function<void(Vector3i chunk_pos, VoxelDataBlock &block)> callback);
 
+	void clear_buffers();
+
 	int get_chunk_count() const {
 		return _map.get_block_count();
 	}

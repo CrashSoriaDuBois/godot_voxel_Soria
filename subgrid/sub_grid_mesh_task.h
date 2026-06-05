@@ -3,29 +3,35 @@
 #include "../meshers/voxel_mesher.h"
 #include "../storage/voxel_buffer.h"
 #include "lod/sub_grid_chunk_map.h"
+#include "sub_grid_collision_builder.h"
 #include <memory>
 
 namespace zylann::voxel {
 
-// Owned by a pending std::future. Built and moved on the main thread,
-// read-only on the worker thread. The padded_buffer is a deep copy so the
-// worker never races with main-thread chunk edits.
 struct SubGridMeshTaskInput {
-	String ship_uuid; // identifies which VoxelSubGrid owns this chunk
+	String ship_uuid;
 	Vector3i chunk_pos;
 	int lod = 0;
-	std::shared_ptr<VoxelBuffer> padded_buffer; // full copy, cs+2 on each side
-	Ref<VoxelMesherBlocky> mesher; // shared, build() is stateless
+	std::shared_ptr<VoxelBuffer> padded_buffer;
+	Ref<VoxelMesherBlocky> mesher;
+
+	// Collision is only built at lod == 0.
+	// At higher LODs we skip the collision pass entirely.
+	bool build_collision = true;
+	BlockWeightTable weight_table;
 };
 
 struct SubGridMeshTaskResult {
 	String ship_uuid;
 	Vector3i chunk_pos;
 	int lod = 0;
-	VoxelMesher::Output output; // raw surfaces, transferred to main thread on completion
+	VoxelMesher::Output output;
+
+	// Only populated when input.build_collision == true && lod == 0.
+	SubGridCollisionOutput collision;
+	bool has_collision = false;
 };
 
-// Free function called inside std::async. Takes input by value (moved in).
 SubGridMeshTaskResult run_mesh_task(SubGridMeshTaskInput input);
 
 } // namespace zylann::voxel

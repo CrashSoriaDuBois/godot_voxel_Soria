@@ -7,7 +7,6 @@
 
 namespace zylann::voxel {
 
-//const float VoxelSubGrid::LOD_DISTANCES[4] = { 32.f, 64.f, 128.f, 256.f };
 static constexpr double ZN_TAU = 6.28318530717958647692;
 
 //___________________________________________________________________________
@@ -22,7 +21,6 @@ void VoxelSubGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_root"), &VoxelSubGrid::is_root);
 	ClassDB::bind_method(D_METHOD("is_tree_grid_aligned", "tolerance_degrees"), &VoxelSubGrid::is_tree_grid_aligned);
 
-	ClassDB::bind_method(D_METHOD("set_target_angle_rad", "angle"), &VoxelSubGrid::set_target_angle_rad);
 	ClassDB::bind_method(D_METHOD("get_target_angle_rad"), &VoxelSubGrid::get_target_angle_rad);
 
 	ClassDB::bind_method(D_METHOD("get_voxel_tool"), &VoxelSubGrid::get_voxel_tool);
@@ -32,15 +30,6 @@ void VoxelSubGrid::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE:
 			set_process(true);
-			set_physics_process(true);
-			break;
-
-//		case NOTIFICATION_PROCESS:
-//			_process_lod();
-//			break;
-
-		case NOTIFICATION_PHYSICS_PROCESS:
-			_process_rotation();
 			break;
 
 		case NOTIFICATION_EXIT_TREE:
@@ -68,7 +57,6 @@ void VoxelSubGrid::initialize_root(
 
 	_stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
 	flush_dirty_chunks();
-	//rebuild_all_meshes();
 
 	set_global_position(_meta.world_position);
 	set_global_basis(Basis(_meta.world_rotation));
@@ -86,7 +74,6 @@ void VoxelSubGrid::initialize_root_from_disk(
 
     _stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
 	load_chunks_from_stream(); // correct location
-	//rebuild_all_meshes();
 
     set_global_position(_meta.world_position);
     set_global_basis(Basis(_meta.world_rotation));
@@ -110,8 +97,6 @@ void VoxelSubGrid::initialize_child(const SubGridMetadata &meta, SubGridChunkMap
 
 	_stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
 	flush_dirty_chunks();
-	//rebuild_all_meshes();
-	_apply_transform_from_angle(_meta.target_angle_rad);
 }
 
 VoxelSubGrid *VoxelSubGrid::get_root() {
@@ -234,63 +219,6 @@ void VoxelSubGrid::_save_chunk(Vector3i chunk_pos) {
 //___________________________________________________________________________
 // Sub-contraption rotation
 
-void VoxelSubGrid::_process_rotation() {
-	if (is_root()) {
-		return;
-	}
-	_update_rotation(get_physics_process_delta_time());
-}
-
-void VoxelSubGrid::_update_rotation(double delta) {
-	_last_target_angle_rad = _target_angle_rad;
-
-	if (_should_lock()) {
-		float rad_per_sec = _angular_speed_rpm * (float)ZN_TAU / 60.0f;
-		if (_meta.rotation_axis.x < 0 || _meta.rotation_axis.y < 0 || _meta.rotation_axis.z < 0) {
-			rad_per_sec *= -1.0f;
-		}
-		_target_angle_rad += rad_per_sec * delta;
-		_target_angle_rad = Math::fmod(_target_angle_rad, ZN_TAU);
-	}
-
-	// Keep metadata in sync so save_all gets the current angle
-	_meta.target_angle_rad = _target_angle_rad;
-
-	_apply_transform_from_angle(_target_angle_rad);
-}
-
-void VoxelSubGrid::_apply_transform_from_angle(double angle_rad) {
-	// Facing direction as float
-	Vector3 facing = Vector3(_meta.rotation_axis).normalized();
-
-	// Pivot point in child's local space
-	// = center of the face where child attaches to bearing
-	// = (0.5, 0.5, 0.5) - facing * 0.5
-	Vector3 pivot_in_child_local = Vector3(0.5f, 0.5f, 0.5f) - facing * 0.5f;
-
-	// Where the child's origin sits in parent local space
-	// = bearing block position + facing (one block in front)
-	Vector3 child_origin_in_parent = Vector3(_meta.pivot_in_parent_local) + facing;
-
-	// Rotation basis
-	Vector3 axis = facing;
-	Basis rotation_basis = Basis(axis, (real_t)angle_rad);
-
-	// The transform places the child so that pivot_in_child_local
-	// stays fixed at child_origin_in_parent + facing*0.5 in parent space
-	// T = translate_to_pivot * rotate * translate_back
-	Transform3D t;
-	t.basis = rotation_basis;
-
-	// After rotation, pivot_in_child_local maps to rotation_basis * pivot_in_child_local
-	// We want it to land at child_origin_in_parent in parent space
-	// So: origin = child_origin_in_parent - rotation_basis * pivot_in_child_local
-	// But since pivot is on the bearing face which doesn't move:
-	Vector3 bearing_face_center = Vector3(_meta.pivot_in_parent_local) + Vector3(0.5f, 0.5f, 0.5f) + facing * 0.5f;
-	t.origin = bearing_face_center - rotation_basis.xform(pivot_in_child_local);
-
-	set_transform(t);
-}
 
 bool VoxelSubGrid::_should_lock() const {
 	if (_lock_mode == LOCKED_ALWAYS)
@@ -310,7 +238,6 @@ bool VoxelSubGrid::is_rotation_grid_aligned(float tolerance_degrees) const {
 	double angle_deg = Math::rad_to_deg(_target_angle_rad);
 	double nearest_90 = Math::round(angle_deg / 90.0) * 90.0;
 	double diff = Math::abs(angle_deg - nearest_90);
-	// Wrap diff to [0, 45]
 	diff = Math::fmod(diff, 90.0);
 	if (diff > 45.0)
 		diff = 90.0 - diff;
@@ -376,13 +303,9 @@ void VoxelSubGrid::disassemble_to_terrain(VoxelLodTerrain *terrain) {
 			}
 		});
 	} else {
-		// Child: snap to nearest 90 degree increment before placing blocks
-		// This prevents floating point drift from causing misaligned blocks
+		// Child: snap to nearest 90 degree increment before placing blocks. This prevents floating point drift from causing misaligned blocks
 		double snapped_angle = Math::round(_target_angle_rad / (Math::PI * 0.5)) * (Math::PI * 0.5);
 
-		// Temporarily apply the snapped transform so get_global_transform
-		// returns a perfectly grid-aligned matrix
-		_apply_transform_from_angle(snapped_angle);
 		Transform3D world_t = get_global_transform();
 
 		_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) {
@@ -418,44 +341,38 @@ void VoxelSubGrid::disassemble_to_terrain(VoxelLodTerrain *terrain) {
 	queue_free();
 }
 
-void VoxelSubGrid::apply_chunk_mesh(Vector3i chunk_pos, int lod, Ref<ArrayMesh> mesh) {
-	uint64_t key = _chunk_mesh_key(chunk_pos, lod);
-
-	if (mesh.is_null() || mesh->get_surface_count() == 0) {
-		MeshInstance3D **mi = _mesh_nodes.getptr(key);
-		if (mi != nullptr) {
-			(*mi)->queue_free();
-			_mesh_nodes.erase(key);
-		}
-		return;
-	}
-
-	MeshInstance3D *mi = nullptr;
-	MeshInstance3D **existing = _mesh_nodes.getptr(key);
-	if (existing != nullptr) {
-		mi = *existing;
-	} else {
-		mi = memnew(MeshInstance3D);
-		add_child(mi);
-		_mesh_nodes[key] = mi;
-	}
-	mi->set_mesh(mesh);
-	int cs_world = (1 << SubGridChunkMap::CHUNK_SIZE_PO2) << lod;
-	mi->set_position(Vector3(chunk_pos * cs_world));
+void VoxelSubGrid::clear_chunk_buffers() {
+	// Cancel any in-flight saves by flushing first, then wipe RAM.
+	// chunk_positions in _meta is untouched.
+	_chunks.clear_buffers();
 }
 
-void VoxelSubGrid::remove_chunk_meshes_except(Vector3i chunk_pos, int keep_lod) {
-	for (int old_lod = 0; old_lod < 4; old_lod++) {
-		if (old_lod == keep_lod) {
-			continue;
+double VoxelSubGrid::advance_rotation(double delta) {
+	if (_should_lock()) {
+		float rad_per_sec = _angular_speed_rpm * (float)ZN_TAU / 60.0f;
+		if (_meta.rotation_axis.x < 0 || _meta.rotation_axis.y < 0 || _meta.rotation_axis.z < 0) {
+			rad_per_sec *= -1.0f;
 		}
-		uint64_t old_key = _chunk_mesh_key(chunk_pos, old_lod);
-		MeshInstance3D **mi = _mesh_nodes.getptr(old_key);
-		if (mi != nullptr) {
-			(*mi)->queue_free();
-			_mesh_nodes.erase(old_key);
-		}
+		_target_angle_rad += rad_per_sec * delta;
+		_target_angle_rad = Math::fmod(_target_angle_rad, ZN_TAU);
 	}
+	_meta.target_angle_rad = _target_angle_rad;
+	return _target_angle_rad;
+}
+
+Transform3D VoxelSubGrid::compute_local_transform() const {
+	// This is the same math that was in _apply_transform_from_angle,now returning a Transform3D instead of calling set_transform()
+	// SubGridManager calls this and applies the result to AnimatableBody3D and the VoxelSubGrid Node3D
+
+	Vector3 facing = Vector3(_meta.rotation_axis).normalized();
+	Vector3 pivot_in_child_local = Vector3(0.5f, 0.5f, 0.5f) - facing * 0.5f;
+	Basis rotation_basis = Basis(facing, (real_t)_target_angle_rad);
+	Vector3 bearing_face_center = Vector3(_meta.pivot_in_parent_local) + Vector3(0.5f, 0.5f, 0.5f) + facing * 0.5f;
+
+	Transform3D t;
+	t.basis = rotation_basis;
+	t.origin = bearing_face_center - rotation_basis.xform(pivot_in_child_local);
+	return t;
 }
 
 } // namespace zylann::voxel

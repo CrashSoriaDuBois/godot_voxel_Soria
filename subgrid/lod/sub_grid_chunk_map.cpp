@@ -74,8 +74,13 @@ std::shared_ptr<VoxelBuffer> SubGridChunkMap::get_chunk_buffer(Vector3i chunk_po
 }
 
 void SubGridChunkMap::for_each_chunk(std::function<void(Vector3i chunk_pos, VoxelDataBlock &block)> callback) {
-	// VoxelDataMap::for_each_block passes (Vector3i pos, VoxelDataBlock &block). position FIRST, block SECOND
 	_map.for_each_block([&callback](Vector3i pos, VoxelDataBlock &block) { callback(pos, block); });
+}
+
+void SubGridChunkMap::clear_buffers() {
+	_map.clear(); // frees all VoxelBuffer shared_ptrs
+	_dirty_chunks.clear();
+	_all_chunk_positions.clear();
 }
 
 } // namespace zylann::voxel
