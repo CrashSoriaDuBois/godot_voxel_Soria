@@ -156,17 +156,20 @@ void SubGridManager::_mark_all_dirty(ShipState &state) {
 // Physics body management
 
 void SubGridManager::_create_root_body(const String &uuid, ShipState &state) {
-	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+    PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 
-	RID body = ps->body_create();
-	ps->body_set_mode(body, PhysicsServer3D::BODY_MODE_RIGID);
-	ps->body_set_space(body, get_viewport()->get_world_3d()->get_space());
-	ps->body_set_state(body, PhysicsServer3D::BODY_STATE_TRANSFORM, state.node->get_global_transform());
+    RID body = ps->body_create();
+    ps->body_set_mode(body, PhysicsServer3D::BODY_MODE_RIGID);
+    ps->body_set_space(body, get_viewport()->get_world_3d()->get_space());
+    ps->body_set_state(body, PhysicsServer3D::BODY_STATE_TRANSFORM, state.node->get_global_transform());
 
 	// Default mass. will be updated when collision chunks arrive
-	ps->body_set_param(body, PhysicsServer3D::BODY_PARAM_MASS, 1.f);
+    ps->body_set_param(body, PhysicsServer3D::BODY_PARAM_MASS, 1.f);
 
-	state.body_rid = body;
+    // Point to the VoxelSubGrid node
+	ps->body_attach_object_instance_id(body, state.node->get_instance_id());
+
+    state.body_rid = body;
 }
 
 void SubGridManager::_create_child_body(const String &uuid, ShipState &state) {
@@ -268,13 +271,15 @@ void SubGridManager::_remove_chunk_collision(ShipState &state, Vector3i chunk_po
 		body_rid = state.animatable_body->get_rid();
 	}
 
-	if (body_rid.is_valid()) {
-		// Remove shapes from body then free them
-		// PhysicsServer3D removes shapes by RID reference
-		for (RID shape_rid : col_data->shape_rids) {
-			ps->body_remove_shape(body_rid, ps->body_get_shape_count(body_rid) - 1);
-			ps->free_rid(shape_rid);
+	for (RID shape_rid : col_data->shape_rids) {
+		int shape_count = ps->body_get_shape_count(body_rid);
+		for (int i = 0; i < shape_count; i++) {
+			if (ps->body_get_shape(body_rid, i) == shape_rid) {
+				ps->body_remove_shape(body_rid, i);
+				break;
+			}
 		}
+		ps->free_rid(shape_rid);
 	}
 	state.chunk_collision.erase(chunk_pos);
 }
