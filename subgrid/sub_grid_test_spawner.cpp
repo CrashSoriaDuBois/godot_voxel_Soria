@@ -56,7 +56,12 @@ void SubGridTestSpawner::assemble_at(Node *terrain_node, Vector3i world_pos) {
 
 	// Spawn children recursively
 	for (SubGridAssembler::AssembledBody *child_body : body->children) {
-		_spawn_body(child_body, root_sg, saves_dir, mesher, library);
+		if (child_body->terrain_anchored) {
+			// Spawn as a root, anchored to terrain at the bearing position
+			_spawn_terrain_anchored(child_body, terrain, saves_dir, mesher, library);
+		} else {
+			_spawn_body(child_body, root_sg, saves_dir, mesher, library);
+		}
 	}
 
 	Node3D *cam = Object::cast_to<Node3D>(get_viewport()->get_camera_3d());
@@ -100,4 +105,42 @@ VoxelSubGrid *SubGridTestSpawner::_spawn_body(
 	return sg;
 }
 
+VoxelSubGrid *SubGridTestSpawner::_spawn_terrain_anchored(
+		SubGridAssembler::AssembledBody *body,
+		VoxelLodTerrain *terrain,
+		const String &saves_dir,
+		Ref<VoxelMesherBlocky> mesher,
+		Ref<VoxelBlockyLibrary> library
+) {
+	// Terrain-anchored sub-contraption: spawns as a root subgrid
+	// but its pivot is relative to the terrain, not another subgrid.
+	VoxelSubGrid *sg = memnew(VoxelSubGrid);
+	get_parent()->add_child(sg);
+
+	SubGridMetadata meta = body->metadata;
+	meta.is_root = true; // anchored to terrain = acts as its own root
+	// World position is the local origin in world space from assembly
+	meta.world_position =
+			Vector3(body->local_origin_in_world.x, body->local_origin_in_world.y, body->local_origin_in_world.z);
+	meta.world_rotation = Quaternion();
+
+	sg->initialize_root(meta, std::move(body->chunks), saves_dir, mesher, library);
+
+	// Recurse: children of a terrain-anchored body spawn normally
+	for (SubGridAssembler::AssembledBody *child_body : body->children) {
+		_spawn_body(child_body, sg, saves_dir, mesher, library);
+	}
+
+	Node3D *cam = Object::cast_to<Node3D>(get_viewport()->get_camera_3d());
+	if (cam != nullptr) {
+		sg->set_viewer(cam);
+	}
+
+	SubGridManager *mgr = Object::cast_to<SubGridManager>(get_parent()->get_node_or_null(String("SubGridManager")));
+	if (mgr != nullptr) {
+		mgr->register_ship_tree(sg);
+	}
+
+	return sg;
+}
 } // namespace zylann::voxel

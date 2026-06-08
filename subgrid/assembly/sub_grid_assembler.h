@@ -22,6 +22,7 @@ public:
 		HashMap<Vector3i, uint32_t> world_blocks;
 		Vector3i local_origin_in_world;
 		Vector<AssembledBody *> children;
+		bool terrain_anchored = false;
 	};
 
 	struct AssemblyConfig {

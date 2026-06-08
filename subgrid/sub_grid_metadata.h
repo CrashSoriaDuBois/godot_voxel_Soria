@@ -13,6 +13,7 @@ struct SubGridMetadata {
 	uint8_t uuid[16] = {};
 	uint8_t parent_uuid[16] = {};
 	bool is_root = false;
+	bool is_terrain_anchored = false;
 	Vector3i pivot_in_parent_local;
 	Vector3i rotation_axis = Vector3i(0, 1, 0);
 	Vector<Vector3i> chunk_positions; // positions of all saved chunks at LOD0

@@ -66,6 +66,7 @@ public:
 	void save_and_close();
 	void destroy();
 	void disassemble_to_terrain(class VoxelLodTerrain *terrain);
+	void disassemble(VoxelLodTerrain *terrain);
 
 	// ACCESORIES
 	const SubGridMetadata &get_metadata() const {
@@ -123,13 +124,17 @@ private:
 	LockMode _lock_mode = LOCKED_DEFAULT;
 
 	// Typed list of child VoxelSubGrid nodes for fast iteration. (Godot child nodes are the authority - this is a cache)
-	Vector<VoxelSubGrid *> _children;
+	Vector<ObjectID> _children;
 
 	// INTERNAL METHODS
 	void _save_chunk(Vector3i chunk_pos);
 	bool _should_lock() const;
 
 	SubGridManager *_manager = nullptr;
+
+	void _disassemble_root_to_terrain(VoxelLodTerrain *terrain);
+	void _disassemble_child_to_parent();
+
 };
 
 } // namespace zylann::voxel

@@ -45,6 +45,10 @@ public:
 	void unregister_ship(const String &uuid_str);
 	void mark_chunk_dirty(const String &uuid_str, Vector3i chunk_pos);
 
+
+	String uuid_for_node(VoxelSubGrid *node) const;
+	void mark_all_dirty(const String &uuid);
+
 	// -----------------------------------------------------------------------
 	// Persistence
 

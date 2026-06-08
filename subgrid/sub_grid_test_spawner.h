@@ -23,7 +23,16 @@ private:
 			VoxelSubGrid *parent_sg,
 			const String &saves_dir,
 			Ref<VoxelMesherBlocky> mesher,
-			Ref<VoxelBlockyLibrary> library);
+			Ref<VoxelBlockyLibrary> library
+	);
+
+	VoxelSubGrid *_spawn_terrain_anchored(
+			SubGridAssembler::AssembledBody *body,
+			VoxelLodTerrain *terrain,
+			const String &saves_dir,
+			Ref<VoxelMesherBlocky> mesher,
+			Ref<VoxelBlockyLibrary> library
+	);
 };
 
 } // namespace zylann::voxel

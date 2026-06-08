@@ -105,9 +105,15 @@ void SubGridManager::_register_single(VoxelSubGrid *sg, const String &parent_uui
 
 	// Create physics body
 	if (sg->is_root()) {
-		_create_root_body(uuid, state);
-	} else {
-		_create_child_body(uuid, state);
+		if (sg->get_metadata().is_terrain_anchored) {
+			_create_child_body(uuid, state); // AnimatableBody3D, kinematic
+		} 
+		else {
+			_create_root_body(uuid, state); // RigidBody3D, simulated
+		}
+	} 
+	else {
+		_create_child_body(uuid, state); // AnimatableBody3D, kinematic
 	}
 }
 
@@ -149,6 +155,21 @@ void SubGridManager::_mark_all_dirty(ShipState &state) {
 		if (!state.in_flight_chunks.has(pos)) {
 			state.dirty_chunks.insert(pos);
 		}
+	}
+}
+
+String SubGridManager::uuid_for_node(VoxelSubGrid *node) const {
+	for (const auto &[uuid, state] : _ships) {
+		if (state.node == node)
+			return uuid;
+	}
+	return String();
+}
+
+void SubGridManager::mark_all_dirty(const String &uuid) {
+	ShipState *state = _ships.getptr(uuid);
+	if (state != nullptr) {
+		_mark_all_dirty(*state);
 	}
 }
 

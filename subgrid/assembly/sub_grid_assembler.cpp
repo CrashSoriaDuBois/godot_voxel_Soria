@@ -160,6 +160,9 @@ void SubGridAssembler::flood_fill(
 				child->metadata.rotation_axis = facing;
 				child->metadata.is_root = false;
 				child->local_origin_in_world = attach_pos;
+
+				child->terrain_anchored = out_body->world_blocks.size() == 0;
+
 				memcpy(child->metadata.uuid, child->uuid, 16);
 				memcpy(child->metadata.parent_uuid, out_body->uuid, 16);
 
