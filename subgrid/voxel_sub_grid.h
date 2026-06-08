@@ -80,6 +80,10 @@ public:
 	bool is_rotation_grid_aligned(float tolerance_degrees) const;
 	bool is_tree_grid_aligned(float tolerance_degrees) const;
 
+	bool _is_world_anchored = false;
+	Transform3D _promoted_world_transform;
+	Vector3 _promoted_pivot_world;
+
 	//void rebuild_all_meshes();
 	void load_chunks_from_stream();
 	void clear_chunk_buffers();

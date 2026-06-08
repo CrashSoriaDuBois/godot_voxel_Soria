@@ -269,11 +269,19 @@ void VoxelSubGrid::disassemble(VoxelLodTerrain *terrain) {
 	ERR_FAIL_COND_MSG(!is_inside_tree(), "Cannot disassemble: node not in tree");
 	ERR_FAIL_COND_MSG(!is_tree_grid_aligned(5.0f), "Cannot disassemble: sub-contraptions not grid-aligned");
 
-	if (!is_root()) {
-		_disassemble_child_to_parent();
+	if (is_root()) {
+		_disassemble_root_to_terrain(terrain);
 		return;
 	}
-	_disassemble_root_to_terrain(terrain);
+
+	if (_is_world_anchored) {
+		// Promoted child, parent is scene root, not a VoxelSubGrid
+		// Disassemble directly to terrain at current world position
+		_disassemble_root_to_terrain(terrain);
+		return;
+	}
+
+	_disassemble_child_to_parent();
 }
 
 void VoxelSubGrid::_disassemble_root_to_terrain(VoxelLodTerrain *terrain) {
@@ -296,29 +304,34 @@ void VoxelSubGrid::_disassemble_root_to_terrain(VoxelLodTerrain *terrain) {
 	Node *scene_parent = get_parent();
 
 	for (VoxelSubGrid *child : children_snapshot) {
-		// Snapshot child's world transform before reparenting
 		Transform3D child_world_t = child->get_global_transform();
+    
+		Transform3D parent_world_t = get_global_transform();
+		Vector3 pivot_world = parent_world_t.xform(Vector3(child->get_metadata().pivot_in_parent_local) + Vector3(0.5f, 0.5f, 0.5f));
 
-		// Detach AnimatableBody3D from child before reparenting
-		// (manager will recreate it as a root body)
 		if (_manager != nullptr) {
-			String child_uuid = _manager->uuid_for_node(child);
-			_manager->unregister_ship(child_uuid);
+			_manager->unregister_ship(_manager->uuid_for_node(child));
 		}
+    
+		child->_promoted_world_transform = child_world_t;
+		child->_promoted_pivot_world = pivot_world;
+		child->_is_world_anchored = true;
 
-		// Reparent to scene, child becomes a new root
-		child->_meta.is_root = true;
-		//child->_meta.is_terrain_anchored = true;  //spawn subcontraption as animatable body dosent have collitions, fix later
+		// Update parent_uuid to empty, no parent ship anymore
+		// but keep is_root=false so _update_rotations handles it
+		memset(child->_meta.parent_uuid, 0, 16);
+
 		child->_meta.world_position = child_world_t.origin;
 		child->_meta.world_rotation = child_world_t.basis.get_rotation_quaternion();
 
+		// DON'T set is_root=true
+		// Reparent to scene but keep as child type
 		child->reparent(scene_parent, false);
-		// Restore world transform after reparent
 		child->set_global_transform(child_world_t);
 
-		// Register as new independent root
 		if (_manager != nullptr) {
 			_manager->register_ship_tree(child);
+			_manager->mark_all_dirty(_manager->uuid_for_node(child));
 		}
 	}
 	_children.clear();

@@ -359,8 +359,8 @@ void SubGridManager::_update_rotations(double delta) {
 		if (state.load_state != LOADED || state.node == nullptr) {
 			continue;
 		}
-		if (state.node->is_root()) {
-			continue; // roots are driven by PhysicsServer, not rotation
+		if (state.node->is_root() && !state.node->get_metadata().is_terrain_anchored) {
+			continue; // only skip simulated roots, not terrain-anchored ones
 		}
 		// Advance sub-contraption angle and apply to AnimatableBody3D.
 		// advance_rotation() updates _target_angle_rad and returns the new transform.
@@ -378,6 +378,17 @@ void SubGridManager::_update_rotations(double delta) {
 			if (parent_state != nullptr && parent_state->node != nullptr) {
 				world_t = parent_state->node->get_global_transform() * local_t;
 			}
+		} else {
+			Vector3 facing = Vector3(state.node->get_metadata().rotation_axis).normalized();
+			Basis rotation_basis = Basis(facing, (real_t)state.node->get_target_angle_rad());
+
+			// pivot_in_child_local: same as compute_local_transform
+			Vector3 pivot_in_child_local = Vector3(0.5f, 0.5f, 0.5f) - facing * 0.5f;
+
+			// Rotate child around the world pivot point
+			world_t.basis = rotation_basis;
+			world_t.origin = state.node->_promoted_pivot_world + facing * 0.5f // bearing face center offset
+					- rotation_basis.xform(pivot_in_child_local);
 		}
 
 		// Drive AnimatableBody3D. this makes it push other physics objects
