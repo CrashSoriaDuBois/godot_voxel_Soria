@@ -3,7 +3,7 @@
 
 namespace zylann::voxel {
 
-// Forward declarations — no includes needed in the header
+// Forward declarations, no includes needed in the header
 class VoxelSubGrid;
 class SubGridManager;
 
@@ -11,7 +11,7 @@ class VoxelToolSubGrid : public VoxelTool {
 	GDCLASS(VoxelToolSubGrid, VoxelTool)
 public:
 	VoxelToolSubGrid() = default;
-	// Use init() instead of constructor - Ref<> requires default constructor
+	// Use init() instead of constructor, Ref<> requires default constructor
 	void init(VoxelSubGrid *grid, SubGridManager *manager);
 
 	bool is_area_editable(const Box3i &box) const override;

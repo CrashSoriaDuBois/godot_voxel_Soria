@@ -34,6 +34,7 @@ void VoxelSubGrid::_notification(int p_what) {
 			break;
 
 		case NOTIFICATION_EXIT_TREE:
+			_resolve_stream();
 			flush_dirty_chunks();
 			SubGridStreamHelper::close(_stream);
 			break;
@@ -56,8 +57,15 @@ void VoxelSubGrid::initialize_root(
 	_mesher = mesher;
 	_library = library;
 
-	_stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
-	flush_dirty_chunks();
+	_stream_ready = false;
+	String saves_dir_copy = saves_dir;
+	uint8_t uuid_copy[16];
+	memcpy(uuid_copy, meta.uuid, 16);
+	_stream_future = std::async(std::launch::async, [saves_dir_copy, uuid_copy]() {
+		return SubGridStreamHelper::open(saves_dir_copy, uuid_copy);
+	});
+
+	// chunks are in memory, saved on next natural save cycle
 
 	set_global_position(_meta.world_position);
 	set_global_basis(Basis(_meta.world_rotation));
@@ -73,19 +81,25 @@ void VoxelSubGrid::initialize_root_from_disk(
     _mesher = mesher;
     _library = library;
 
+    // Synchronous open, we need to read immediately
     _stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
-	load_chunks_from_stream(); // correct location
+    _stream_ready = true;
+    load_chunks_from_stream();
 
     set_global_position(_meta.world_position);
     set_global_basis(Basis(_meta.world_rotation));
 }
 
-void VoxelSubGrid::initialize_child(const SubGridMetadata &meta, SubGridChunkMap &&chunks, const String &saves_dir) {
+void VoxelSubGrid::initialize_child(
+		const SubGridMetadata &meta,
+		SubGridChunkMap &&chunks,
+		const String &saves_dir,
+		bool async_stream
+) {
 	_meta = meta;
 	_chunks = std::move(chunks);
 	_saves_dir = saves_dir;
 
-	// Ensure parent_uuid is set from actual parent node
 	VoxelSubGrid *parent_sg = Object::cast_to<VoxelSubGrid>(get_parent());
 	if (parent_sg != nullptr) {
 		memcpy(_meta.parent_uuid, parent_sg->get_metadata().uuid, 16);
@@ -96,8 +110,20 @@ void VoxelSubGrid::initialize_child(const SubGridMetadata &meta, SubGridChunkMap
 	_mesher = root->_mesher;
 	_library = root->_library;
 
-	_stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
-	flush_dirty_chunks();
+	if (async_stream) {
+		// New spawn, open async to avoid main thread stutter
+		_stream_ready = false;
+		String saves_dir_copy = saves_dir;
+		uint8_t uuid_copy[16];
+		memcpy(uuid_copy, meta.uuid, 16);
+		_stream_future = std::async(std::launch::async, [saves_dir_copy, uuid_copy]() {
+			return SubGridStreamHelper::open(saves_dir_copy, uuid_copy);
+		});
+	} else {
+		// Loading from disk, open sync, we need to read immediately
+		_stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
+		_stream_ready = true;
+	}
 }
 
 VoxelSubGrid *VoxelSubGrid::get_root() {
@@ -156,8 +182,19 @@ Ref<VoxelToolSubGrid> VoxelSubGrid::get_voxel_tool() {
 //___________________________________________________________________________
 // Persistence
 
+void VoxelSubGrid::_resolve_stream() {
+	if (!_stream_ready && _stream_future.valid()) {
+		_stream = _stream_future.get(); // block until ready
+		_stream_ready = true;
+	}
+}
+
 void VoxelSubGrid::flush_dirty_chunks() {
-	if (!_stream.is_valid()) {  //fix to silent crash after disassembling subgrid that previusly had a nested subgrid disasembled
+	if (!_stream.is_valid() && !_stream_future.valid()) {
+		return;
+	}
+	_resolve_stream(); // ensure stream is ready before flushing
+	if (!_stream.is_valid()) {
 		return;
 	}
 	Vector<Vector3i> dirty = _chunks.get_dirty_chunks();
@@ -189,20 +226,37 @@ void VoxelSubGrid::load_chunks_from_stream() {
 }
 
 void VoxelSubGrid::save_and_close() {
+	_resolve_stream();
 	flush_dirty_chunks();
 	SubGridStreamHelper::close(_stream);
 }
 
 void VoxelSubGrid::destroy() {
+	_resolve_stream();
 	flush_dirty_chunks();
 	SubGridStreamHelper::close_and_delete(_stream, _saves_dir, _meta.uuid);
 	queue_free();
 }
 
 void VoxelSubGrid::_save_chunk(Vector3i chunk_pos) {
-	if (!_stream.is_valid()) { //fix to silent crash after disassembling subgrid that previusly had a nested subgrid disasembled
+	// Resolve async stream if not yet ready
+	if (!_stream_ready) {
+		if (_stream_future.valid()) {
+			if (_stream_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+				_stream = _stream_future.get();
+				_stream_ready = true;
+			} else {
+				return; // stream not ready yet, skip — chunk stays dirty, retried next cycle
+			}
+		} else if (!_stream.is_valid()) {
+			return; // no stream at all
+		}
+	}
+
+	if (!_stream.is_valid()) {
 		return;
 	}
+
 	std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
 	if (!buf) {
 		return;

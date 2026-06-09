@@ -784,7 +784,7 @@ void SubGridManager::load_all() {
 
 		VoxelSubGrid *sg = memnew(VoxelSubGrid);
 		(*parent_sg)->add_child(sg);
-		sg->initialize_child(meta, SubGridChunkMap(), _saves_dir);
+		sg->initialize_child(meta, SubGridChunkMap(), _saves_dir, false);
 		sg->load_chunks_from_stream();
 		uuid_to_node[_uuid_to_string(meta.uuid)] = sg;
 	}

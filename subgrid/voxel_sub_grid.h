@@ -8,6 +8,7 @@
 #include "streaming/sub_grid_stream_helper.h"
 #include "streams/sqlite/voxel_stream_sqlite.h"
 #include "sub_grid_metadata.h"
+#include <future>
 
 namespace zylann::voxel {
 
@@ -37,7 +38,12 @@ public:
 			Ref<VoxelBlockyLibrary> library
 	);
 
-	void initialize_child(const SubGridMetadata &meta, SubGridChunkMap &&chunks, const String &saves_dir);
+	void initialize_child(
+			const SubGridMetadata &meta,
+			SubGridChunkMap &&chunks,
+			const String &saves_dir,
+			bool async_stream = true
+	);
 
 	SubGridMetadata &get_metadata_mut() { 
 		return _meta; 
@@ -111,6 +117,9 @@ private:
 	SubGridMetadata _meta;
 	SubGridChunkMap _chunks;
 	Ref<VoxelStreamSQLite> _stream;
+	bool _stream_ready = false;
+	void _resolve_stream();
+	std::future<Ref<VoxelStreamSQLite>> _stream_future;
 	String _saves_dir;
 
 	Ref<VoxelMesherBlocky> _mesher;
