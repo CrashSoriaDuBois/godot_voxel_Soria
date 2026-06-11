@@ -37,8 +37,12 @@ void SubGridManager::_bind_methods() {
 void SubGridManager::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE:
+			if (Engine::get_singleton()->is_editor_hint())
+				break;
 			set_process(true);
 			set_physics_process(true);
+			_save_thread_data.running = true;
+			_save_thread = std::thread(&SubGridManager::_save_thread_func, this);
 			break;
 
 		case NOTIFICATION_PROCESS:
@@ -49,7 +53,15 @@ void SubGridManager::_notification(int p_what) {
 			_process_physics(get_physics_process_delta_time());
 			break;
 
-		case NOTIFICATION_EXIT_TREE:
+		case NOTIFICATION_EXIT_TREE: 
+			{
+			std::unique_lock<std::mutex> lock(_save_thread_data.mutex);
+			_save_thread_data.running = false;
+			_save_thread_data.cv.notify_all();
+			}
+			if (_save_thread.joinable()) {
+				_save_thread.join();
+			}
 			for (auto &f : _pending_futures) {
 				f.wait();
 			}
@@ -102,6 +114,11 @@ void SubGridManager::_register_single(VoxelSubGrid *sg, const String &parent_uui
 
 	_mark_all_dirty(state);
 	sg->set_manager(this);
+
+	if (sg->_needs_initial_save) {
+		sg->_needs_initial_save = false;
+		sg->flush_dirty_chunks();
+	}
 
 	// Create physics body
 	if (sg->is_root()) {
@@ -174,6 +191,79 @@ void SubGridManager::mark_all_dirty(const String &uuid) {
 }
 
 // ____________________________________________________________________________
+// Ship lifecycle Threaded
+
+void SubGridManager::_save_thread_func() {
+	auto &d = _save_thread_data;
+	std::atomic<int> items_in_flight{ 0 };
+
+	while (true) {
+		std::vector<SubGridManager::SaveRequest> batch;
+		{
+			std::unique_lock<std::mutex> lock(d.mutex);
+			d.cv.wait(lock, [&d] { return !d.queue.empty() || !d.running; });
+			if (!d.running && d.queue.empty())
+				break;
+			batch = std::move(d.queue);
+			d.queue.clear();
+		}
+
+		for (auto &req : batch) {
+			String uuid = String(req.uuid.c_str());
+
+			if (req.close_stream) {
+				auto it = d.streams.find(uuid);
+				if (it != d.streams.end()) {
+					it->value->set_database_path(""); // closes SQLite
+					d.streams.erase(uuid);
+				}
+				continue;
+			}
+
+			// Open stream lazily on save thread if not yet open
+			if (!d.streams.has(uuid)) {
+				String saves_dir = String(req.saves_dir.c_str());
+				// Parse uuid bytes from hex string for SubGridStreamHelper
+				// We store the path directly instead
+				Ref<VoxelStreamSQLite> stream;
+				stream.instantiate();
+				// Build path same way SubGridStreamHelper does
+				String saves_dir_abs = String(req.saves_dir.c_str()); // already absolute
+				String db_path = saves_dir_abs.path_join("ships").path_join(uuid + ".sqlite");
+				stream->set_database_path(db_path);
+				d.streams[uuid] = stream;
+			}
+
+			Ref<VoxelStreamSQLite> &stream = d.streams[uuid];
+			if (!stream.is_valid())
+				continue;
+
+			VoxelStream::VoxelQueryData q{ *req.buffer, req.chunk_pos, 0, VoxelStream::RESULT_BLOCK_NOT_FOUND };
+			stream->save_voxel_block(q);
+			_save_thread_data.items_in_flight--;
+		}
+	}
+
+	// Drain: close all streams cleanly
+	for (auto &kv : d.streams) {
+		kv.value->set_database_path("");
+	}
+	d.streams.clear();
+}
+
+void SubGridManager::push_save(const SaveRequest &req) {
+	std::unique_lock<std::mutex> lock(_save_thread_data.mutex);
+	_save_thread_data.items_in_flight++;
+	_save_thread_data.queue.push_back(req);
+	_save_thread_data.cv.notify_one();
+}
+
+void SubGridManager::wait_save_queue() {
+	while (_save_thread_data.items_in_flight > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+}
+// ____________________________________________________________________________
 // Physics body management
 
 void SubGridManager::_create_root_body(const String &uuid, ShipState &state) {
@@ -212,31 +302,23 @@ void SubGridManager::_create_child_body(const String &uuid, ShipState &state) {
 }
 
 void SubGridManager::_destroy_body(ShipState &state) {
-	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+    PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 
-	// Free all collision shapes
-	for (auto &[chunk_pos, col_data] : state.chunk_collision) {
-		if (state.body_rid.is_valid()) {
-			for (RID shape_rid : col_data.shape_rids) {
-				ps->free_rid(shape_rid);
-			}
-		} else if (state.animatable_body != nullptr) {
-			for (RID shape_rid : col_data.shape_rids) {
-				ps->free_rid(shape_rid);
-			}
-		}
-	}
-	state.chunk_collision.clear();
+    for (auto &[chunk_pos, col_data] : state.chunk_collision) {
+        for (RID shape_rid : col_data.shape_rids) {
+            ps->free_rid(shape_rid);
+        }
+    }
+    state.chunk_collision.clear();
 
-	if (state.body_rid.is_valid()) {
-		ps->free_rid(state.body_rid);
-		state.body_rid = RID();
-	}
-
-	if (state.animatable_body != nullptr) {
-		state.animatable_body->queue_free();
-		state.animatable_body = nullptr;
-	}
+    if (state.body_rid.is_valid()) {
+        ps->free_rid(state.body_rid);
+        state.body_rid = RID();
+    }
+    if (state.animatable_body != nullptr) {
+        state.animatable_body->queue_free();
+        state.animatable_body = nullptr;
+    }
 }
 
 void SubGridManager::_apply_collision_result(ShipState &state, Vector3i chunk_pos, const SubGridCollisionOutput &col) {
@@ -404,6 +486,9 @@ void SubGridManager::_sync_all_transforms() {
 	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 
 	for (auto &[uuid, state] : _ships) {
+		if (!state.node->is_inside_tree())
+			continue;
+
 		if (state.load_state != LOADED || state.node == nullptr) {
 			continue;
 		}
@@ -727,21 +812,21 @@ int SubGridManager::_total_in_flight() const {
 // Persistence
 
 void SubGridManager::save_all() {
-	Vector<SubGridMetadata> metas;
-	Node *parent = get_parent();
-	if (parent == nullptr) {
-		return;
-	}
-	for (int i = 0; i < parent->get_child_count(); i++) {
-		VoxelSubGrid *sg = Object::cast_to<VoxelSubGrid>(parent->get_child(i));
-		if (sg != nullptr && sg->is_root()) {
-			sg->flush_dirty_chunks();
-			sg->get_metadata_mut().world_position = sg->get_global_position();
-			sg->get_metadata_mut().world_rotation = sg->get_global_basis().get_rotation_quaternion();
-			_collect_metadata_recursive(sg, metas);
-		}
-	}
-	_save_metadata_index(metas);
+    Vector<SubGridMetadata> metas;
+    Node *parent = get_parent();
+    if (parent == nullptr) return;
+
+    for (int i = 0; i < parent->get_child_count(); i++) {
+        VoxelSubGrid *sg = Object::cast_to<VoxelSubGrid>(parent->get_child(i));
+        if (sg != nullptr && sg->is_root()) {
+            // Don't call flush_dirty_chunks here, _collect_metadata_recursive does it
+            sg->get_metadata_mut().world_position = sg->get_global_position();
+            sg->get_metadata_mut().world_rotation = sg->get_global_basis().get_rotation_quaternion();
+            _collect_metadata_recursive(sg, metas);
+        }
+    }
+    wait_save_queue();
+    _save_metadata_index(metas);
 }
 
 void SubGridManager::_collect_metadata_recursive(VoxelSubGrid *sg, Vector<SubGridMetadata> &out) {

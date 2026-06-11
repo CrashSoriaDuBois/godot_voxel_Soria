@@ -11,6 +11,13 @@
 #include <future>
 #include <vector>
 
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include "streams/sqlite/voxel_stream_sqlite.h"
+#include "core/config/project_settings.h"
+
 // Forward declare Godot types to avoid heavy includes in header
 class AnimatableBody3D;
 
@@ -48,6 +55,33 @@ public:
 
 	String uuid_for_node(VoxelSubGrid *node) const;
 	void mark_all_dirty(const String &uuid);
+
+	// -----------------------------------------------------------------------
+	// threading
+	struct SaveRequest {
+		std::string uuid;
+		std::string saves_dir;
+		Vector3i chunk_pos;
+		std::shared_ptr<VoxelBuffer> buffer;
+		bool close_stream = false;
+	};
+
+	// Save thread owns all streams, never accessed from main thread
+	struct SaveThreadData {
+		std::mutex mutex;
+		std::condition_variable cv;
+		std::atomic<bool> running{ false };
+		std::atomic<int> items_in_flight{ 0 };
+		std::vector<SaveRequest> queue;
+		HashMap<String, Ref<VoxelStreamSQLite>> streams;
+	} _save_thread_data;
+
+	std::thread _save_thread;
+
+	void push_save(const SaveRequest &req);
+
+	void wait_save_queue();
+	void _save_thread_func();
 
 	// -----------------------------------------------------------------------
 	// Persistence

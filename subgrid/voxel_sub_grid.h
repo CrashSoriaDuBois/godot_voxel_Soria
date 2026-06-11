@@ -8,7 +8,7 @@
 #include "streaming/sub_grid_stream_helper.h"
 #include "streams/sqlite/voxel_stream_sqlite.h"
 #include "sub_grid_metadata.h"
-#include <future>
+
 
 namespace zylann::voxel {
 
@@ -71,8 +71,9 @@ public:
 	void flush_dirty_chunks();
 	void save_and_close();
 	void destroy();
-	void disassemble_to_terrain(class VoxelLodTerrain *terrain);
-	void disassemble(VoxelLodTerrain *terrain);
+	void _close_stream();
+
+	void disassemble(class VoxelLodTerrain *terrain);
 
 	// ACCESORIES
 	const SubGridMetadata &get_metadata() const {
@@ -87,6 +88,8 @@ public:
 	bool is_tree_grid_aligned(float tolerance_degrees) const;
 
 	bool _is_world_anchored = false;
+	bool _needs_initial_save = false;
+
 	Transform3D _promoted_world_transform;
 	Vector3 _promoted_pivot_world;
 
@@ -116,10 +119,6 @@ private:
 	// DATA
 	SubGridMetadata _meta;
 	SubGridChunkMap _chunks;
-	Ref<VoxelStreamSQLite> _stream;
-	bool _stream_ready = false;
-	void _resolve_stream();
-	std::future<Ref<VoxelStreamSQLite>> _stream_future;
 	String _saves_dir;
 
 	Ref<VoxelMesherBlocky> _mesher;

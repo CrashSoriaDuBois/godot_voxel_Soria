@@ -5,6 +5,7 @@
 #include "edition/voxel_tool.h"
 #include "sub_grid_manager.h"
 #include "voxel_tool_sub_grid.h"
+#include "core/io/dir_access.h"
 
 namespace zylann::voxel {
 
@@ -34,9 +35,8 @@ void VoxelSubGrid::_notification(int p_what) {
 			break;
 
 		case NOTIFICATION_EXIT_TREE:
-			_resolve_stream();
 			flush_dirty_chunks();
-			SubGridStreamHelper::close(_stream);
+			_close_stream();
 			break;
 	}
 }
@@ -57,14 +57,11 @@ void VoxelSubGrid::initialize_root(
 	_mesher = mesher;
 	_library = library;
 
-	_stream_ready = false;
 	String saves_dir_copy = saves_dir;
 	uint8_t uuid_copy[16];
 	memcpy(uuid_copy, meta.uuid, 16);
-	_stream_future = std::async(std::launch::async, [saves_dir_copy, uuid_copy]() {
-		return SubGridStreamHelper::open(saves_dir_copy, uuid_copy);
-	});
 
+	_needs_initial_save = true;
 	// chunks are in memory, saved on next natural save cycle
 
 	set_global_position(_meta.world_position);
@@ -72,22 +69,20 @@ void VoxelSubGrid::initialize_root(
 }
 
 void VoxelSubGrid::initialize_root_from_disk(
-        const SubGridMetadata &meta,
-        const String &saves_dir,
-        Ref<VoxelMesherBlocky> mesher,
-        Ref<VoxelBlockyLibrary> library) {
-    _meta = meta;
-    _saves_dir = saves_dir;
-    _mesher = mesher;
-    _library = library;
+		const SubGridMetadata &meta,
+		const String &saves_dir,
+		Ref<VoxelMesherBlocky> mesher,
+		Ref<VoxelBlockyLibrary> library
+) {
+	_meta = meta;
+	_saves_dir = saves_dir;
+	_mesher = mesher;
+	_library = library;
 
-    // Synchronous open, we need to read immediately
-    _stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
-    _stream_ready = true;
-    load_chunks_from_stream();
+	load_chunks_from_stream(); // handles its own stream internally
 
-    set_global_position(_meta.world_position);
-    set_global_basis(Basis(_meta.world_rotation));
+	set_global_position(_meta.world_position);
+	set_global_basis(Basis(_meta.world_rotation));
 }
 
 void VoxelSubGrid::initialize_child(
@@ -112,17 +107,11 @@ void VoxelSubGrid::initialize_child(
 
 	if (async_stream) {
 		// New spawn, open async to avoid main thread stutter
-		_stream_ready = false;
+		_needs_initial_save = true;
 		String saves_dir_copy = saves_dir;
 		uint8_t uuid_copy[16];
 		memcpy(uuid_copy, meta.uuid, 16);
-		_stream_future = std::async(std::launch::async, [saves_dir_copy, uuid_copy]() {
-			return SubGridStreamHelper::open(saves_dir_copy, uuid_copy);
-		});
-	} else {
-		// Loading from disk, open sync, we need to read immediately
-		_stream = SubGridStreamHelper::open(saves_dir, meta.uuid);
-		_stream_ready = true;
+
 	}
 }
 
@@ -182,87 +171,92 @@ Ref<VoxelToolSubGrid> VoxelSubGrid::get_voxel_tool() {
 //___________________________________________________________________________
 // Persistence
 
-void VoxelSubGrid::_resolve_stream() {
-	if (!_stream_ready && _stream_future.valid()) {
-		_stream = _stream_future.get(); // block until ready
-		_stream_ready = true;
-	}
-}
-
 void VoxelSubGrid::flush_dirty_chunks() {
-	if (!_stream.is_valid() && !_stream_future.valid()) {
-		return;
-	}
-	_resolve_stream(); // ensure stream is ready before flushing
-	if (!_stream.is_valid()) {
-		return;
-	}
-	Vector<Vector3i> dirty = _chunks.get_dirty_chunks();
-	for (Vector3i chunk_pos : dirty) {
-		_save_chunk(chunk_pos);
-		_chunks.mark_chunk_clean(chunk_pos);
-		if (!_meta.chunk_positions.has(chunk_pos)) {
-			_meta.chunk_positions.push_back(chunk_pos);
-		}
-	}
+    Vector<Vector3i> dirty = _chunks.get_dirty_chunks();
+    for (Vector3i chunk_pos : dirty) {
+        _save_chunk(chunk_pos);
+        _chunks.mark_chunk_clean(chunk_pos);
+        if (!_meta.chunk_positions.has(chunk_pos)) {
+            _meta.chunk_positions.push_back(chunk_pos);
+        }
+    }
 }
 
 void VoxelSubGrid::load_chunks_from_stream() {
+	// Open a temporary stream just for loading, on main thread
+	String saves_dir_abs = ProjectSettings::get_singleton()->globalize_path(_saves_dir);
+	String uuid_str = uuid_to_string(_meta.uuid);
+	String db_path = saves_dir_abs.path_join("ships").path_join(uuid_str + ".sqlite");
+
+	Ref<VoxelStreamSQLite> stream;
+	stream.instantiate();
+	stream->set_database_path(db_path);
+	int loaded_count = 0;
+
+	print_line(String("load_chunks_from_stream: meta chunk positions=") + itos(_meta.chunk_positions.size()));
 	for (Vector3i chunk_pos : _meta.chunk_positions) {
-		// Allocate a buffer for this chunk
 		std::shared_ptr<VoxelBuffer> buf = std::make_shared<VoxelBuffer>(VoxelBuffer::ALLOCATOR_POOL);
 		int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
 		buf->create(cs, cs, cs);
-
 		VoxelStream::VoxelQueryData q{ *buf, chunk_pos, 0, VoxelStream::RESULT_BLOCK_NOT_FOUND };
-		_stream->load_voxel_block(q);
-
+		stream->load_voxel_block(q);
 		if (q.result == VoxelStream::RESULT_BLOCK_FOUND) {
 			_chunks.set_block_buffer(chunk_pos, buf);
-		} else {
-			print_line(String("Warning: chunk not found in stream at ") + String(chunk_pos));
+			print_line(String("load_chunks_from_stream: loaded chunk ") + String(chunk_pos));
 		}
 	}
+	print_line(String("load_chunks_from_stream: chunk_map size after=") + itos(_chunks.get_chunk_count()));
+	print_line(
+			String("load_chunks_from_stream: all_chunk_positions size=") +
+			itos(_chunks.get_all_chunk_positions().size())
+	);
+}
+
+void VoxelSubGrid::_close_stream() {
+	if (_manager == nullptr)
+		return;
+	SubGridManager::SaveRequest req;
+	req.uuid = uuid_to_string(_meta.uuid).utf8().get_data();
+	req.saves_dir = _saves_dir.utf8().get_data();
+	req.close_stream = true;
+	_manager->push_save(req);
 }
 
 void VoxelSubGrid::save_and_close() {
-	_resolve_stream();
-	flush_dirty_chunks();
-	SubGridStreamHelper::close(_stream);
+    flush_dirty_chunks();
+    _close_stream();
 }
 
 void VoxelSubGrid::destroy() {
-	_resolve_stream();
-	flush_dirty_chunks();
-	SubGridStreamHelper::close_and_delete(_stream, _saves_dir, _meta.uuid);
-	queue_free();
+    flush_dirty_chunks();
+    _close_stream();
+	// File deletion must happen after save thread closes the stream.
+	// For now, push close and delete file after a brief wait, or
+	// add a delete_after_close flag to SaveRequest.
+    if (_manager != nullptr) {
+        _manager->wait_save_queue();
+    }
+    String saves_dir_abs = ProjectSettings::get_singleton()->globalize_path(_saves_dir);
+    String uuid_str = uuid_to_string(_meta.uuid);
+    String db_path = saves_dir_abs.path_join("ships").path_join(uuid_str + ".sqlite");
+	DirAccess::remove_absolute(db_path);
+    queue_free();
 }
 
 void VoxelSubGrid::_save_chunk(Vector3i chunk_pos) {
-	// Resolve async stream if not yet ready
-	if (!_stream_ready) {
-		if (_stream_future.valid()) {
-			if (_stream_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-				_stream = _stream_future.get();
-				_stream_ready = true;
-			} else {
-				return; // stream not ready yet, skip — chunk stays dirty, retried next cycle
-			}
-		} else if (!_stream.is_valid()) {
-			return; // no stream at all
-		}
-	}
-
-	if (!_stream.is_valid()) {
+	if (_manager == nullptr)
 		return;
-	}
-
 	std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
-	if (!buf) {
+	if (!buf)
 		return;
-	}
-	VoxelStream::VoxelQueryData q{ *buf, chunk_pos, 0, VoxelStream::RESULT_BLOCK_NOT_FOUND };
-	_stream->save_voxel_block(q);
+
+	SubGridManager::SaveRequest req;
+	req.uuid = uuid_to_string(_meta.uuid).utf8().get_data();
+	// Globalize on main thread, not save thread
+	req.saves_dir = ProjectSettings::get_singleton()->globalize_path(_saves_dir).utf8().get_data();
+	req.chunk_pos = chunk_pos;
+	req.buffer = buf;
+	_manager->push_save(req);
 }
 
 
@@ -418,7 +412,7 @@ void VoxelSubGrid::_disassemble_root_to_terrain(VoxelLodTerrain *terrain) {
 	if (_manager != nullptr) {
 		_manager->unregister_ship(uuid_to_string(_meta.uuid));
 	}
-	SubGridStreamHelper::close(_stream);
+	_close_stream();
 	queue_free();
 }
 
@@ -484,7 +478,7 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 	if (_manager != nullptr) {
 		_manager->unregister_ship(uuid_to_string(_meta.uuid));
 	}
-	SubGridStreamHelper::close(_stream);
+	_close_stream();
 	queue_free();
 }
 
