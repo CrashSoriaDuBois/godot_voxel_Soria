@@ -4,11 +4,7 @@
 namespace zylann::voxel {
 
 PackedByteArray SubGridMetadata::serialize() const {
-	print_line("NEW SERIALIZE RUNNING");
-
 	PackedByteArray bytes;
-
-	// Avoid lambdas entirely - use a simple helper
 	struct Writer {
 		PackedByteArray &b;
 		void raw(const void *src, int size) {
@@ -30,6 +26,8 @@ PackedByteArray SubGridMetadata::serialize() const {
 		}
 	} w{ bytes };
 
+	w.i8(2); //version byte
+
 	w.raw(uuid, 16);
 	w.raw(parent_uuid, 16);
 
@@ -44,25 +42,21 @@ PackedByteArray SubGridMetadata::serialize() const {
 	w.f64(target_angle_rad);
 
 	w.i8(is_root ? 1 : 0);
+	w.i8(is_terrain_anchored ? 1 : 0);
 	w.i8((uint8_t)lock_mode);
 
-	print_line(String("about to write world_position: ") + String(world_position));
 	w.f32(world_position.x);
 	w.f32(world_position.y);
 	w.f32(world_position.z);
-
-	// Verify bytes were written
-	const uint8_t *check = bytes.ptr() + 66;
-	print_line(
-			String("bytes[66..69] after write: ") + String::num_int64(check[0], 16) + " " +
-			String::num_int64(check[1], 16) + " " + String::num_int64(check[2], 16) + " " +
-			String::num_int64(check[3], 16)
-	);
 
 	w.f32(world_rotation.x);
 	w.f32(world_rotation.y);
 	w.f32(world_rotation.z);
 	w.f32(world_rotation.w);
+
+	w.f32(promoted_pivot_world.x);
+	w.f32(promoted_pivot_world.y);
+	w.f32(promoted_pivot_world.z);
 
 	w.i32((int32_t)chunk_positions.size());
 	for (int i = 0; i < chunk_positions.size(); i++) {
@@ -70,11 +64,6 @@ PackedByteArray SubGridMetadata::serialize() const {
 		w.i32(chunk_positions[i].y);
 		w.i32(chunk_positions[i].z);
 	}
-
-	print_line(
-			String("serialize: total bytes = ") + itos(bytes.size()) + String(" world_position = ") +
-			String(world_position)
-	);
 	return bytes;
 }
 
@@ -103,6 +92,8 @@ SubGridMetadata SubGridMetadata::deserialize(const PackedByteArray &bytes) {
 		return v;
 	};
 
+	uint8_t version = read1(); // read version byte
+
 	memcpy(m.uuid, r + offset, 16);
 	offset += 16;
 	memcpy(m.parent_uuid, r + offset, 16);
@@ -119,34 +110,23 @@ SubGridMetadata SubGridMetadata::deserialize(const PackedByteArray &bytes) {
 	m.target_angle_rad = read8();
 
 	m.is_root = read1() != 0;
+	if (version >= 2) {
+		m.is_terrain_anchored = read1() != 0; // only in v2+
+	}
 	m.lock_mode = (LockMode)read1();
-
-	// Print offset and raw bytes before reading world_position
-	print_line(String("offset before world_position: ") + itos(offset));
-	print_line(
-			String("next 12 bytes (hex): ") + String::num_int64(r[offset], 16) + " " +
-			String::num_int64(r[offset + 1], 16) + " " + String::num_int64(r[offset + 2], 16) + " " +
-			String::num_int64(r[offset + 3], 16) + " | " + String::num_int64(r[offset + 4], 16) + " " +
-			String::num_int64(r[offset + 5], 16) + " " + String::num_int64(r[offset + 6], 16) + " " +
-			String::num_int64(r[offset + 7], 16) + " | " + String::num_int64(r[offset + 8], 16) + " " +
-			String::num_int64(r[offset + 9], 16) + " " + String::num_int64(r[offset + 10], 16) + " " +
-			String::num_int64(r[offset + 11], 16)
-	);
 
 	m.world_position.x = readf();
 	m.world_position.y = readf();
 	m.world_position.z = readf();
 
-	print_line(String("world_position after read: ") + String(m.world_position));
-
-	//m.world_position.x = readf();
-	//m.world_position.y = readf();
-	//m.world_position.z = readf();
-
 	m.world_rotation.x = readf();
 	m.world_rotation.y = readf();
 	m.world_rotation.z = readf();
 	m.world_rotation.w = readf();
+
+	m.promoted_pivot_world.x = readf();
+	m.promoted_pivot_world.y = readf();
+	m.promoted_pivot_world.z = readf();
 
 	int count = read4();
 	m.chunk_positions.resize(count);
@@ -155,7 +135,6 @@ SubGridMetadata SubGridMetadata::deserialize(const PackedByteArray &bytes) {
 		m.chunk_positions.write[i].y = read4();
 		m.chunk_positions.write[i].z = read4();
 	}
-
 	return m;
 }
 

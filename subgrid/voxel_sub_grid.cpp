@@ -74,15 +74,34 @@ void VoxelSubGrid::initialize_root_from_disk(
 		Ref<VoxelMesherBlocky> mesher,
 		Ref<VoxelBlockyLibrary> library
 ) {
-	_meta = meta;
-	_saves_dir = saves_dir;
-	_mesher = mesher;
-	_library = library;
+    _meta = meta;
+    _saves_dir = saves_dir;
+    _mesher = mesher;
+    _library = library;
+    _promoted_pivot_world = meta.promoted_pivot_world;
+    _is_world_anchored = meta.is_terrain_anchored;
 
-	load_chunks_from_stream(); // handles its own stream internally
+    load_chunks_from_stream();
 
-	set_global_position(_meta.world_position);
-	set_global_basis(Basis(_meta.world_rotation));
+    print_line(String("initialize_root_from_disk:"));
+    print_line(String("  world_position = ") + String(meta.world_position));
+    print_line(String("  world_rotation = (") + 
+        rtos(meta.world_rotation.x) + ", " + rtos(meta.world_rotation.y) + ", " +
+        rtos(meta.world_rotation.z) + ", " + rtos(meta.world_rotation.w) + ")");
+    print_line(String("  is_terrain_anchored = ") + (meta.is_terrain_anchored ? "true" : "false"));
+    print_line(String("  is_root = ") + (meta.is_root ? "true" : "false"));
+    print_line(String("  promoted_pivot_world = ") + String(meta.promoted_pivot_world));
+
+    Quaternion q = _meta.world_rotation;
+    print_line(String("  quat length_squared = ") + rtos(q.length_squared()));
+
+    if (q.length_squared() < 0.0001f) {
+        q = Quaternion();
+    } else {
+        q = q.normalized();
+    }
+    set_global_position(_meta.world_position);
+    set_global_basis(Basis(q));
 }
 
 void VoxelSubGrid::initialize_child(
@@ -247,6 +266,14 @@ void VoxelSubGrid::_save_chunk(Vector3i chunk_pos) {
 	if (_manager == nullptr)
 		return;
 	std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
+
+	String saves_dir_abs = ProjectSettings::get_singleton()->globalize_path(_saves_dir);
+	// Ensure ships dir exists (main thread only)
+	String ships_dir = saves_dir_abs.path_join("ships");
+	if (!DirAccess::dir_exists_absolute(ships_dir)) {
+		DirAccess::make_dir_recursive_absolute(ships_dir);
+	}
+
 	if (!buf)
 		return;
 
@@ -341,7 +368,13 @@ void VoxelSubGrid::_disassemble_root_to_terrain(VoxelLodTerrain *terrain) {
 	Vector<VoxelSubGrid *> children_snapshot;
 	for (ObjectID id : _children) {
 		Object *obj = ObjectDB::get_instance(id);
+
 		VoxelSubGrid *child = Object::cast_to<VoxelSubGrid>(obj);
+
+		child->_meta.is_root = true;
+		child->_meta.is_terrain_anchored = true;
+		memset(child->_meta.parent_uuid, 0, 16);
+
 		if (child == nullptr)
 			continue;
 		if (child != nullptr && child->is_inside_tree()) {
@@ -365,8 +398,8 @@ void VoxelSubGrid::_disassemble_root_to_terrain(VoxelLodTerrain *terrain) {
 		child->_promoted_pivot_world = pivot_world;
 		child->_is_world_anchored = true;
 
-		// Update parent_uuid to empty, no parent ship anymore
-		// but keep is_root=false so _update_rotations handles it
+		// This child is becoming an independent ship
+		child->_meta.is_root = true;
 		memset(child->_meta.parent_uuid, 0, 16);
 
 		child->_meta.world_position = child_world_t.origin;

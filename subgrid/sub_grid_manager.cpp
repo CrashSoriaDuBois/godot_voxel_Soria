@@ -123,14 +123,12 @@ void SubGridManager::_register_single(VoxelSubGrid *sg, const String &parent_uui
 	// Create physics body
 	if (sg->is_root()) {
 		if (sg->get_metadata().is_terrain_anchored) {
-			_create_child_body(uuid, state); // AnimatableBody3D, kinematic
-		} 
-		else {
-			_create_root_body(uuid, state); // RigidBody3D, simulated
+			_create_child_body(uuid, state); // AnimatableBody3D
+		} else {
+			_create_root_body(uuid, state); // RigidBody3D
 		}
-	} 
-	else {
-		_create_child_body(uuid, state); // AnimatableBody3D, kinematic
+	} else {
+		_create_child_body(uuid, state); // AnimatableBody3D
 	}
 }
 
@@ -195,7 +193,6 @@ void SubGridManager::mark_all_dirty(const String &uuid) {
 
 void SubGridManager::_save_thread_func() {
 	auto &d = _save_thread_data;
-	std::atomic<int> items_in_flight{ 0 };
 
 	while (true) {
 		std::vector<SubGridManager::SaveRequest> batch;
@@ -209,8 +206,17 @@ void SubGridManager::_save_thread_func() {
 		}
 
 		for (auto &req : batch) {
-			String uuid = String(req.uuid.c_str());
+			struct Decrement {
+				std::atomic<int> &counter;
+				bool skip;
+				~Decrement() {
+					if (!skip)
+						--counter;
+				}
+			};
+			Decrement dec{ d.items_in_flight, req.close_stream }; // don't decrement for close_stream (wasn't incremented)
 
+			String uuid = String(req.uuid.c_str());
 			if (req.close_stream) {
 				auto it = d.streams.find(uuid);
 				if (it != d.streams.end()) {
@@ -259,9 +265,16 @@ void SubGridManager::push_save(const SaveRequest &req) {
 }
 
 void SubGridManager::wait_save_queue() {
-	while (_save_thread_data.items_in_flight > 0) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
-	}
+    const int max_wait_ms = 5000;
+    int waited = 0;
+    while (_save_thread_data.items_in_flight > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        waited++;
+        if (waited > max_wait_ms) {
+            ERR_PRINT("wait_save_queue timed out! items_in_flight=" + itos(_save_thread_data.items_in_flight));
+            break;
+        }
+    }
 }
 // ____________________________________________________________________________
 // Physics body management
@@ -461,6 +474,14 @@ void SubGridManager::_update_rotations(double delta) {
 				world_t = parent_state->node->get_global_transform() * local_t;
 			}
 		} else {
+			if (!state.node->_is_world_anchored) { // Not yet promoted/loaded correctly, skip
+				continue;
+			}
+			float rpm = state.node->get_angular_speed_rpm();
+			if (rpm == 0.0f) {
+				state.animatable_body->set_global_transform(state.node->get_global_transform());
+				continue;
+			}
 			Vector3 facing = Vector3(state.node->get_metadata().rotation_axis).normalized();
 			Basis rotation_basis = Basis(facing, (real_t)state.node->get_target_angle_rad());
 
@@ -812,23 +833,45 @@ int SubGridManager::_total_in_flight() const {
 // Persistence
 
 void SubGridManager::save_all() {
-    Vector<SubGridMetadata> metas;
-    Node *parent = get_parent();
-    if (parent == nullptr) return;
+	Vector<SubGridMetadata> metas;
 
-    for (int i = 0; i < parent->get_child_count(); i++) {
-        VoxelSubGrid *sg = Object::cast_to<VoxelSubGrid>(parent->get_child(i));
-        if (sg != nullptr && sg->is_root()) {
-            // Don't call flush_dirty_chunks here, _collect_metadata_recursive does it
-            sg->get_metadata_mut().world_position = sg->get_global_position();
-            sg->get_metadata_mut().world_rotation = sg->get_global_basis().get_rotation_quaternion();
-            _collect_metadata_recursive(sg, metas);
-        }
-    }
-    wait_save_queue();
-    _save_metadata_index(metas);
-}
+	for (auto &[uuid, state] : _ships) {
+		if (state.node == nullptr)
+			continue;
 
+		print_line(
+			String("save_all: saving uuid=") + uuid + " pos=" + String(state.node->get_metadata().world_position) +
+			" rot=(" + rtos(state.node->get_metadata().world_rotation.x) + "," +
+			rtos(state.node->get_metadata().world_rotation.y) + "," +
+			rtos(state.node->get_metadata().world_rotation.z) + "," +
+			rtos(state.node->get_metadata().world_rotation.w) + ")" +
+			" pivot=" + String(state.node->_promoted_pivot_world) +
+			" is_terrain_anchored=" + (state.node->get_metadata().is_terrain_anchored ? "true" : "false") +
+			" is_root=" + (state.node->get_metadata().is_root ? "true" : "false")
+		);
+
+		if (state.body_rid.is_valid()) {
+			Transform3D t = PhysicsServer3D::get_singleton()->body_get_state(
+					state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM
+			);
+			state.node->get_metadata_mut().world_position = t.origin;
+			state.node->get_metadata_mut().world_rotation = t.basis.get_rotation_quaternion();
+		} else {
+			state.node->get_metadata_mut().world_position = state.node->get_global_position();
+			state.node->get_metadata_mut().world_rotation = state.node->get_global_basis().get_rotation_quaternion();
+		}
+
+		if (state.node->get_metadata().is_terrain_anchored && state.node->is_root()) {
+			state.node->get_metadata_mut().promoted_pivot_world = state.node->_promoted_pivot_world;
+		}
+
+		state.node->flush_dirty_chunks();
+		metas.push_back(state.node->get_metadata());
+	}
+
+	print_line(String("save_all: saving ") + itos(metas.size()) + " subgrids");
+	wait_save_queue();
+	_save_metadata_index(metas);
 void SubGridManager::_collect_metadata_recursive(VoxelSubGrid *sg, Vector<SubGridMetadata> &out) {
 	sg->flush_dirty_chunks();
 	out.push_back(sg->get_metadata());
@@ -842,30 +885,35 @@ void SubGridManager::_collect_metadata_recursive(VoxelSubGrid *sg, Vector<SubGri
 
 void SubGridManager::load_all() {
 	Vector<SubGridMetadata> metas = _load_metadata_index();
-	if (metas.is_empty()) {
+	print_line(String("load_all: found ") + itos(metas.size()) + " entries in index");
+	if (metas.is_empty())
 		return;
-	}
 
 	HashMap<String, VoxelSubGrid *> uuid_to_node;
 	Node *parent = get_parent();
 
+	// Pass 1: roots (both rigid and terrain-anchored)
 	for (const SubGridMetadata &meta : metas) {
-		if (!meta.is_root) {
+		if (!meta.is_root)
 			continue;
-		}
+
 		VoxelSubGrid *sg = memnew(VoxelSubGrid);
 		parent->add_child(sg);
 		sg->initialize_root_from_disk(meta, _saves_dir, _mesher, _library);
 		uuid_to_node[_uuid_to_string(meta.uuid)] = sg;
 	}
 
+	// Pass 2: children (have a valid parent_uuid)
 	for (const SubGridMetadata &meta : metas) {
-		if (meta.is_root) {
+		if (meta.is_root)
 			continue;
-		}
+
 		String parent_uuid = _uuid_to_string(meta.parent_uuid);
 		VoxelSubGrid **parent_sg = uuid_to_node.getptr(parent_uuid);
-		ERR_CONTINUE_MSG(parent_sg == nullptr, "Parent not found for child subgrid");
+		ERR_CONTINUE_MSG(
+				parent_sg == nullptr,
+				"Parent not found for child subgrid — was it saved as is_root=false with no parent?"
+		);
 
 		VoxelSubGrid *sg = memnew(VoxelSubGrid);
 		(*parent_sg)->add_child(sg);
@@ -874,10 +922,10 @@ void SubGridManager::load_all() {
 		uuid_to_node[_uuid_to_string(meta.uuid)] = sg;
 	}
 
+	// Pass 3: register all roots (register_ship_tree walks children itself)
 	for (const SubGridMetadata &meta : metas) {
-		if (!meta.is_root) {
+		if (!meta.is_root)
 			continue;
-		}
 		VoxelSubGrid **sg = uuid_to_node.getptr(_uuid_to_string(meta.uuid));
 		if (sg != nullptr) {
 			register_ship_tree(*sg);

@@ -105,6 +105,8 @@ public:
 
 	double get_target_angle_rad() const {return _target_angle_rad;}
 
+	float get_angular_speed_rpm() const { return _angular_speed_rpm; }
+
 	double advance_rotation(double delta);
 	Transform3D compute_local_transform() const;
 
