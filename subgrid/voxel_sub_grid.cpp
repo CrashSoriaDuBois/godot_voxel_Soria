@@ -26,6 +26,13 @@ void VoxelSubGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_target_angle_rad"), &VoxelSubGrid::get_target_angle_rad);
 
 	ClassDB::bind_method(D_METHOD("get_voxel_tool"), &VoxelSubGrid::get_voxel_tool);
+
+	ClassDB::bind_method(D_METHOD("grab", "grab_point_local"), &VoxelSubGrid::grab);
+	ClassDB::bind_method(D_METHOD("grab_with_rotation", "grab_point_local"), &VoxelSubGrid::grab_with_rotation);
+	ClassDB::bind_method(D_METHOD("release"), &VoxelSubGrid::release);
+	ClassDB::bind_method(D_METHOD("set_grab_target", "target"), &VoxelSubGrid::set_grab_target);
+	ClassDB::bind_method(D_METHOD("apply_impulse", "impulse", "world_point"), &VoxelSubGrid::apply_impulse);
+	ClassDB::bind_method(D_METHOD("apply_central_impulse", "impulse"), &VoxelSubGrid::apply_central_impulse);
 }
 
 void VoxelSubGrid::_notification(int p_what) {
@@ -172,6 +179,36 @@ static String uuid_to_string(const uint8_t *uuid) {
 		s += String::num_int64(uuid[i] & 0xF, 16);
 	}
 	return s;
+}
+
+void VoxelSubGrid::grab(Vector3 grab_point_local) {
+	ERR_FAIL_COND_MSG(_manager == nullptr, "No manager set on this VoxelSubGrid.");
+	_manager->grab_subgrid(this, grab_point_local, false);
+}
+
+void VoxelSubGrid::grab_with_rotation(Vector3 grab_point_local) {
+	ERR_FAIL_COND_MSG(_manager == nullptr, "No manager set on this VoxelSubGrid.");
+	_manager->grab_subgrid(this, grab_point_local, true);
+}
+
+void VoxelSubGrid::release() {
+	ERR_FAIL_COND_MSG(_manager == nullptr, "No manager set on this VoxelSubGrid.");
+	_manager->release_subgrid(this);
+}
+
+void VoxelSubGrid::set_grab_target(Transform3D target) {
+	ERR_FAIL_COND_MSG(_manager == nullptr, "No manager set on this VoxelSubGrid.");
+	_manager->set_grab_target(this, target);
+}
+
+void VoxelSubGrid::apply_impulse(Vector3 impulse, Vector3 world_point) {
+	ERR_FAIL_COND_MSG(_manager == nullptr, "No manager set on this VoxelSubGrid.");
+	_manager->apply_impulse(this, impulse, world_point);
+}
+
+void VoxelSubGrid::apply_central_impulse(Vector3 impulse) {
+	ERR_FAIL_COND_MSG(_manager == nullptr, "No manager set on this VoxelSubGrid.");
+	_manager->apply_central_impulse(this, impulse);
 }
 //
 

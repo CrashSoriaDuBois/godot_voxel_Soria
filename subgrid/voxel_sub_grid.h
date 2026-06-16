@@ -56,6 +56,13 @@ public:
 	Ref<VoxelToolSubGrid> get_voxel_tool();
 	void set_manager(SubGridManager *manager);
 
+	void grab(Vector3 grab_point_local);
+	void grab_with_rotation(Vector3 grab_point_local);
+	void release();
+	void set_grab_target(Transform3D target);
+	void apply_impulse(Vector3 impulse, Vector3 world_point);
+	void apply_central_impulse(Vector3 impulse);
+
 	// kinetics (children only)
 	void set_angular_speed_rpm(float rpm) {
 		_angular_speed_rpm = rpm;

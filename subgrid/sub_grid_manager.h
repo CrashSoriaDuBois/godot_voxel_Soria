@@ -89,6 +89,15 @@ public:
 	void save_all();
 	void load_all();
 
+	// -----------------------------------------------------------------------
+	// Physics body interaction
+
+	void grab_subgrid(VoxelSubGrid *sg, Vector3 grab_point_local, bool rotate = false);
+	void release_subgrid(VoxelSubGrid *sg);
+	void set_grab_target(VoxelSubGrid *sg, Transform3D target);
+	void apply_impulse(VoxelSubGrid *sg, Vector3 impulse, Vector3 world_point);
+	void apply_central_impulse(VoxelSubGrid *sg, Vector3 impulse);
+
 protected:
 	void _notification(int p_what);
 	static void _bind_methods();
@@ -137,6 +146,11 @@ private:
 		// Per-chunk collision shapes and mass data.
 		// Keyed by chunk_pos (un-padded chunk grid coordinates).
 		HashMap<Vector3i, ChunkCollisionData> chunk_collision;
+
+		bool grabbed = false;
+		bool grab_rotate = false;
+		Vector3 grab_point_local;
+		Transform3D grab_target;
 	};
 
 	// -----------------------------------------------------------------------
@@ -179,6 +193,8 @@ private:
 	void _process_physics(double delta);
 	void _update_rotations(double delta);
 	void _sync_all_transforms();
+
+	void _drive_grabbed_ships(double delta);
 
 	// -----------------------------------------------------------------------
 	// Physics body management

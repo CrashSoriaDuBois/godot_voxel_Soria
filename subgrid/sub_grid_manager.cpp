@@ -445,6 +445,7 @@ void SubGridManager::_process_mesh(double delta) {
 // Physics process. rotation update + transform sync
 
 void SubGridManager::_process_physics(double delta) {
+	_drive_grabbed_ships(delta);
 	_update_rotations(delta);
 	_sync_all_transforms();
 }
@@ -509,24 +510,21 @@ void SubGridManager::_sync_all_transforms() {
 	for (auto &[uuid, state] : _ships) {
 		if (!state.node->is_inside_tree())
 			continue;
-
-		if (state.load_state != LOADED || state.node == nullptr) {
+		if (state.load_state != LOADED || state.node == nullptr)
 			continue;
-		}
 
 		Transform3D world_t;
 
-		if (state.node->is_root() && state.body_rid.is_valid()) {
-			// Read authoritative transform from physics engine
+		if (state.node->is_root() && state.body_rid.is_valid() && !state.grabbed) {
+			// Only read from physics server if NOT grabbed
+			// (grabbed bodies are positioned by _drive_grabbed_ships directly)
 			world_t = ps->body_get_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
-			// Push back to the Node3D so GDScript can read position/rotation
 			state.node->set_global_transform(world_t);
 		} else {
-			// Sub-contraption: transform was already set in _update_rotations
+			// Use whatever transform the node already has
 			world_t = state.node->get_global_transform();
 		}
 
-		// Update all mesh instance RIDs for this ship
 		for (auto &[key, render] : state.chunk_renders) {
 			Vector3i chunk_pos = _key_to_chunk_pos(key);
 			int lod = _key_to_lod(key);
@@ -534,6 +532,134 @@ void SubGridManager::_sync_all_transforms() {
 			Vector3 local_offset = Vector3(chunk_pos * cs_world);
 			rs->instance_set_transform(render.instance_rid, world_t * Transform3D(Basis(), local_offset));
 		}
+	}
+}
+
+void SubGridManager::grab_subgrid(VoxelSubGrid *sg, Vector3 grab_point_local, bool rotate) {
+	String uuid = uuid_for_node(sg);
+	ShipState *state = _ships.getptr(uuid);
+	ERR_FAIL_COND_MSG(state == nullptr, "VoxelSubGrid not registered in manager.");
+	ERR_FAIL_COND_MSG(!state->body_rid.is_valid(), "Cannot grab a non-rigid subgrid.");
+
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+
+	// Zero velocity so it doesn't carry momentum into the grab
+	ps->body_set_state(state->body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, Vector3());
+	ps->body_set_state(state->body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
+
+	state->grabbed = true;
+	state->grab_rotate = rotate;
+	state->grab_point_local = grab_point_local;
+	state->grab_target = sg->get_global_transform();
+}
+
+void SubGridManager::release_subgrid(VoxelSubGrid *sg) {
+	String uuid = uuid_for_node(sg);
+	ShipState *state = _ships.getptr(uuid);
+	ERR_FAIL_COND_MSG(state == nullptr, "VoxelSubGrid not registered in manager.");
+
+	if (state->grabbed && state->body_rid.is_valid()) {
+		PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+
+		// Clear velocity so the last frame doesn't launch it
+		ps->body_set_state(state->body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, Vector3());
+		ps->body_set_state(state->body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
+
+		ps->body_set_param(state->body_rid, PhysicsServer3D::BODY_PARAM_GRAVITY_SCALE, 1.0f);
+	}
+	state->grabbed = false;
+}
+
+void SubGridManager::set_grab_target(VoxelSubGrid *sg, Transform3D target) {
+	String uuid = uuid_for_node(sg);
+	ShipState *state = _ships.getptr(uuid);
+	ERR_FAIL_COND_MSG(state == nullptr, "VoxelSubGrid not registered in manager.");
+	state->grab_target = target;
+}
+
+void SubGridManager::apply_impulse(VoxelSubGrid *sg, Vector3 impulse, Vector3 world_point) {
+	String uuid = uuid_for_node(sg);
+	ShipState *state = _ships.getptr(uuid);
+	ERR_FAIL_COND_MSG(state == nullptr, "VoxelSubGrid not registered in manager.");
+	ERR_FAIL_COND_MSG(!state->body_rid.is_valid(), "Cannot apply impulse to a non-rigid subgrid.");
+
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	Transform3D t = ps->body_get_state(state->body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
+
+	Variant com_variant = ps->body_get_param(state->body_rid, PhysicsServer3D::BODY_PARAM_CENTER_OF_MASS);
+	Vector3 com_local = com_variant;
+
+	// Pure linear push
+	ps->body_apply_central_impulse(state->body_rid, impulse);
+
+	// Controlled tumble from hit offset, scale down to avoid launching
+	Vector3 local_point = t.affine_inverse().xform(world_point) - com_local;
+	Vector3 torque = local_point.cross(impulse) * 0.1f;
+	ps->body_apply_torque_impulse(state->body_rid, torque);
+}
+
+void SubGridManager::apply_central_impulse(VoxelSubGrid *sg, Vector3 impulse) {
+	String uuid = uuid_for_node(sg);
+	ShipState *state = _ships.getptr(uuid);
+	ERR_FAIL_COND_MSG(state == nullptr, "VoxelSubGrid not registered in manager.");
+	ERR_FAIL_COND_MSG(!state->body_rid.is_valid(), "Cannot apply impulse to a non-rigid subgrid.");
+
+	PhysicsServer3D::get_singleton()->body_apply_central_impulse(state->body_rid, impulse);
+}
+
+void SubGridManager::_drive_grabbed_ships(double delta) {
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+
+	for (auto &[uuid, state] : _ships) {
+		if (!state.grabbed || !state.body_rid.is_valid()) {
+			continue;
+		}
+
+		ps->body_set_param(state.body_rid, PhysicsServer3D::BODY_PARAM_GRAVITY_SCALE, 0.0f);
+
+		Transform3D current = ps->body_get_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
+
+		//Linear drive (existing)
+		Vector3 grab_local_world = current.basis.xform(state.grab_point_local);
+		Vector3 desired_origin = state.grab_target.origin - grab_local_world;
+		Vector3 linear_error = desired_origin - current.origin;
+
+		const float max_linear_speed = 15.f;
+		Vector3 new_linear_vel = linear_error / (float)delta;
+		if (new_linear_vel.length() > max_linear_speed) {
+			new_linear_vel = new_linear_vel.normalized() * max_linear_speed;
+		}
+
+		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, new_linear_vel);
+
+		//Angular drive (new)
+		if (state.grab_rotate) {
+			// Rotation error: how much do we need to rotate current to reach target
+			Basis current_basis = current.basis.orthonormalized();
+			Basis target_basis = state.grab_target.basis.orthonormalized();
+
+			// delta rotation = target * current_inverse
+			Basis rotation_error = target_basis * current_basis.inverse();
+			// Convert to axis/angle
+			Vector3 axis;
+			real_t angle;
+			rotation_error.get_axis_angle(axis, angle);
+
+			// Wrap angle to [-PI, PI]
+			if (angle > 3.14159265f)
+				angle -= 6.28318530f;
+
+			const float max_angular_speed = 10.f; // radians per second
+			Vector3 new_angular_vel = axis * (angle / (float)delta);
+			if (new_angular_vel.length() > max_angular_speed) {
+				new_angular_vel = new_angular_vel.normalized() * max_angular_speed;
+			}
+			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, new_angular_vel);
+		} else {
+			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
+		}
+
+		state.node->set_global_transform(current);
 	}
 }
 
@@ -872,6 +998,8 @@ void SubGridManager::save_all() {
 	print_line(String("save_all: saving ") + itos(metas.size()) + " subgrids");
 	wait_save_queue();
 	_save_metadata_index(metas);
+}
+
 void SubGridManager::_collect_metadata_recursive(VoxelSubGrid *sg, Vector<SubGridMetadata> &out) {
 	sg->flush_dirty_chunks();
 	out.push_back(sg->get_metadata());
