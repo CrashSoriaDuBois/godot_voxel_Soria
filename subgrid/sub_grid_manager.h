@@ -92,7 +92,7 @@ public:
 	// -----------------------------------------------------------------------
 	// Physics body interaction
 
-	void grab_subgrid(VoxelSubGrid *sg, Vector3 grab_point_local, bool rotate = false);
+	void grab_subgrid(VoxelSubGrid *sg, Vector3 grab_point_local, bool rotate = false, float strength = 1.0f);
 	void release_subgrid(VoxelSubGrid *sg);
 	void set_grab_target(VoxelSubGrid *sg, Transform3D target);
 	void apply_impulse(VoxelSubGrid *sg, Vector3 impulse, Vector3 world_point);
@@ -151,6 +151,8 @@ private:
 		bool grab_rotate = false;
 		Vector3 grab_point_local;
 		Transform3D grab_target;
+
+		float grab_strength = 1.0f;
 	};
 
 	// -----------------------------------------------------------------------

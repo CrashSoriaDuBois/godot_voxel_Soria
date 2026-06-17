@@ -535,7 +535,7 @@ void SubGridManager::_sync_all_transforms() {
 	}
 }
 
-void SubGridManager::grab_subgrid(VoxelSubGrid *sg, Vector3 grab_point_local, bool rotate) {
+void SubGridManager::grab_subgrid(VoxelSubGrid *sg, Vector3 grab_point_local, bool rotate, float strength) {
 	String uuid = uuid_for_node(sg);
 	ShipState *state = _ships.getptr(uuid);
 	ERR_FAIL_COND_MSG(state == nullptr, "VoxelSubGrid not registered in manager.");
@@ -551,6 +551,8 @@ void SubGridManager::grab_subgrid(VoxelSubGrid *sg, Vector3 grab_point_local, bo
 	state->grab_rotate = rotate;
 	state->grab_point_local = grab_point_local;
 	state->grab_target = sg->get_global_transform();
+
+	state->grab_strength = strength;
 }
 
 void SubGridManager::release_subgrid(VoxelSubGrid *sg) {
@@ -624,7 +626,12 @@ void SubGridManager::_drive_grabbed_ships(double delta) {
 		Vector3 desired_origin = state.grab_target.origin - grab_local_world;
 		Vector3 linear_error = desired_origin - current.origin;
 
-		const float max_linear_speed = 15.f;
+		// Mass aware speed cap :base speed * strength / mass, so heavier objects need more strength to move at the same speed
+		float mass = ps->body_get_param(state.body_rid, PhysicsServer3D::BODY_PARAM_MASS);
+
+		float max_linear_speed = (15.f * state.grab_strength) / mass;
+		max_linear_speed = CLAMP(max_linear_speed, 0.5f, 35.f);
+
 		Vector3 new_linear_vel = linear_error / (float)delta;
 		if (new_linear_vel.length() > max_linear_speed) {
 			new_linear_vel = new_linear_vel.normalized() * max_linear_speed;
@@ -649,7 +656,9 @@ void SubGridManager::_drive_grabbed_ships(double delta) {
 			if (angle > 3.14159265f)
 				angle -= 6.28318530f;
 
-			const float max_angular_speed = 10.f; // radians per second
+			float max_angular_speed = (2.f * state.grab_strength) / mass;
+			max_angular_speed = CLAMP(max_angular_speed, 0.1f, 20.f);
+
 			Vector3 new_angular_vel = axis * (angle / (float)delta);
 			if (new_angular_vel.length() > max_angular_speed) {
 				new_angular_vel = new_angular_vel.normalized() * max_angular_speed;

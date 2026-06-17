@@ -56,8 +56,8 @@ public:
 	Ref<VoxelToolSubGrid> get_voxel_tool();
 	void set_manager(SubGridManager *manager);
 
-	void grab(Vector3 grab_point_local);
-	void grab_with_rotation(Vector3 grab_point_local);
+	void grab(Vector3 grab_point_local, float strength = 1.0f);
+	void grab_with_rotation(Vector3 grab_point_local, float strength = 1.0f);
 	void release();
 	void set_grab_target(Transform3D target);
 	void apply_impulse(Vector3 impulse, Vector3 world_point);

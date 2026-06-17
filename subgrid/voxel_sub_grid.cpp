@@ -27,8 +27,8 @@ void VoxelSubGrid::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("get_voxel_tool"), &VoxelSubGrid::get_voxel_tool);
 
-	ClassDB::bind_method(D_METHOD("grab", "grab_point_local"), &VoxelSubGrid::grab);
-	ClassDB::bind_method(D_METHOD("grab_with_rotation", "grab_point_local"), &VoxelSubGrid::grab_with_rotation);
+	ClassDB::bind_method(D_METHOD("grab", "grab_point_local", "strength"), &VoxelSubGrid::grab, DEFVAL(1.0f));
+	ClassDB::bind_method(D_METHOD("grab_with_rotation", "grab_point_local", "strength"), &VoxelSubGrid::grab_with_rotation, DEFVAL(1.0f));
 	ClassDB::bind_method(D_METHOD("release"), &VoxelSubGrid::release);
 	ClassDB::bind_method(D_METHOD("set_grab_target", "target"), &VoxelSubGrid::set_grab_target);
 	ClassDB::bind_method(D_METHOD("apply_impulse", "impulse", "world_point"), &VoxelSubGrid::apply_impulse);
@@ -181,14 +181,14 @@ static String uuid_to_string(const uint8_t *uuid) {
 	return s;
 }
 
-void VoxelSubGrid::grab(Vector3 grab_point_local) {
+void VoxelSubGrid::grab(Vector3 grab_point_local, float strength) {
 	ERR_FAIL_COND_MSG(_manager == nullptr, "No manager set on this VoxelSubGrid.");
-	_manager->grab_subgrid(this, grab_point_local, false);
+	_manager->grab_subgrid(this, grab_point_local, false, strength);
 }
 
-void VoxelSubGrid::grab_with_rotation(Vector3 grab_point_local) {
+void VoxelSubGrid::grab_with_rotation(Vector3 grab_point_local, float strength) {
 	ERR_FAIL_COND_MSG(_manager == nullptr, "No manager set on this VoxelSubGrid.");
-	_manager->grab_subgrid(this, grab_point_local, true);
+	_manager->grab_subgrid(this, grab_point_local, true, strength);
 }
 
 void VoxelSubGrid::release() {
