@@ -106,6 +106,7 @@ public:
 
 	// Read-only access to chunk data for SubGridManager (padding, LOD queries).
 	const SubGridChunkMap &get_chunk_map() const { return _chunks; }
+	SubGridChunkMap &get_chunk_map_mut() { return _chunks; }
 	
 	// Read-only access to the viewer so SubGridManager can compute LOD.
 	Node3D *get_viewer() const { return _viewer; }

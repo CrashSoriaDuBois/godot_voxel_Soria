@@ -262,6 +262,7 @@ void VoxelSubGrid::load_chunks_from_stream() {
 		}
 	}
 	print_line(String("load_chunks_from_stream: chunk_map size after=") + itos(_chunks.get_chunk_count()));
+	_chunks.rebuild_all_lods();
 	print_line(
 			String("load_chunks_from_stream: all_chunk_positions size=") +
 			itos(_chunks.get_all_chunk_positions().size())

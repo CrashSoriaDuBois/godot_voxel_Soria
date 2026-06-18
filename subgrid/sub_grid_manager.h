@@ -17,6 +17,7 @@
 #include <atomic>
 #include "streams/sqlite/voxel_stream_sqlite.h"
 #include "core/config/project_settings.h"
+#include "lod/sub_grid_chunk_map.h"
 
 // Forward declare Godot types to avoid heavy includes in header
 class AnimatableBody3D;
@@ -129,29 +130,38 @@ private:
 	struct ShipState {
 		VoxelSubGrid *node = nullptr;
 		LoadState load_state = SLEEPING;
-		String parent_uuid; // empty for root ships
+		String parent_uuid;
 
-		// Rendering
-		HashSet<Vector3i> dirty_chunks;
-		HashSet<Vector3i> in_flight_chunks;
-		HashMap<Vector3i, int> current_lod;
+		// Per-LOD dirty and in-flight sets.
+		// dirty_chunks_per_lod[lod] contains LOD-space chunk positions
+		// that need a new mesh task at that LOD.
+		FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> dirty_chunks_per_lod;
+		FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> in_flight_per_lod;
+
+		// Per-LOD pending requeue: chunks whose LOD changed while in-flight.
+		// When the stale result arrives, these get re-queued.
+		FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> pending_requeue_per_lod;
+
+		// Per-LOD box of currently loaded LOD-space chunks (for diff detection).
+		// Updated each frame in _process_lod_for_ship.
+		// We track as a set rather than a box because ships are
+		// sparse and non-rectangular.
+		FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> active_lod_chunks;
+
+		// Render instances keyed by (lod_space_chunk_pos, lod).
+		// In the new system lod_space_chunk_pos is in LOD-space (not LOD0 space).
 		HashMap<uint64_t, ChunkRenderData> chunk_renders;
 
-		// Physics. root ships own a RigidBody via server RID.
-		// Child sub-contraptions own an AnimatableBody3D node (driven manually,
-		// avoids joint constraint overhead).
-		RID body_rid; // rigid body (roots only)
-		AnimatableBody3D *animatable_body = nullptr; // kinematic body (children only)
-
-		// Per-chunk collision shapes and mass data.
-		// Keyed by chunk_pos (un-padded chunk grid coordinates).
+		// Physics
+		RID body_rid;
+		AnimatableBody3D *animatable_body = nullptr;
 		HashMap<Vector3i, ChunkCollisionData> chunk_collision;
+		HashSet<Vector3i> collision_built_chunks; // LOD0 positions only
 
 		bool grabbed = false;
 		bool grab_rotate = false;
 		Vector3 grab_point_local;
 		Transform3D grab_target;
-
 		float grab_strength = 1.0f;
 	};
 
@@ -187,7 +197,7 @@ private:
 	void _submit_one_task(const String &uuid, ShipState &state, Vector3i chunk_pos, int lod);
 	void _apply_mesh_result(const SubGridMeshTaskResult &result);
 
-	std::shared_ptr<VoxelBuffer> _build_padded_buffer(VoxelSubGrid *node, Vector3i chunk_pos) const;
+	std::shared_ptr<VoxelBuffer> _build_padded_buffer(VoxelSubGrid *node, Vector3i chunk_pos, int lod) const;
 
 	// -----------------------------------------------------------------------
 	// _physics_process(). rotation, transform sync
@@ -220,8 +230,19 @@ private:
 	// LOD
 
 	static const float LOD_DISTANCES[4];
-	int _compute_lod(VoxelSubGrid *node, Vector3i chunk_pos) const;
 	int _total_in_flight() const;
+
+	// Returns the viewer position in world space from VoxelEngine,falling back to the node's manually assigned viewer.
+	Vector3 _get_viewer_world_pos(VoxelSubGrid *node) const;
+
+	// For a given LOD level, compute the set of LOD-space chunk positions that should be active (visible) around the viewer.
+	void _compute_desired_lod_chunks(VoxelSubGrid *node, int lod, HashSet<Vector3i> &out_desired) const;
+
+	// World offset of a LOD-space chunk in subgrid-local space
+	static Vector3 _lod_chunk_local_offset(Vector3i lod_pos, int lod) {
+		const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+		return Vector3(lod_pos * (cs << lod));
+	}
 
 	// -----------------------------------------------------------------------
 	// Registration

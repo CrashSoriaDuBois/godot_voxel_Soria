@@ -108,9 +108,14 @@ void SubGridManager::_register_single(VoxelSubGrid *sg, const String &parent_uui
 	state.node = sg;
 	state.parent_uuid = parent_uuid;
 	state.load_state = LOADED;
-	state.dirty_chunks.clear();
-	state.in_flight_chunks.clear();
-	state.current_lod.clear();
+
+	// Clear all per-LOD state
+	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
+		state.dirty_chunks_per_lod[lod].clear();
+		state.in_flight_per_lod[lod].clear();
+		state.pending_requeue_per_lod[lod].clear();
+		state.active_lod_chunks[lod].clear();
+	}
 
 	_mark_all_dirty(state);
 	sg->set_manager(this);
@@ -154,10 +159,32 @@ void SubGridManager::unregister_ship(const String &uuid_str) {
 	_ships.erase(uuid_str);
 }
 
-void SubGridManager::mark_chunk_dirty(const String &uuid_str, Vector3i chunk_pos) {
+void SubGridManager::mark_chunk_dirty(const String &uuid_str, Vector3i lod0_chunk_pos) {
 	ShipState *state = _ships.getptr(uuid_str);
-	if (state != nullptr && state->load_state == LOADED && !state->in_flight_chunks.has(chunk_pos)) {
-		state->dirty_chunks.insert(chunk_pos);
+	if (state == nullptr || state->load_state != LOADED) {
+		return;
+	}
+
+	// Invalidate collision for this LOD0 chunk
+	state->collision_built_chunks.erase(lod0_chunk_pos);
+
+	// Propagate LOD downsampling in the chunk map and collect affected
+	// LOD-space positions
+	FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> affected;
+	state->node->get_chunk_map_mut().update_lods_for_chunk(lod0_chunk_pos, affected);
+
+	// LOD0: mark the lod0 chunk itself dirty
+	if (!state->in_flight_per_lod[0].has(lod0_chunk_pos)) {
+		state->dirty_chunks_per_lod[0].insert(lod0_chunk_pos);
+	}
+
+	// LOD1+: mark affected lod-space chunks dirty
+	for (int lod = 1; lod < SUBGRID_MAX_LODS; lod++) {
+		for (const Vector3i &lod_pos : affected[lod]) {
+			if (!state->in_flight_per_lod[lod].has(lod_pos)) {
+				state->dirty_chunks_per_lod[lod].insert(lod_pos);
+			}
+		}
 	}
 }
 
@@ -165,10 +192,12 @@ void SubGridManager::_mark_all_dirty(ShipState &state) {
 	if (state.node == nullptr) {
 		return;
 	}
-	const HashSet<Vector3i> &positions = state.node->get_chunk_map().get_all_chunk_positions();
-	for (const Vector3i &pos : positions) {
-		if (!state.in_flight_chunks.has(pos)) {
-			state.dirty_chunks.insert(pos);
+	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
+		const HashSet<Vector3i> &positions = state.node->get_chunk_map().get_lod_chunk_positions(lod);
+		for (const Vector3i &pos : positions) {
+			if (!state.in_flight_per_lod[lod].has(pos)) {
+				state.dirty_chunks_per_lod[lod].insert(pos);
+			}
 		}
 	}
 }
@@ -528,8 +557,7 @@ void SubGridManager::_sync_all_transforms() {
 		for (auto &[key, render] : state.chunk_renders) {
 			Vector3i chunk_pos = _key_to_chunk_pos(key);
 			int lod = _key_to_lod(key);
-			int cs_world = (1 << SubGridChunkMap::CHUNK_SIZE_PO2) << lod;
-			Vector3 local_offset = Vector3(chunk_pos * cs_world);
+			Vector3 local_offset = _lod_chunk_local_offset(chunk_pos, lod);
 			rs->instance_set_transform(render.instance_rid, world_t * Transform3D(Basis(), local_offset));
 		}
 	}
@@ -717,16 +745,18 @@ void SubGridManager::_load_ship(const String &uuid, ShipState &state) {
 }
 
 void SubGridManager::_unload_ship(const String &uuid, ShipState &state) {
-	if (state.node == nullptr) {
-		return;
+	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
+		state.dirty_chunks_per_lod[lod].clear();
+		state.in_flight_per_lod[lod].clear();
+		state.pending_requeue_per_lod[lod].clear();
+		state.active_lod_chunks[lod].clear();
 	}
-	state.dirty_chunks.clear();
 	state.node->flush_dirty_chunks();
 	_free_chunk_renders(state);
 	_destroy_body(state);
 	state.node->clear_chunk_buffers();
-	state.current_lod.clear();
 	state.chunk_collision.clear();
+	state.collision_built_chunks.clear();
 	state.load_state = SLEEPING;
 }
 
@@ -745,89 +775,113 @@ void SubGridManager::_process_lod_for_ship(const String &uuid, ShipState &state)
 	if (state.node == nullptr) {
 		return;
 	}
-	const HashSet<Vector3i> &all_chunks = state.node->get_chunk_map().get_all_chunk_positions();
-	for (const Vector3i &chunk_pos : all_chunks) {
-		int desired_lod = _compute_lod(state.node, chunk_pos);
-		int *current = state.current_lod.getptr(chunk_pos);
-		if (current == nullptr || *current != desired_lod) {
-			for (int old_lod = 0; old_lod < 4; old_lod++) {
-				if (old_lod == desired_lod) {
-					continue;
+
+	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
+		// Compute desired set for this LOD
+		static thread_local HashSet<Vector3i> desired;
+		_compute_desired_lod_chunks(state.node, lod, desired);
+
+		// Chunks to load: in desired but not in active
+		for (const Vector3i &lod_pos : desired) {
+			if (!state.active_lod_chunks[lod].has(lod_pos)) {
+				// New chunk needed at this LOD
+				if (!state.in_flight_per_lod[lod].has(lod_pos)) {
+					state.dirty_chunks_per_lod[lod].insert(lod_pos);
 				}
-				uint64_t old_key = _chunk_mesh_key(chunk_pos, old_lod);
-				ChunkRenderData *old = state.chunk_renders.getptr(old_key);
-				if (old != nullptr) {
-					RenderingServer::get_singleton()->free_rid(old->instance_rid);
-					state.chunk_renders.erase(old_key);
-				}
+				state.active_lod_chunks[lod].insert(lod_pos);
 			}
-			state.current_lod[chunk_pos] = desired_lod;
-			if (!state.in_flight_chunks.has(chunk_pos)) {
-				state.dirty_chunks.insert(chunk_pos);
+		}
+
+		// Chunks to unload: in active but not in desired
+		// Collect first to avoid modifying set while iterating
+		Vector<Vector3i> to_remove;
+		for (const Vector3i &lod_pos : state.active_lod_chunks[lod]) {
+			if (!desired.has(lod_pos)) {
+				to_remove.push_back(lod_pos);
+			}
+		}
+		for (const Vector3i &lod_pos : to_remove) {
+			state.active_lod_chunks[lod].erase(lod_pos);
+			state.dirty_chunks_per_lod[lod].erase(lod_pos);
+
+			// Remove render instance
+			uint64_t key = _chunk_mesh_key(lod_pos, lod);
+			ChunkRenderData *render = state.chunk_renders.getptr(key);
+			if (render != nullptr) {
+				RenderingServer::get_singleton()->free_rid(render->instance_rid);
+				state.chunk_renders.erase(key);
 			}
 		}
 	}
 }
 
-int SubGridManager::_compute_lod(VoxelSubGrid *node, Vector3i chunk_pos) const {
-	Node3D *viewer = node->get_viewer();
-	if (viewer == nullptr) {
-		return 0;
+void SubGridManager::_compute_desired_lod_chunks(VoxelSubGrid *node, int lod, HashSet<Vector3i> &out_desired) const {
+	out_desired.clear();
+	if (node == nullptr) {
+		return;
 	}
+
+	const Vector3 viewer_world = _get_viewer_world_pos(node);
+	const Transform3D inv_t = node->get_global_transform().affine_inverse();
+	const Vector3 viewer_local = inv_t.xform(viewer_world);
+
 	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
-	Vector3 viewer_local = node->get_global_transform().affine_inverse().xform(viewer->get_global_position());
-	Vector3 chunk_center = Vector3(chunk_pos * cs) + Vector3(cs * 0.5f, cs * 0.5f, cs * 0.5f);
-	float dist = viewer_local.distance_to(chunk_center);
-	for (int i = 0; i < 4; i++) {
-		if (dist < LOD_DISTANCES[i]) {
-			return i;
+	const int lod_cs = cs << lod; // world-space size of one LOD-space chunk
+
+	// Distance threshold for this LOD level.
+	// A LOD-space chunk is desired at LOD L if: Its center is within LOD_DISTANCES[L] of the viewer or It exists in the chunk map (ship is finite, only iterate known chunks)
+	const float max_dist = LOD_DISTANCES[lod];
+
+	const HashSet<Vector3i> &all = node->get_chunk_map().get_lod_chunk_positions(lod);
+	for (const Vector3i &lod_pos : all) {
+		Vector3 chunk_center = Vector3(lod_pos * lod_cs) + Vector3(lod_cs * 0.5f, lod_cs * 0.5f, lod_cs * 0.5f);
+		float dist = viewer_local.distance_to(chunk_center);
+		if (dist < max_dist) {
+			out_desired.insert(lod_pos);
 		}
 	}
-	return 3;
 }
-
 // ____________________________________________________________________________
 // Task submission
 
 void SubGridManager::_submit_pending_tasks(const String &uuid, ShipState &state) {
-	if (state.dirty_chunks.is_empty()) {
-		return;
-	}
-	Vector<Vector3i> to_submit;
-	for (const Vector3i &pos : state.dirty_chunks) {
-		to_submit.push_back(pos);
-	}
-	for (const Vector3i &chunk_pos : to_submit) {
-		if (_total_in_flight() >= MAX_CONCURRENT_TASKS) {
-			break;
+	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
+		if (state.dirty_chunks_per_lod[lod].is_empty()) {
+			continue;
 		}
-		int lod = 0;
-		int *l = state.current_lod.getptr(chunk_pos);
-		if (l != nullptr) {
-			lod = *l;
+		Vector<Vector3i> to_submit;
+		for (const Vector3i &pos : state.dirty_chunks_per_lod[lod]) {
+			to_submit.push_back(pos);
 		}
-		_submit_one_task(uuid, state, chunk_pos, lod);
+		for (const Vector3i &lod_pos : to_submit) {
+			if (_total_in_flight() >= MAX_CONCURRENT_TASKS) {
+				return;
+			}
+			_submit_one_task(uuid, state, lod_pos, lod);
+		}
 	}
 }
 
-void SubGridManager::_submit_one_task(const String &uuid, ShipState &state, Vector3i chunk_pos, int lod) {
-	std::shared_ptr<VoxelBuffer> padded = _build_padded_buffer(state.node, chunk_pos);
+void SubGridManager::_submit_one_task(const String &uuid, ShipState &state, Vector3i lod_pos, int lod) {
+	std::shared_ptr<VoxelBuffer> padded = _build_padded_buffer(state.node, lod_pos, lod);
 	if (!padded) {
-		state.dirty_chunks.erase(chunk_pos);
+		state.dirty_chunks_per_lod[lod].erase(lod_pos);
 		return;
 	}
 
-	state.dirty_chunks.erase(chunk_pos);
-	state.in_flight_chunks.insert(chunk_pos);
+	state.dirty_chunks_per_lod[lod].erase(lod_pos);
+	state.in_flight_per_lod[lod].insert(lod_pos);
 
 	SubGridMeshTaskInput input;
 	input.ship_uuid = uuid;
-	input.chunk_pos = chunk_pos;
+	input.chunk_pos = lod_pos; // NOW LOD-space
 	input.lod = lod;
 	input.padded_buffer = std::move(padded);
 	input.mesher = _mesher;
-	input.build_collision = true; // collision only runs at lod==0 inside run_mesh_task
-	input.weight_table = _weight_table; // cheap copy
+	// Collision only at LOD0, only if not yet built
+	// chunk_pos at lod0 == lod_pos when lod==0
+	input.build_collision = (lod == 0) && !state.collision_built_chunks.has(lod_pos);
+	input.weight_table = _weight_table;
 
 	_pending_futures.push_back(std::async(std::launch::async, run_mesh_task, std::move(input)));
 }
@@ -852,10 +906,29 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 		return;
 	}
 
-	state->in_flight_chunks.erase(result.chunk_pos);
+	const int lod = result.lod;
+	const Vector3i lod_pos = result.chunk_pos; // LOD-space
 
-	// --- Mesh ---
-	uint64_t key = _chunk_mesh_key(result.chunk_pos, result.lod);
+	state->in_flight_per_lod[lod].erase(lod_pos);
+
+	// Stale check: chunk was removed from active set while task was in flight
+	if (!state->active_lod_chunks[lod].has(lod_pos)) {
+		// Chunk is no longer desired, discard result
+		if (state->pending_requeue_per_lod[lod].has(lod_pos)) {
+			state->pending_requeue_per_lod[lod].erase(lod_pos);
+		}
+		return;
+	}
+
+	// Requeue if LOD changed while in flight (shouldn't happen in newsystem since LOD is determined by the level, not per-chunk, but guard anyway)
+	if (state->pending_requeue_per_lod[lod].has(lod_pos)) {
+		state->pending_requeue_per_lod[lod].erase(lod_pos);
+		state->dirty_chunks_per_lod[lod].insert(lod_pos);
+	}
+
+	uint64_t key = _chunk_mesh_key(lod_pos, lod);
+
+	// Remove existing render for this key
 	ChunkRenderData *existing = state->chunk_renders.getptr(key);
 	if (existing != nullptr) {
 		RenderingServer::get_singleton()->free_rid(existing->instance_rid);
@@ -886,9 +959,10 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 			rs->instance_set_base(instance, mesh->get_rid());
 			rs->instance_set_scenario(instance, scenario);
 
-			int cs_world = (1 << SubGridChunkMap::CHUNK_SIZE_PO2) << result.lod;
+			// LOD-space world offset: chunk_pos * (chunk_size << lod)
+			Vector3 local_offset = _lod_chunk_local_offset(lod_pos, lod);
 			Transform3D world_t = state->node->get_global_transform();
-			rs->instance_set_transform(instance, world_t * Transform3D(Basis(), Vector3(result.chunk_pos * cs_world)));
+			rs->instance_set_transform(instance, world_t * Transform3D(Basis(), local_offset));
 
 			ChunkRenderData render_data;
 			render_data.instance_rid = instance;
@@ -897,31 +971,34 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 		}
 	}
 
-	// --- Collision (lod 0 only) ---
-	if (result.has_collision) {
-		_apply_collision_result(*state, result.chunk_pos, result.collision);
+	// Collision: LOD0 only, once per chunk lifetime
+	if (result.has_collision && !state->collision_built_chunks.has(lod_pos)) {
+		_apply_collision_result(*state, lod_pos, result.collision);
 		_recalculate_com(result.ship_uuid, *state);
+		state->collision_built_chunks.insert(lod_pos);
 	}
 }
 
 // ____________________________________________________________________________
 // Padded buffer
 
-std::shared_ptr<VoxelBuffer> SubGridManager::_build_padded_buffer(VoxelSubGrid *node, Vector3i chunk_pos) const {
+std::shared_ptr<VoxelBuffer> SubGridManager::_build_padded_buffer(VoxelSubGrid *node, Vector3i lod_pos, int lod) const {
 	const SubGridChunkMap &chunk_map = node->get_chunk_map();
-	std::shared_ptr<VoxelBuffer> buf = chunk_map.get_chunk_buffer(chunk_pos);
-	if (!buf) {
-		return nullptr;
-	}
-
 	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
 	const int pad = 1;
 	const int ps = cs + pad * 2;
+
+	// Get the center chunk from the appropriate LOD map
+	std::shared_ptr<VoxelBuffer> buf = chunk_map.get_lod_chunk_buffer(lod_pos, lod);
+	if (!buf) {
+		return nullptr;
+	}
 
 	auto padded = std::make_shared<VoxelBuffer>(VoxelBuffer::ALLOCATOR_DEFAULT);
 	padded->create(ps, ps, ps);
 	padded->fill(0, VoxelBuffer::CHANNEL_TYPE);
 
+	// Copy center chunk
 	for (int z = 0; z < cs; z++) {
 		for (int y = 0; y < cs; y++) {
 			for (int x = 0; x < cs; x++) {
@@ -931,9 +1008,10 @@ std::shared_ptr<VoxelBuffer> SubGridManager::_build_padded_buffer(VoxelSubGrid *
 		}
 	}
 
+	// Pad from LOD-space neighbors (same lod level)
 	const Vector3i dirs[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
 	for (const Vector3i &dir : dirs) {
-		std::shared_ptr<VoxelBuffer> nbuf = chunk_map.get_chunk_buffer(chunk_pos + dir);
+		std::shared_ptr<VoxelBuffer> nbuf = chunk_map.get_lod_chunk_buffer(lod_pos + dir, lod);
 		if (!nbuf) {
 			continue;
 		}
@@ -941,12 +1019,12 @@ std::shared_ptr<VoxelBuffer> SubGridManager::_build_padded_buffer(VoxelSubGrid *
 			for (int b = 0; b < cs; b++) {
 				int nx, ny, nz, px, py, pz;
 				// clang-format off
-				if      (dir.x ==  1) { nx=0;    ny=a;    nz=b;    px=cs+pad; py=a+pad;  pz=b+pad;  }
-				else if (dir.x == -1) { nx=cs-1; ny=a;    nz=b;    px=0;      py=a+pad;  pz=b+pad;  }
-				else if (dir.y ==  1) { nx=a;    ny=0;    nz=b;    px=a+pad;  py=cs+pad; pz=b+pad;  }
-				else if (dir.y == -1) { nx=a;    ny=cs-1; nz=b;    px=a+pad;  py=0;      pz=b+pad;  }
-				else if (dir.z ==  1) { nx=a;    ny=b;    nz=0;    px=a+pad;  py=b+pad;  pz=cs+pad; }
-				else                  { nx=a;    ny=b;    nz=cs-1; px=a+pad;  py=b+pad;  pz=0;      }
+                if      (dir.x ==  1) { nx=0;    ny=a;    nz=b; px=cs+pad; py=a+pad;  pz=b+pad;  }
+                else if (dir.x == -1) { nx=cs-1; ny=a;    nz=b; px=0;      py=a+pad;  pz=b+pad;  }
+                else if (dir.y ==  1) { nx=a;    ny=0;    nz=b; px=a+pad;  py=cs+pad; pz=b+pad;  }
+                else if (dir.y == -1) { nx=a;    ny=cs-1; nz=b; px=a+pad;  py=0;      pz=b+pad;  }
+                else if (dir.z ==  1) { nx=a;    ny=b;    nz=0; px=a+pad;  py=b+pad;  pz=cs+pad; }
+                else                  { nx=a;    ny=b; nz=cs-1; px=a+pad;  py=b+pad;  pz=0;      }
 				// clang-format on
 				uint32_t v = nbuf->get_voxel(nx, ny, nz, VoxelBuffer::CHANNEL_TYPE);
 				padded->set_voxel(v, px, py, pz, VoxelBuffer::CHANNEL_TYPE);
@@ -959,7 +1037,9 @@ std::shared_ptr<VoxelBuffer> SubGridManager::_build_padded_buffer(VoxelSubGrid *
 int SubGridManager::_total_in_flight() const {
 	int total = 0;
 	for (const auto &[_, state] : _ships) {
-		total += (int)state.in_flight_chunks.size();
+		for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
+			total += (int)state.in_flight_per_lod[lod].size();
+		}
 	}
 	return total;
 }
@@ -1018,6 +1098,26 @@ void SubGridManager::_collect_metadata_recursive(VoxelSubGrid *sg, Vector<SubGri
 			_collect_metadata_recursive(child, out);
 		}
 	}
+}
+
+Vector3 SubGridManager::_get_viewer_world_pos(VoxelSubGrid *node) const {
+	Vector3 viewer_world;
+	bool has_viewer = false;
+
+	VoxelEngine::get_singleton().for_each_viewer([&viewer_world, &has_viewer](ViewerID, const VoxelEngine::Viewer &v) {
+		if (!has_viewer) {
+			viewer_world = v.world_position;
+			has_viewer = true;
+		}
+	});
+
+	if (!has_viewer && node != nullptr) {
+		Node3D *viewer = node->get_viewer();
+		if (viewer != nullptr) {
+			viewer_world = viewer->get_global_position();
+		}
+	}
+	return viewer_world;
 }
 
 void SubGridManager::load_all() {
