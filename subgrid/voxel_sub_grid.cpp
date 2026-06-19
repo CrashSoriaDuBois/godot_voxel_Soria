@@ -64,6 +64,8 @@ void VoxelSubGrid::initialize_root(
 	_mesher = mesher;
 	_library = library;
 
+	_chunks.rebuild_all_lods();
+
 	String saves_dir_copy = saves_dir;
 	uint8_t uuid_copy[16];
 	memcpy(uuid_copy, meta.uuid, 16);
@@ -126,6 +128,8 @@ void VoxelSubGrid::initialize_child(
 		memcpy(_meta.parent_uuid, parent_sg->get_metadata().uuid, 16);
 		parent_sg->_children.push_back(get_instance_id());
 	}
+
+	_chunks.rebuild_all_lods();
 
 	VoxelSubGrid *root = get_root();
 	_mesher = root->_mesher;

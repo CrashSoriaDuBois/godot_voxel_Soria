@@ -772,19 +772,28 @@ void SubGridManager::_free_chunk_renders(ShipState &state) {
 // LOD
 
 void SubGridManager::_process_lod_for_ship(const String &uuid, ShipState &state) {
+	// Temporary debug: print LOD0 active set
+	String lod0_active_str = "LOD0 active: ";
+	for (const Vector3i &p : state.active_lod_chunks[0]) {
+		lod0_active_str += String(p) + " ";
+	}
+	print_line(lod0_active_str);
+
 	if (state.node == nullptr) {
 		return;
 	}
 
+	// Process LOD0 first, then coarser LODs in order.
+	// Each coarser LOD excludes areas covered by finer LODs.
+	// We use a thread_local to avoid allocation per frame per ship.
+	HashSet<Vector3i> desired;
+
 	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
-		// Compute desired set for this LOD
-		static thread_local HashSet<Vector3i> desired;
 		_compute_desired_lod_chunks(state.node, lod, desired);
 
-		// Chunks to load: in desired but not in active
+		// Chunks to activate
 		for (const Vector3i &lod_pos : desired) {
 			if (!state.active_lod_chunks[lod].has(lod_pos)) {
-				// New chunk needed at this LOD
 				if (!state.in_flight_per_lod[lod].has(lod_pos)) {
 					state.dirty_chunks_per_lod[lod].insert(lod_pos);
 				}
@@ -792,8 +801,7 @@ void SubGridManager::_process_lod_for_ship(const String &uuid, ShipState &state)
 			}
 		}
 
-		// Chunks to unload: in active but not in desired
-		// Collect first to avoid modifying set while iterating
+		// Chunks to deactivate
 		Vector<Vector3i> to_remove;
 		for (const Vector3i &lod_pos : state.active_lod_chunks[lod]) {
 			if (!desired.has(lod_pos)) {
@@ -804,7 +812,6 @@ void SubGridManager::_process_lod_for_ship(const String &uuid, ShipState &state)
 			state.active_lod_chunks[lod].erase(lod_pos);
 			state.dirty_chunks_per_lod[lod].erase(lod_pos);
 
-			// Remove render instance
 			uint64_t key = _chunk_mesh_key(lod_pos, lod);
 			ChunkRenderData *render = state.chunk_renders.getptr(key);
 			if (render != nullptr) {
@@ -822,23 +829,23 @@ void SubGridManager::_compute_desired_lod_chunks(VoxelSubGrid *node, int lod, Ha
 	}
 
 	const Vector3 viewer_world = _get_viewer_world_pos(node);
-	const Transform3D inv_t = node->get_global_transform().affine_inverse();
-	const Vector3 viewer_local = inv_t.xform(viewer_world);
+	// Distance from viewer to ship origin in world space
+	const float dist = node->get_global_position().distance_to(viewer_world);
 
-	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
-	const int lod_cs = cs << lod; // world-space size of one LOD-space chunk
-
-	// Distance threshold for this LOD level.
-	// A LOD-space chunk is desired at LOD L if: Its center is within LOD_DISTANCES[L] of the viewer or It exists in the chunk map (ship is finite, only iterate known chunks)
+	// This LOD level is active when the viewer is within its range but beyond the finer LOD's range.
 	const float max_dist = LOD_DISTANCES[lod];
+	const float min_dist = (lod > 0) ? LOD_DISTANCES[lod - 1] : 0.f;
 
+	// Viewer is not in this LOD's band
+	if (dist < min_dist || dist >= max_dist) {
+		return;
+	}
+
+	// Viewer is in this LOD's band, all chunks at this LOD are desired.
+	// No per-chunk distance check needed; the whole ship renders at one LOD.
 	const HashSet<Vector3i> &all = node->get_chunk_map().get_lod_chunk_positions(lod);
 	for (const Vector3i &lod_pos : all) {
-		Vector3 chunk_center = Vector3(lod_pos * lod_cs) + Vector3(lod_cs * 0.5f, lod_cs * 0.5f, lod_cs * 0.5f);
-		float dist = viewer_local.distance_to(chunk_center);
-		if (dist < max_dist) {
-			out_desired.insert(lod_pos);
-		}
+		out_desired.insert(lod_pos);
 	}
 }
 // ____________________________________________________________________________
@@ -864,6 +871,7 @@ void SubGridManager::_submit_pending_tasks(const String &uuid, ShipState &state)
 
 void SubGridManager::_submit_one_task(const String &uuid, ShipState &state, Vector3i lod_pos, int lod) {
 	std::shared_ptr<VoxelBuffer> padded = _build_padded_buffer(state.node, lod_pos, lod);
+
 	if (!padded) {
 		state.dirty_chunks_per_lod[lod].erase(lod_pos);
 		return;

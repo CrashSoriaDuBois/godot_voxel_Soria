@@ -28,8 +28,7 @@ void SubGridChunkMap::set_voxel(uint32_t value, Vector3i local_pos, int channel)
 
 	block->get_voxels().set_voxel(value, voxel_in_chunk.x, voxel_in_chunk.y, voxel_in_chunk.z, channel);
 	_dirty_chunks.insert(chunk_pos);
-	// Note: LOD propagation for dirty chunks is triggered by SubGridManager
-	// via update_lods_for_chunk() after it calls mark_chunk_dirty().
+	// Note: LOD propagation for dirty chunks is triggered by SubGridManager via update_lods_for_chunk() after it calls mark_chunk_dirty().
 	// We don't propagate here to avoid double work during batch edits.
 }
 
@@ -169,16 +168,16 @@ void SubGridChunkMap::update_lods_for_chunk(
 }
 
 void SubGridChunkMap::rebuild_all_lods() {
-	// Clear LOD1+ maps
+	print_line(String("rebuild_all_lods: lod0 count=") + itos(_all_lod0_chunk_positions.size()));
 	for (int lod = 1; lod < SUBGRID_MAX_LODS; lod++) {
 		_lod_maps[lod].clear();
 		_all_lod_chunk_positions[lod].clear();
 	}
-
-	// Rebuild from LOD0
 	FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> dummy;
 	for (const Vector3i &pos : _all_lod0_chunk_positions) {
 		update_lods_for_chunk(pos, dummy);
+	}
+	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
 	}
 }
 

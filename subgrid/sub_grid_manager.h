@@ -235,7 +235,7 @@ private:
 	// Returns the viewer position in world space from VoxelEngine,falling back to the node's manually assigned viewer.
 	Vector3 _get_viewer_world_pos(VoxelSubGrid *node) const;
 
-	// For a given LOD level, compute the set of LOD-space chunk positions that should be active (visible) around the viewer.
+	// For a given LOD level, compute the set of LOD-space chunk positions that should be active (visible) around the viewer
 	void _compute_desired_lod_chunks(VoxelSubGrid *node, int lod, HashSet<Vector3i> &out_desired) const;
 
 	// World offset of a LOD-space chunk in subgrid-local space
