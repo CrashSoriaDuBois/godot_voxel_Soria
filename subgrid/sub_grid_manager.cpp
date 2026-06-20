@@ -53,11 +53,23 @@ void SubGridManager::_notification(int p_what) {
 			_process_physics(get_physics_process_delta_time());
 			break;
 
-		case NOTIFICATION_EXIT_TREE: 
+		case NOTIFICATION_EXIT_TREE: {
+			// Save all ships before shutdown so nothing is lost even if the user didn't call save_all explicitly.
+			for (auto &[uuid, state] : _ships) {
+				if (state.node == nullptr || state.load_state != LOADED) {
+					continue;
+				}
+				const HashSet<Vector3i> &positions = state.node->get_chunk_map().get_all_chunk_positions();
+				for (const Vector3i &pos : positions) {
+					state.node->get_chunk_map_mut().mark_chunk_dirty_for_save(pos);
+				}
+				state.node->flush_dirty_chunks();
+			}
+			// Now wait for save thread to finish before shutting it down
 			{
-			std::unique_lock<std::mutex> lock(_save_thread_data.mutex);
-			_save_thread_data.running = false;
-			_save_thread_data.cv.notify_all();
+				std::unique_lock<std::mutex> lock(_save_thread_data.mutex);
+				_save_thread_data.running = false;
+				_save_thread_data.cv.notify_all();
 			}
 			if (_save_thread.joinable()) {
 				_save_thread.join();
@@ -71,6 +83,7 @@ void SubGridManager::_notification(int p_what) {
 				_destroy_body(state);
 			}
 			break;
+		}
 	}
 }
 
@@ -109,7 +122,6 @@ void SubGridManager::_register_single(VoxelSubGrid *sg, const String &parent_uui
 	state.parent_uuid = parent_uuid;
 	state.load_state = LOADED;
 
-	// Clear all per-LOD state
 	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
 		state.dirty_chunks_per_lod[lod].clear();
 		state.in_flight_per_lod[lod].clear();
@@ -122,18 +134,25 @@ void SubGridManager::_register_single(VoxelSubGrid *sg, const String &parent_uui
 
 	if (sg->_needs_initial_save) {
 		sg->_needs_initial_save = false;
+		// Force all chunks dirty so flush saves them even if set_block_buffer was used (which doesn't mark dirty). This is the initial persistence of a newly assembled ship.
+		const HashSet<Vector3i> &positions = sg->get_chunk_map().get_all_chunk_positions();
+		for (const Vector3i &pos : positions) {
+			sg->get_chunk_map_mut().mark_chunk_dirty_for_save(pos);
+		}
+
+		print_line(String("_register_single: dirty after mark=") + itos(sg->get_chunk_map().get_dirty_chunks().size()));
+
 		sg->flush_dirty_chunks();
 	}
 
-	// Create physics body
 	if (sg->is_root()) {
 		if (sg->get_metadata().is_terrain_anchored) {
-			_create_child_body(uuid, state); // AnimatableBody3D
+			_create_child_body(uuid, state);
 		} else {
-			_create_root_body(uuid, state); // RigidBody3D
+			_create_root_body(uuid, state);
 		}
 	} else {
-		_create_child_body(uuid, state); // AnimatableBody3D
+		_create_child_body(uuid, state);
 	}
 }
 
@@ -720,6 +739,9 @@ void SubGridManager::_process_streaming() {
 			continue;
 		}
 		float dist = state.node->get_global_position().distance_to(viewer_pos);
+		if (state.load_state == SLEEPING) {
+			print_line(String("streaming: SLEEPING ship dist=") + rtos(dist) + " load_dist=" + rtos(_load_distance));
+		}
 		if (state.load_state == SLEEPING && dist < _load_distance) {
 			_load_ship(uuid, state);
 		} else if (state.load_state == LOADED && dist > _unload_distance) {
@@ -729,14 +751,23 @@ void SubGridManager::_process_streaming() {
 }
 
 void SubGridManager::_load_ship(const String &uuid, ShipState &state) {
+	print_line(String("_load_ship called for uuid=") + uuid);
 	if (state.node == nullptr) {
 		return;
 	}
 	state.node->load_chunks_from_stream();
+
+	// Only proceed if chunks actually loaded
+	if (state.node->get_chunk_map().get_all_chunk_positions().is_empty()) {
+		print_line(String("_load_ship: no chunks loaded, staying SLEEPING"));
+		// Don't change load_state, don't create body
+		// The ship will retry next time it comes in range
+		return;
+	}
+
 	state.load_state = LOADED;
 	_mark_all_dirty(state);
 
-	// Recreate physics body
 	if (state.node->is_root()) {
 		_create_root_body(uuid, state);
 	} else {
@@ -751,7 +782,37 @@ void SubGridManager::_unload_ship(const String &uuid, ShipState &state) {
 		state.pending_requeue_per_lod[lod].clear();
 		state.active_lod_chunks[lod].clear();
 	}
+
+	// Force all chunks dirty for save
+	const HashSet<Vector3i> &positions = state.node->get_chunk_map().get_all_chunk_positions();
+	for (const Vector3i &pos : positions) {
+		state.node->get_chunk_map_mut().mark_chunk_dirty_for_save(pos);
+	}
 	state.node->flush_dirty_chunks();
+
+	// Wait for save thread to finish writing
+	wait_save_queue();
+
+	// Close the SQLite stream so WAL is checkpointed before reload reads it, without this, a new connection may not see data written by the save thread.
+	state.node->_close_stream();
+
+	// Wait for close request to be processed (close doesn't increment items_in_flight)
+	// Poll until the save thread's queue is empty
+	const int max_wait_ms = 2000;
+	int waited = 0;
+	while (waited < max_wait_ms) {
+		{
+			std::unique_lock<std::mutex> lock(_save_thread_data.mutex);
+			if (_save_thread_data.queue.empty()) {
+				break;
+			}
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		waited++;
+	}
+	// Wait for the close request to be processed too
+	wait_save_queue();
+
 	_free_chunk_renders(state);
 	_destroy_body(state);
 	state.node->clear_chunk_buffers();
@@ -772,13 +833,6 @@ void SubGridManager::_free_chunk_renders(ShipState &state) {
 // LOD
 
 void SubGridManager::_process_lod_for_ship(const String &uuid, ShipState &state) {
-	// Temporary debug: print LOD0 active set
-	String lod0_active_str = "LOD0 active: ";
-	for (const Vector3i &p : state.active_lod_chunks[0]) {
-		lod0_active_str += String(p) + " ";
-	}
-	print_line(lod0_active_str);
-
 	if (state.node == nullptr) {
 		return;
 	}
@@ -1083,19 +1137,13 @@ void SubGridManager::save_all() {
 			state.node->get_metadata_mut().world_position = state.node->get_global_position();
 			state.node->get_metadata_mut().world_rotation = state.node->get_global_basis().get_rotation_quaternion();
 		}
-
-		if (state.node->get_metadata().is_terrain_anchored && state.node->is_root()) {
-			state.node->get_metadata_mut().promoted_pivot_world = state.node->_promoted_pivot_world;
-		}
-
-		state.node->flush_dirty_chunks();
 		metas.push_back(state.node->get_metadata());
 	}
-
-	print_line(String("save_all: saving ") + itos(metas.size()) + " subgrids");
+	// Wait for chunk saves to complete before writing index
+	// (save thread is still running at this point)
 	wait_save_queue();
 	_save_metadata_index(metas);
-}
+	}
 
 void SubGridManager::_collect_metadata_recursive(VoxelSubGrid *sg, Vector<SubGridMetadata> &out) {
 	sg->flush_dirty_chunks();

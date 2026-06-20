@@ -232,17 +232,29 @@ Ref<VoxelToolSubGrid> VoxelSubGrid::get_voxel_tool() {
 // Persistence
 
 void VoxelSubGrid::flush_dirty_chunks() {
-    Vector<Vector3i> dirty = _chunks.get_dirty_chunks();
-    for (Vector3i chunk_pos : dirty) {
-        _save_chunk(chunk_pos);
-        _chunks.mark_chunk_clean(chunk_pos);
-        if (!_meta.chunk_positions.has(chunk_pos)) {
-            _meta.chunk_positions.push_back(chunk_pos);
-        }
-    }
+	Vector<Vector3i> dirty = _chunks.get_dirty_chunks();
+	for (Vector3i chunk_pos : dirty) {
+		_save_chunk(chunk_pos);
+		_chunks.mark_chunk_clean(chunk_pos);
+		if (!_meta.chunk_positions.has(chunk_pos)) {
+			_meta.chunk_positions.push_back(chunk_pos);
+		}
+	}
+	// Sync chunk_positions with all known chunks in memory.
+	// Chunks added via set_block_buffer are never dirty but must still be tracked in metadata so load_chunks_from_stream finds them.
+	for (const Vector3i &pos : _chunks.get_all_chunk_positions()) {
+		if (!_meta.chunk_positions.has(pos)) {
+			_meta.chunk_positions.push_back(pos);
+		}
+	}
 }
 
 void VoxelSubGrid::load_chunks_from_stream() {
+	print_line(String("load_chunks_from_stream: _saves_dir=") + _saves_dir);
+	print_line(
+			String("load_chunks_from_stream: globalized=") +
+			ProjectSettings::get_singleton()->globalize_path(_saves_dir)
+	);
 	// Open a temporary stream just for loading, on main thread
 	String saves_dir_abs = ProjectSettings::get_singleton()->globalize_path(_saves_dir);
 	String uuid_str = uuid_to_string(_meta.uuid);
@@ -310,6 +322,8 @@ void VoxelSubGrid::_save_chunk(Vector3i chunk_pos) {
 	std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
 
 	String saves_dir_abs = ProjectSettings::get_singleton()->globalize_path(_saves_dir);
+	print_line(String("_save_chunk: saves_dir_abs=") + saves_dir_abs);
+
 	// Ensure ships dir exists (main thread only)
 	String ships_dir = saves_dir_abs.path_join("ships");
 	if (!DirAccess::dir_exists_absolute(ships_dir)) {

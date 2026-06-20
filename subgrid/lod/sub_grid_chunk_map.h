@@ -84,6 +84,13 @@ public:
 		return _lod_maps[0].get_block_count();
 	}
 
+	// Mark a chunk dirty for persistence only (no LOD propagation).
+	void mark_chunk_dirty_for_save(Vector3i lod0_chunk_pos) {
+		if (_all_lod0_chunk_positions.has(lod0_chunk_pos)) {
+			_dirty_chunks.insert(lod0_chunk_pos);
+		}
+	}
+
 	// -------------------------------------------------------------------------
 	// Coordinate helpers
 
