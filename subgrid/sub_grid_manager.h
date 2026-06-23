@@ -11,13 +11,14 @@
 #include <future>
 #include <vector>
 
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-#include <atomic>
-#include "streams/sqlite/voxel_stream_sqlite.h"
 #include "core/config/project_settings.h"
 #include "lod/sub_grid_chunk_map.h"
+#include "lod/sub_grid_lod_state.h"
+#include "streams/sqlite/voxel_stream_sqlite.h"
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 // Forward declare Godot types to avoid heavy includes in header
 class AnimatableBody3D;
@@ -52,7 +53,6 @@ public:
 	void register_ship_tree(VoxelSubGrid *root);
 	void unregister_ship(const String &uuid_str);
 	void mark_chunk_dirty(const String &uuid_str, Vector3i chunk_pos);
-
 
 	String uuid_for_node(VoxelSubGrid *node) const;
 	void mark_all_dirty(const String &uuid);
@@ -124,29 +124,25 @@ private:
 
 	// -----------------------------------------------------------------------
 	// Per-ship state
+	//
+	// ShipState is public (only this one struct, everything below stays private) because
+	// sub_grid_lod_streaming.h needs to name SubGridManager::ShipState in its function
+	// signature. See subgrid/lod/sub_grid_lod_streaming.h for the rationale.
 
 	enum LoadState { SLEEPING, LOADED };
 
+public:
 	struct ShipState {
 		VoxelSubGrid *node = nullptr;
 		LoadState load_state = SLEEPING;
 		String parent_uuid;
 
-		// Per-LOD dirty and in-flight sets.
-		// dirty_chunks_per_lod[lod] contains LOD-space chunk positions
-		// that need a new mesh task at that LOD.
-		FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> dirty_chunks_per_lod;
-		FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> in_flight_per_lod;
+		FixedArray<ShipLod, SUBGRID_MAX_LODS> lods;
 
-		// Per-LOD pending requeue: chunks whose LOD changed while in-flight.
-		// When the stale result arrives, these get re-queued.
-		FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> pending_requeue_per_lod;
+		// per-ship instead of per-volume.
+		Vector<PairedShipViewer> paired_viewers;
 
-		// Per-LOD box of currently loaded LOD-space chunks (for diff detection).
-		// Updated each frame in _process_lod_for_ship.
-		// We track as a set rather than a box because ships are
-		// sparse and non-rectangular.
-		FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> active_lod_chunks;
+		Vector<LoadedChunkEvent> pending_loaded_chunks;
 
 		// Render instances keyed by (lod_space_chunk_pos, lod).
 		// In the new system lod_space_chunk_pos is in LOD-space (not LOD0 space).
@@ -165,6 +161,7 @@ private:
 		float grab_strength = 1.0f;
 	};
 
+private:
 	// -----------------------------------------------------------------------
 	// Main-thread data
 
@@ -230,13 +227,18 @@ private:
 	// LOD
 
 	static const float LOD_DISTANCES[4];
+
+	// Pairing range for sub_grid_lod_streaming.cpp's viewer pairing pass: must be at least
+	// LOD_DISTANCES[SUBGRID_MAX_LODS - 1], plus margin so a viewer doesn't pair/unpair right
+	// at the edge of the outermost LOD box every frame.
+	float _viewer_pairing_distance = LOD_DISTANCES[SUBGRID_MAX_LODS - 1] + 32.f;
+
 	int _total_in_flight() const;
 
 	// Returns the viewer position in world space from VoxelEngine,falling back to the node's manually assigned viewer.
 	Vector3 _get_viewer_world_pos(VoxelSubGrid *node) const;
 
-	// For a given LOD level, compute the set of LOD-space chunk positions that should be active (visible) around the viewer
-	void _compute_desired_lod_chunks(VoxelSubGrid *node, int lod, HashSet<Vector3i> &out_desired) const;
+	void _apply_lod_visibility_changes(ShipState &state);
 
 	// World offset of a LOD-space chunk in subgrid-local space
 	static Vector3 _lod_chunk_local_offset(Vector3i lod_pos, int lod) {

@@ -1,20 +1,18 @@
 #include "sub_grid_manager.h"
+#include "../util/godot/classes/physics_server_3d.h"
 #include "core/config/project_settings.h"
 #include "core/io/file_access.h"
 #include "engine/voxel_engine.h"
 #include "scene/3d/physics/animatable_body_3d.h"
-#include "../util/godot/classes/physics_server_3d.h"
 #include "terrain/variable_lod/voxel_lod_terrain.h"
 #include "voxel_sub_grid.h"
 #include <chrono>
 #include <vector>
 
-// RenderingServer include. use whichever path exists in your Godot build.
-// Try "servers/rendering_server.h" or the util wrapper if present.
 #include "../util/godot/classes/rendering_server.h"
 #include "../util/godot/classes/viewport.h"
 #include "../util/godot/classes/world_3d.h"
-
+#include "lod/sub_grid_lod_streaming.h"
 
 namespace zylann::voxel {
 
@@ -123,18 +121,24 @@ void SubGridManager::_register_single(VoxelSubGrid *sg, const String &parent_uui
 	state.load_state = LOADED;
 
 	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
-		state.dirty_chunks_per_lod[lod].clear();
-		state.in_flight_per_lod[lod].clear();
-		state.pending_requeue_per_lod[lod].clear();
-		state.active_lod_chunks[lod].clear();
+		ShipLod &ship_lod = state.lods[lod];
+		ship_lod.mesh_state.clear();
+		ship_lod.pending_update.clear();
+		ship_lod.to_activate_visuals.clear();
+		ship_lod.to_deactivate_visuals.clear();
+		ship_lod.to_unload.clear();
 	}
+	state.paired_viewers.clear();
+	state.pending_loaded_chunks.clear();
 
-	_mark_all_dirty(state);
+	//mesh_state is empty for every LOD until a viewer's box first reaches this ship in _process_lod_for_ship (next frame), at which
+	// point view_mesh_box schedules a remesh for every chunk it views automatically - there's nothing to "mark dirty" before any chunk is being viewed yet.
 	sg->set_manager(this);
 
 	if (sg->_needs_initial_save) {
 		sg->_needs_initial_save = false;
-		// Force all chunks dirty so flush saves them even if set_block_buffer was used (which doesn't mark dirty). This is the initial persistence of a newly assembled ship.
+		// Force all chunks dirty so flush saves them even if set_block_buffer was used (which doesn't mark dirty). This
+		// is the initial persistence of a newly assembled ship.
 		const HashSet<Vector3i> &positions = sg->get_chunk_map().get_all_chunk_positions();
 		for (const Vector3i &pos : positions) {
 			sg->get_chunk_map_mut().mark_chunk_dirty_for_save(pos);
@@ -192,17 +196,17 @@ void SubGridManager::mark_chunk_dirty(const String &uuid_str, Vector3i lod0_chun
 	FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> affected;
 	state->node->get_chunk_map_mut().update_lods_for_chunk(lod0_chunk_pos, affected);
 
-	// LOD0: mark the lod0 chunk itself dirty
-	if (!state->in_flight_per_lod[0].has(lod0_chunk_pos)) {
-		state->dirty_chunks_per_lod[0].insert(lod0_chunk_pos);
-	}
+	//re-trigger meshing for every affected position that is currently being viewed (has a ChunkMeshBlockState already). Positions nobody is
+	// viewing right now are skipped - schedule_chunk_remesh() is a no-op for them, and view_mesh_box() will read fresh voxel data automatically once a viewer's box reaches
+	// them, so there's nothing lost by not tracking them here.
 
-	// LOD1+: mark affected lod-space chunks dirty
+	// LOD0
+	schedule_chunk_remesh(state->lods[0], lod0_chunk_pos);
+
+	// LOD1+: affected[lod] are LOD-space positions
 	for (int lod = 1; lod < SUBGRID_MAX_LODS; lod++) {
 		for (const Vector3i &lod_pos : affected[lod]) {
-			if (!state->in_flight_per_lod[lod].has(lod_pos)) {
-				state->dirty_chunks_per_lod[lod].insert(lod_pos);
-			}
+			schedule_chunk_remesh(state->lods[lod], lod_pos);
 		}
 	}
 }
@@ -211,12 +215,19 @@ void SubGridManager::_mark_all_dirty(ShipState &state) {
 	if (state.node == nullptr) {
 		return;
 	}
+	// Re-trigger meshing for every chunk currently being viewed, at every LOD. Mirrors the old "mark every chunk dirty regardless of whether it's viewed" intent, adapted: a chunk
+	// nobody is viewing doesn't have a ChunkMeshBlockState to mark, and doesn't need one, it'll get fresh voxel data the moment a viewer's box reaches it anyway.
 	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
-		const HashSet<Vector3i> &positions = state.node->get_chunk_map().get_lod_chunk_positions(lod);
+		ShipLod &ship_lod = state.lods[lod];
+		// Collect positions first: schedule_chunk_remesh() doesn't mutate mesh_state's key set
+		// (only pending_update / per-block fields), so iterating mesh_state directly while
+		// calling it is safe, but a HashMap doesn't expose a "keys" view here - copy them out.
+		Vector<Vector3i> positions;
+		for (const KeyValue<Vector3i, ChunkMeshBlockState> &kv : ship_lod.mesh_state) {
+			positions.push_back(kv.key);
+		}
 		for (const Vector3i &pos : positions) {
-			if (!state.in_flight_per_lod[lod].has(pos)) {
-				state.dirty_chunks_per_lod[lod].insert(pos);
-			}
+			schedule_chunk_remesh(ship_lod, pos);
 		}
 	}
 }
@@ -262,7 +273,8 @@ void SubGridManager::_save_thread_func() {
 						--counter;
 				}
 			};
-			Decrement dec{ d.items_in_flight, req.close_stream }; // don't decrement for close_stream (wasn't incremented)
+			Decrement dec{ d.items_in_flight,
+						   req.close_stream }; // don't decrement for close_stream (wasn't incremented)
 
 			String uuid = String(req.uuid.c_str());
 			if (req.close_stream) {
@@ -313,49 +325,47 @@ void SubGridManager::push_save(const SaveRequest &req) {
 }
 
 void SubGridManager::wait_save_queue() {
-    const int max_wait_ms = 5000;
-    int waited = 0;
-    while (_save_thread_data.items_in_flight > 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        waited++;
-        if (waited > max_wait_ms) {
-            ERR_PRINT("wait_save_queue timed out! items_in_flight=" + itos(_save_thread_data.items_in_flight));
-            break;
-        }
-    }
+	const int max_wait_ms = 5000;
+	int waited = 0;
+	while (_save_thread_data.items_in_flight > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		waited++;
+		if (waited > max_wait_ms) {
+			ERR_PRINT("wait_save_queue timed out! items_in_flight=" + itos(_save_thread_data.items_in_flight));
+			break;
+		}
+	}
 }
 // ____________________________________________________________________________
 // Physics body management
 
 void SubGridManager::_create_root_body(const String &uuid, ShipState &state) {
-    PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 
-    RID body = ps->body_create();
-    ps->body_set_mode(body, PhysicsServer3D::BODY_MODE_RIGID);
-    ps->body_set_space(body, get_viewport()->get_world_3d()->get_space());
-    ps->body_set_state(body, PhysicsServer3D::BODY_STATE_TRANSFORM, state.node->get_global_transform());
+	RID body = ps->body_create();
+	ps->body_set_mode(body, PhysicsServer3D::BODY_MODE_RIGID);
+	ps->body_set_space(body, get_viewport()->get_world_3d()->get_space());
+	ps->body_set_state(body, PhysicsServer3D::BODY_STATE_TRANSFORM, state.node->get_global_transform());
 
 	// Default mass. will be updated when collision chunks arrive
-    ps->body_set_param(body, PhysicsServer3D::BODY_PARAM_MASS, 1.f);
+	ps->body_set_param(body, PhysicsServer3D::BODY_PARAM_MASS, 1.f);
 
-    // Point to the VoxelSubGrid node
+	// Point to the VoxelSubGrid node
 	ps->body_attach_object_instance_id(body, state.node->get_instance_id());
 
-    state.body_rid = body;
+	state.body_rid = body;
 }
 
 void SubGridManager::_create_child_body(const String &uuid, ShipState &state) {
 	// AnimatableBody3D: a kinematic body we drive directly each physics frame.
-	// Avoids joint constraint solving. we apply rotation math ourselves, which
-	// is cheaper and more controllable than a HingeJoint for gameplay purposes.
+	// Avoids joint constraint solving. we apply rotation math ourselves, which is cheaper and more controllable than a HingeJoint for gameplay purposes.
 	AnimatableBody3D *body = memnew(AnimatableBody3D);
 
 	// Disable automatic sync. we set global_transform ourselves in _process_physics.
 	body->set_as_top_level(true);
 
 	// Add as child of the VoxelSubGrid node so it follows it in the scene tree.
-	// The actual transform is overwritten every frame so the parent transform
-	// doesn't matter here, but it keeps the scene tree tidy.
+	// The actual transform is overwritten every frame so the parent transform doesn't matter here, but it keeps the scene tree tidy.
 	state.node->add_child(body);
 	body->set_owner(state.node->get_owner());
 
@@ -363,23 +373,23 @@ void SubGridManager::_create_child_body(const String &uuid, ShipState &state) {
 }
 
 void SubGridManager::_destroy_body(ShipState &state) {
-    PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 
-    for (auto &[chunk_pos, col_data] : state.chunk_collision) {
-        for (RID shape_rid : col_data.shape_rids) {
-            ps->free_rid(shape_rid);
-        }
-    }
-    state.chunk_collision.clear();
+	for (auto &[chunk_pos, col_data] : state.chunk_collision) {
+		for (RID shape_rid : col_data.shape_rids) {
+			ps->free_rid(shape_rid);
+		}
+	}
+	state.chunk_collision.clear();
 
-    if (state.body_rid.is_valid()) {
-        ps->free_rid(state.body_rid);
-        state.body_rid = RID();
-    }
-    if (state.animatable_body != nullptr) {
-        state.animatable_body->queue_free();
-        state.animatable_body = nullptr;
-    }
+	if (state.body_rid.is_valid()) {
+		ps->free_rid(state.body_rid);
+		state.body_rid = RID();
+	}
+	if (state.animatable_body != nullptr) {
+		state.animatable_body->queue_free();
+		state.animatable_body = nullptr;
+	}
 }
 
 void SubGridManager::_apply_collision_result(ShipState &state, Vector3i chunk_pos, const SubGridCollisionOutput &col) {
@@ -479,6 +489,7 @@ void SubGridManager::_process_mesh(double delta) {
 	for (auto &[uuid, state] : _ships) {
 		if (state.load_state == LOADED) {
 			_process_lod_for_ship(uuid, state);
+			_apply_lod_visibility_changes(state);
 		}
 	}
 	for (auto &[uuid, state] : _ships) {
@@ -668,12 +679,13 @@ void SubGridManager::_drive_grabbed_ships(double delta) {
 
 		Transform3D current = ps->body_get_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
 
-		//Linear drive (existing)
+		// Linear drive (existing)
 		Vector3 grab_local_world = current.basis.xform(state.grab_point_local);
 		Vector3 desired_origin = state.grab_target.origin - grab_local_world;
 		Vector3 linear_error = desired_origin - current.origin;
 
-		// Mass aware speed cap :base speed * strength / mass, so heavier objects need more strength to move at the same speed
+		// Mass aware speed cap :base speed * strength / mass, so heavier objects need more strength to move at the same
+		// speed
 		float mass = ps->body_get_param(state.body_rid, PhysicsServer3D::BODY_PARAM_MASS);
 
 		float max_linear_speed = (15.f * state.grab_strength) / mass;
@@ -686,7 +698,7 @@ void SubGridManager::_drive_grabbed_ships(double delta) {
 
 		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, new_linear_vel);
 
-		//Angular drive (new)
+		// Angular drive (new)
 		if (state.grab_rotate) {
 			// Rotation error: how much do we need to rotate current to reach target
 			Basis current_basis = current.basis.orthonormalized();
@@ -777,11 +789,15 @@ void SubGridManager::_load_ship(const String &uuid, ShipState &state) {
 
 void SubGridManager::_unload_ship(const String &uuid, ShipState &state) {
 	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
-		state.dirty_chunks_per_lod[lod].clear();
-		state.in_flight_per_lod[lod].clear();
-		state.pending_requeue_per_lod[lod].clear();
-		state.active_lod_chunks[lod].clear();
+		ShipLod &ship_lod = state.lods[lod];
+		ship_lod.mesh_state.clear();
+		ship_lod.pending_update.clear();
+		ship_lod.to_activate_visuals.clear();
+		ship_lod.to_deactivate_visuals.clear();
+		ship_lod.to_unload.clear();
 	}
+	state.paired_viewers.clear();
+	state.pending_loaded_chunks.clear();
 
 	// Force all chunks dirty for save
 	const HashSet<Vector3i> &positions = state.node->get_chunk_map().get_all_chunk_positions();
@@ -793,7 +809,8 @@ void SubGridManager::_unload_ship(const String &uuid, ShipState &state) {
 	// Wait for save thread to finish writing
 	wait_save_queue();
 
-	// Close the SQLite stream so WAL is checkpointed before reload reads it, without this, a new connection may not see data written by the save thread.
+	// Close the SQLite stream so WAL is checkpointed before reload reads it, without this, a new connection may not see
+	// data written by the save thread.
 	state.node->_close_stream();
 
 	// Wait for close request to be processed (close doesn't increment items_in_flight)
@@ -837,89 +854,102 @@ void SubGridManager::_process_lod_for_ship(const String &uuid, ShipState &state)
 		return;
 	}
 
-	// Process LOD0 first, then coarser LODs in order.
-	// Each coarser LOD excludes areas covered by finer LODs.
-	// We use a thread_local to avoid allocation per frame per ship.
-	HashSet<Vector3i> desired;
+	process_ship_lod_streaming(
+			state,
+			state.node->get_chunk_map(),
+			Span<const float>(LOD_DISTANCES, SUBGRID_MAX_LODS),
+			_viewer_pairing_distance
+	);
+}
+
+void SubGridManager::_apply_lod_visibility_changes(ShipState &state) {
+	RenderingServer *rs = RenderingServer::get_singleton();
 
 	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
-		_compute_desired_lod_chunks(state.node, lod, desired);
+		ShipLod &ship_lod = state.lods[lod];
 
-		// Chunks to activate
-		for (const Vector3i &lod_pos : desired) {
-			if (!state.active_lod_chunks[lod].has(lod_pos)) {
-				if (!state.in_flight_per_lod[lod].has(lod_pos)) {
-					state.dirty_chunks_per_lod[lod].insert(lod_pos);
-				}
-				state.active_lod_chunks[lod].insert(lod_pos);
+		for (const Vector3i &lod_pos : ship_lod.to_activate_visuals) {
+			ChunkRenderData *render = state.chunk_renders.getptr(_chunk_mesh_key(lod_pos, lod));
+			if (render != nullptr) {
+				rs->instance_set_visible(render->instance_rid, true);
+			}
+			// Else: mesh task for this chunk hasn't completed yet. _apply_mesh_result will
+			// read the (already true) visual_active flag and create the instance visible.
+		}
+		ship_lod.to_activate_visuals.clear();
+
+		for (const Vector3i &lod_pos : ship_lod.to_deactivate_visuals) {
+			ChunkRenderData *render = state.chunk_renders.getptr(_chunk_mesh_key(lod_pos, lod));
+			if (render != nullptr) {
+				rs->instance_set_visible(render->instance_rid, false);
 			}
 		}
+		ship_lod.to_deactivate_visuals.clear();
 
-		// Chunks to deactivate
-		Vector<Vector3i> to_remove;
-		for (const Vector3i &lod_pos : state.active_lod_chunks[lod]) {
-			if (!desired.has(lod_pos)) {
-				to_remove.push_back(lod_pos);
-			}
-		}
-		for (const Vector3i &lod_pos : to_remove) {
-			state.active_lod_chunks[lod].erase(lod_pos);
-			state.dirty_chunks_per_lod[lod].erase(lod_pos);
-
+		for (const Vector3i &lod_pos : ship_lod.to_unload) {
 			uint64_t key = _chunk_mesh_key(lod_pos, lod);
 			ChunkRenderData *render = state.chunk_renders.getptr(key);
 			if (render != nullptr) {
-				RenderingServer::get_singleton()->free_rid(render->instance_rid);
+				rs->free_rid(render->instance_rid);
 				state.chunk_renders.erase(key);
 			}
+			// Note: collision is intentionally untouched here, matching the old behavior, collision lifecycle is independent of visual LOD activity (see
+			// collision_built_chunks: only mark_chunk_dirty's edit path and whole-ship teardown ever invalidate it).
 		}
+		ship_lod.to_unload.clear();
 	}
 }
 
-void SubGridManager::_compute_desired_lod_chunks(VoxelSubGrid *node, int lod, HashSet<Vector3i> &out_desired) const {
-	out_desired.clear();
-	if (node == nullptr) {
-		return;
-	}
-
-	const Vector3 viewer_world = _get_viewer_world_pos(node);
-	// Distance from viewer to ship origin in world space
-	const float dist = node->get_global_position().distance_to(viewer_world);
-
-	// This LOD level is active when the viewer is within its range but beyond the finer LOD's range.
-	const float max_dist = LOD_DISTANCES[lod];
-	const float min_dist = (lod > 0) ? LOD_DISTANCES[lod - 1] : 0.f;
-
-	// Viewer is not in this LOD's band
-	if (dist < min_dist || dist >= max_dist) {
-		return;
-	}
-
-	// Viewer is in this LOD's band, all chunks at this LOD are desired.
-	// No per-chunk distance check needed; the whole ship renders at one LOD.
-	const HashSet<Vector3i> &all = node->get_chunk_map().get_lod_chunk_positions(lod);
-	for (const Vector3i &lod_pos : all) {
-		out_desired.insert(lod_pos);
-	}
-}
 // ____________________________________________________________________________
 // Task submission
 
 void SubGridManager::_submit_pending_tasks(const String &uuid, ShipState &state) {
+	// MIRROR of send_mesh_requests()'s state transition (MESH_UPDATE_NOT_SENT ->
+	// MESH_UPDATE_SENT, update_list_index reset to -1), throttled by MAX_CONCURRENT_TASKS
+	// since this module fires tasks via std::async instead of upstream's managed worker pool.
 	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
-		if (state.dirty_chunks_per_lod[lod].is_empty()) {
+		ShipLod &ship_lod = state.lods[lod];
+		if (ship_lod.pending_update.is_empty()) {
 			continue;
 		}
-		Vector<Vector3i> to_submit;
-		for (const Vector3i &pos : state.dirty_chunks_per_lod[lod]) {
-			to_submit.push_back(pos);
-		}
-		for (const Vector3i &lod_pos : to_submit) {
-			if (_total_in_flight() >= MAX_CONCURRENT_TASKS) {
-				return;
+
+		// Submit from the front; anything left over (because the budget ran out) stays
+		// queued for next frame. Rebuilt in one pass rather than erased-as-we-go, since
+		// erasing from the middle of a Vector would require shifting every later
+		// update_list_index anyway.
+		Vector<Vector3i> still_pending;
+		bool budget_exhausted = false;
+
+		for (const Vector3i &lod_pos : ship_lod.pending_update) {
+			if (budget_exhausted || _total_in_flight() >= MAX_CONCURRENT_TASKS) {
+				budget_exhausted = true;
+				still_pending.push_back(lod_pos);
+				continue;
 			}
+
+			ChunkMeshBlockState *block = ship_lod.mesh_state.getptr(lod_pos);
+			if (block == nullptr) {
+				// Was unviewed since being queued; nothing to submit.
+				continue;
+			}
+			ERR_CONTINUE_MSG(
+					block->state != MESH_UPDATE_NOT_SENT, "Chunk in pending_update was not MESH_UPDATE_NOT_SENT"
+			);
+
 			_submit_one_task(uuid, state, lod_pos, lod);
+
+			block->state = MESH_UPDATE_SENT;
+			block->update_list_index = -1;
 		}
+
+		// Repair update_list_index for whatever is left, then swap in.
+		for (int i = 0; i < still_pending.size(); ++i) {
+			ChunkMeshBlockState *block = ship_lod.mesh_state.getptr(still_pending[i]);
+			if (block != nullptr) {
+				block->update_list_index = i;
+			}
+		}
+		ship_lod.pending_update = std::move(still_pending);
 	}
 }
 
@@ -927,16 +957,15 @@ void SubGridManager::_submit_one_task(const String &uuid, ShipState &state, Vect
 	std::shared_ptr<VoxelBuffer> padded = _build_padded_buffer(state.node, lod_pos, lod);
 
 	if (!padded) {
-		state.dirty_chunks_per_lod[lod].erase(lod_pos);
+		// Caller (_submit_pending_tasks) already set state/update_list_index for this chunk;
+		// it'll simply have no task in flight and stay MESH_UPDATE_SENT with nothing to
+		// deliver. Acceptable: the next box re-entry or edit will re-schedule it.
 		return;
 	}
 
-	state.dirty_chunks_per_lod[lod].erase(lod_pos);
-	state.in_flight_per_lod[lod].insert(lod_pos);
-
 	SubGridMeshTaskInput input;
 	input.ship_uuid = uuid;
-	input.chunk_pos = lod_pos; // NOW LOD-space
+	input.chunk_pos = lod_pos; // LOD-space
 	input.lod = lod;
 	input.padded_buffer = std::move(padded);
 	input.mesher = _mesher;
@@ -970,27 +999,19 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 
 	const int lod = result.lod;
 	const Vector3i lod_pos = result.chunk_pos; // LOD-space
+	ShipLod &ship_lod = state->lods[lod];
 
-	state->in_flight_per_lod[lod].erase(lod_pos);
-
-	// Stale check: chunk was removed from active set while task was in flight
-	if (!state->active_lod_chunks[lod].has(lod_pos)) {
-		// Chunk is no longer desired, discard result
-		if (state->pending_requeue_per_lod[lod].has(lod_pos)) {
-			state->pending_requeue_per_lod[lod].erase(lod_pos);
-		}
+	// MIRROR of the staleness check in apply_mesh_update(): the chunk may have been unviewed
+	// (refcount hit zero, erased from mesh_state) while this task was in flight. Discard.
+	ChunkMeshBlockState *block = ship_lod.mesh_state.getptr(lod_pos);
+	if (block == nullptr) {
 		return;
 	}
-
-	// Requeue if LOD changed while in flight (shouldn't happen in newsystem since LOD is determined by the level, not per-chunk, but guard anyway)
-	if (state->pending_requeue_per_lod[lod].has(lod_pos)) {
-		state->pending_requeue_per_lod[lod].erase(lod_pos);
-		state->dirty_chunks_per_lod[lod].insert(lod_pos);
-	}
+	block->state = MESH_UP_TO_DATE;
 
 	uint64_t key = _chunk_mesh_key(lod_pos, lod);
 
-	// Remove existing render for this key
+	// Remove existing render for this key (re-mesh of an already-loaded chunk, e.g. after an edit, voxels changed so the old geometry is stale).
 	ChunkRenderData *existing = state->chunk_renders.getptr(key);
 	if (existing != nullptr) {
 		RenderingServer::get_singleton()->free_rid(existing->instance_rid);
@@ -1026,11 +1047,25 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 			Transform3D world_t = state->node->get_global_transform();
 			rs->instance_set_transform(instance, world_t * Transform3D(Basis(), local_offset));
 
+			// Read the CURRENT visual_active flag rather than assuming hidden: most of the
+			// time this is a brand-new chunk and visual_active is still false (nothing could
+			// have activated it before its mesh existed), but unview_mesh_box's "show parent
+			// immediately when children are removed" branch can mark a chunk active before
+			// its own mesh task has completed, in which case this must come up visible.
+			rs->instance_set_visible(instance, block->visual_active);
+
 			ChunkRenderData render_data;
 			render_data.instance_rid = instance;
 			render_data.mesh = mesh;
 			state->chunk_renders[key] = std::move(render_data);
 		}
+	}
+
+	// marks visual_loaded and notifyies the streaming system (ClipboxStreamingState::loaded_mesh_blocks there, state->pending_loaded_chunks here)
+	// so the subdivision rule (update_mesh_block_load) can react next frame.
+	if (!block->visual_loaded) {
+		block->visual_loaded = true;
+		state->pending_loaded_chunks.push_back(LoadedChunkEvent{ lod_pos, (uint8_t)lod });
 	}
 
 	// Collision: LOD0 only, once per chunk lifetime
@@ -1100,7 +1135,11 @@ int SubGridManager::_total_in_flight() const {
 	int total = 0;
 	for (const auto &[_, state] : _ships) {
 		for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
-			total += (int)state.in_flight_per_lod[lod].size();
+			for (const KeyValue<Vector3i, ChunkMeshBlockState> &kv : state.lods[lod].mesh_state) {
+				if (kv.value.state == MESH_UPDATE_SENT) {
+					total += 1;
+				}
+			}
 		}
 	}
 	return total;
@@ -1117,14 +1156,14 @@ void SubGridManager::save_all() {
 			continue;
 
 		print_line(
-			String("save_all: saving uuid=") + uuid + " pos=" + String(state.node->get_metadata().world_position) +
-			" rot=(" + rtos(state.node->get_metadata().world_rotation.x) + "," +
-			rtos(state.node->get_metadata().world_rotation.y) + "," +
-			rtos(state.node->get_metadata().world_rotation.z) + "," +
-			rtos(state.node->get_metadata().world_rotation.w) + ")" +
-			" pivot=" + String(state.node->_promoted_pivot_world) +
-			" is_terrain_anchored=" + (state.node->get_metadata().is_terrain_anchored ? "true" : "false") +
-			" is_root=" + (state.node->get_metadata().is_root ? "true" : "false")
+				String("save_all: saving uuid=") + uuid + " pos=" + String(state.node->get_metadata().world_position) +
+				" rot=(" + rtos(state.node->get_metadata().world_rotation.x) + "," +
+				rtos(state.node->get_metadata().world_rotation.y) + "," +
+				rtos(state.node->get_metadata().world_rotation.z) + "," +
+				rtos(state.node->get_metadata().world_rotation.w) + ")" +
+				" pivot=" + String(state.node->_promoted_pivot_world) +
+				" is_terrain_anchored=" + (state.node->get_metadata().is_terrain_anchored ? "true" : "false") +
+				" is_root=" + (state.node->get_metadata().is_root ? "true" : "false")
 		);
 
 		if (state.body_rid.is_valid()) {
@@ -1143,7 +1182,7 @@ void SubGridManager::save_all() {
 	// (save thread is still running at this point)
 	wait_save_queue();
 	_save_metadata_index(metas);
-	}
+}
 
 void SubGridManager::_collect_metadata_recursive(VoxelSubGrid *sg, Vector<SubGridMetadata> &out) {
 	sg->flush_dirty_chunks();
