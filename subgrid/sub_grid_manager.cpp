@@ -354,6 +354,15 @@ void SubGridManager::_create_root_body(const String &uuid, ShipState &state) {
 	ps->body_attach_object_instance_id(body, state.node->get_instance_id());
 
 	state.body_rid = body;
+
+	// Start asleep: at this exact moment there are zero collision shapes built for this ship
+	// (collision_built_chunks is empty, meshing/collision is async and hasn't had a chance to
+	// run yet), so gravity must not act on it until _update_collision_suspension positively
+	// confirms real collision exists nearby. Setting this explicitly here, rather than relying
+	// on _update_collision_suspension's first call landing before the next physics step,
+	// removes any dependency on call ordering within the frame.
+	ps->body_set_state(body, PhysicsServer3D::BODY_STATE_SLEEPING, true);
+	state.collision_suspended = true;
 }
 
 void SubGridManager::_create_child_body(const String &uuid, ShipState &state) {
@@ -867,6 +876,7 @@ void SubGridManager::_apply_lod_visibility_changes(ShipState &state) {
 
 	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
 		ShipLod &ship_lod = state.lods[lod];
+		const bool is_coarse = lod > _collision_safe_lod_max;
 
 		for (const Vector3i &lod_pos : ship_lod.to_activate_visuals) {
 			ChunkRenderData *render = state.chunk_renders.getptr(_chunk_mesh_key(lod_pos, lod));
@@ -875,6 +885,9 @@ void SubGridManager::_apply_lod_visibility_changes(ShipState &state) {
 			}
 			// Else: mesh task for this chunk hasn't completed yet. _apply_mesh_result will
 			// read the (already true) visual_active flag and create the instance visible.
+			if (is_coarse) {
+				state.coarse_lod_active_count += 1;
+			}
 		}
 		ship_lod.to_activate_visuals.clear();
 
@@ -882,6 +895,9 @@ void SubGridManager::_apply_lod_visibility_changes(ShipState &state) {
 			ChunkRenderData *render = state.chunk_renders.getptr(_chunk_mesh_key(lod_pos, lod));
 			if (render != nullptr) {
 				rs->instance_set_visible(render->instance_rid, false);
+			}
+			if (is_coarse) {
+				state.coarse_lod_active_count -= 1;
 			}
 		}
 		ship_lod.to_deactivate_visuals.clear();
@@ -898,6 +914,41 @@ void SubGridManager::_apply_lod_visibility_changes(ShipState &state) {
 		}
 		ship_lod.to_unload.clear();
 	}
+
+	ERR_FAIL_COND_MSG(
+			state.coarse_lod_active_count < 0,
+			"coarse_lod_active_count went negative, activate/deactivate events are unbalanced somewhere"
+	);
+
+	_update_collision_suspension(state);
+}
+
+void SubGridManager::_update_collision_suspension(ShipState &state) {
+	if (!state.body_rid.is_valid()) {
+		// Sub-contraption (AnimatableBody3D, kinematic) or not yet given a body, never gravity-simulated in the first place, nothing to suspend.
+		return;
+	}
+
+	// coarse_lod_active_count == 0 is ambiguous on its own: it's true both when the ship has
+	// resolved down to fine LOD (safe) AND when nothing has loaded at all yet, e.g. right
+	// after _load_ship/_create_root_body, before any async mesh/collision task has had time
+	// to complete (NOT safe, terrain underneath may have no confirmed collision yet either).
+	// Require actual built collision as positive evidence before ever waking, on top of the
+	// coarse-chunk check.
+	const bool should_be_suspended = state.coarse_lod_active_count > 0 || state.collision_built_chunks.size() == 0;
+	if (should_be_suspended == state.collision_suspended) {
+		return;
+	}
+
+	PhysicsServer3D::get_singleton()->body_set_state(
+			state.body_rid, PhysicsServer3D::BODY_STATE_SLEEPING, should_be_suspended
+	);
+	state.collision_suspended = should_be_suspended;
+
+	// Waking up: nothing else to do, the body resumes integrating next physics step.
+	// Going to sleep: if it was grabbed, _drive_grabbed_ships will set
+	// BODY_STATE_LINEAR_VELOCITY on it next physics frame regardless, which wakes a sleeping
+	// body as a side effect in Godot, grabbing always wins, no special-casing needed.
 }
 
 // ____________________________________________________________________________

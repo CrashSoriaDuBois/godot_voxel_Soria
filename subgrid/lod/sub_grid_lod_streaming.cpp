@@ -124,11 +124,19 @@ void unview_mesh_box(const Box3i out_of_range_box, SubGridManager::ShipState &sh
 		if (block->update_list_index != -1) {
 			remove_from_pending(lod, block->update_list_index);
 		}
-		// `block` is invalidated by this erase - don't touch it after this line.
+		// If this chunk was active, pair it with a deactivate event before erasing, anything
+		// counting activate/deactivate pairs (render visibility toggling, the collision-LOD safety counter) needs every active chunk to eventually get a matching deactivate,
+		// even when it goes straight from active to gone instead of via the normal update_mesh_block_load() path.
+		if (block->visual_active) {
+			lod.to_deactivate_visuals.push_back(bpos);
+		}
+		// `block` is invalidated by this erase, don't touch it after this line.
 		lod.mesh_state.erase(bpos);
 		lod.to_unload.push_back(bpos);
 	});
 
+	//half of the subdivision rule in unview_mesh_box(). The other half, hide the parent only once
+	// children are actually loaded, runs separately, in update_mesh_block_load() below,triggered from process_loaded_chunk_events().
 	const int parent_lod_index = lod_index + 1;
 	if (parent_lod_index >= SUBGRID_MAX_LODS) {
 		return;
@@ -143,6 +151,8 @@ void unview_mesh_box(const Box3i out_of_range_box, SubGridManager::ShipState &sh
 			return;
 		}
 
+		// Only re-show the parent if children were ACTUALLY removed (refcount hit zero), not
+		// just because the viewer that triggered this unview no longer needs them while a different viewer still does.
 		const Vector3i child0 = bpos << 1;
 		const ChunkMeshBlockState *child_block = lod.mesh_state.getptr(child0);
 		if (child_block == nullptr || child_block->mesh_viewers == 0) {

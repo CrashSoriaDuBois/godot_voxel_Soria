@@ -125,7 +125,7 @@ private:
 	// -----------------------------------------------------------------------
 	// Per-ship state
 	//
-	// ShipState is public (only this one struct, everything below stays private) because
+	// ShipState is public (only this one struct - everything below stays private) because
 	// sub_grid_lod_streaming.h needs to name SubGridManager::ShipState in its function
 	// signature. See subgrid/lod/sub_grid_lod_streaming.h for the rationale.
 
@@ -137,11 +137,19 @@ public:
 		LoadState load_state = SLEEPING;
 		String parent_uuid;
 
+		// MIRROR of VoxelLodTerrainUpdateData::Lod, one per LOD level. Replaces the old
+		// dirty_chunks_per_lod / in_flight_per_lod / pending_requeue_per_lod / active_lod_chunks
+		// quartet of HashSets with a single per-LOD map + output lists.
+		// See subgrid/lod/sub_grid_lod_state.h for what each field mirrors and why.
 		FixedArray<ShipLod, SUBGRID_MAX_LODS> lods;
 
+		// MIRROR of VoxelLodTerrainUpdateData::ClipboxStreamingState::paired_viewers, scoped
 		// per-ship instead of per-volume.
 		Vector<PairedShipViewer> paired_viewers;
 
+		// MIRROR of VoxelLodTerrainUpdateData::ClipboxStreamingState::loaded_mesh_blocks,
+		// minus the mutex (producer and consumer are both main-thread, same frame - see
+		// LoadedChunkEvent's comment in sub_grid_lod_state.h).
 		Vector<LoadedChunkEvent> pending_loaded_chunks;
 
 		// Render instances keyed by (lod_space_chunk_pos, lod).
@@ -153,6 +161,17 @@ public:
 		AnimatableBody3D *animatable_body = nullptr;
 		HashMap<Vector3i, ChunkCollisionData> chunk_collision;
 		HashSet<Vector3i> collision_built_chunks; // LOD0 positions only
+
+		// Count of currently-active chunks at lod > SubGridManager::_collision_safe_lod_max.
+		// Maintained incrementally in _apply_lod_visibility_changes as to_activate_visuals /
+		// to_deactivate_visuals get drained - cheaper than rescanning mesh_state every frame,
+		// and correct as long as every active->inactive AND active->gone transition pushes a
+		// matching to_deactivate_visuals entry (see unview_mesh_box's comment on this).
+		int coarse_lod_active_count = 0;
+		// Whether body_rid (root rigidbodies only) is currently force-slept because of the
+		// above. Tracked separately so body_set_state(BODY_STATE_SLEEPING) is only called on
+		// the actual 0<->positive transition, not every frame.
+		bool collision_suspended = false;
 
 		bool grabbed = false;
 		bool grab_rotate = false;
@@ -233,12 +252,35 @@ private:
 	// at the edge of the outermost LOD box every frame.
 	float _viewer_pairing_distance = LOD_DISTANCES[SUBGRID_MAX_LODS - 1] + 32.f;
 
+	// Highest LOD index at which the terrain we're physically resting on is still guaranteed
+	// to have collision. LOD_DISTANCES must be tuned to coarsen the subgrid before the
+	// terrain itself loses collision at the same real-world distance, so that "subgrid is at
+	// lod > this" is always a safe, slightly-early signal to suspend physics, never a late one.
+	// E.g. terrain has collision at LOD 0 and 1 -> this is 1.
+	int _collision_safe_lod_max = 1;
+
 	int _total_in_flight() const;
 
 	// Returns the viewer position in world space from VoxelEngine,falling back to the node's manually assigned viewer.
 	Vector3 _get_viewer_world_pos(VoxelSubGrid *node) const;
 
+	// Drains state.lods[*].to_activate_visuals / to_deactivate_visuals / to_unload (populated
+	// by process_ship_lod_streaming in sub_grid_lod_streaming.cpp) into actual
+	// RenderingServer::instance_set_visible calls / freed render instances. Entries here are
+	// guaranteed to have a chunk_renders entry UNLESS the chunk's mesh task hasn't completed
+	// yet (e.g. unview_mesh_box's "show parent immediately" branch can reactivate a chunk
+	// whose own mesh is still in flight) - in that case this is a harmless no-op, and
+	// _apply_mesh_result reads the chunk's current visual_active when it eventually creates
+	// the instance, so the correct visibility still gets applied, just one frame later.
 	void _apply_lod_visibility_changes(ShipState &state);
+
+	// Suspends (sleeps) or wakes state.body_rid based on state.coarse_lod_active_count vs
+	// _collision_safe_lod_max. No-op for ships with no body_rid (sub-contraptions are
+	// AnimatableBody3D, kinematic, never gravity-simulated, so there's nothing to suspend).
+	// Grabbing a suspended ship wakes it automatically as a side effect of
+	// _drive_grabbed_ships setting BODY_STATE_LINEAR_VELOCITY every physics frame - no
+	// special-casing needed here for that.
+	void _update_collision_suspension(ShipState &state);
 
 	// World offset of a LOD-space chunk in subgrid-local space
 	static Vector3 _lod_chunk_local_offset(Vector3i lod_pos, int lod) {
