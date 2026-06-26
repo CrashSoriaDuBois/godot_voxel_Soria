@@ -16,14 +16,27 @@
 
 namespace zylann::voxel {
 
-const float SubGridManager::LOD_DISTANCES[4] = { 32.f, 64.f, 128.f, 256.f };
-
 // ____________________________________________________________________________
 // Godot hooks
 
 void SubGridManager::_bind_methods() {
 	ClassDB::bind_method(
-			D_METHOD("initialize", "terrain", "saves_dir", "mesher", "library"), &SubGridManager::initialize
+			D_METHOD(
+					"initialize",
+					"terrain",
+					"saves_dir",
+					"mesher",
+					"library",
+					"view_distance",
+					"lod_count",
+					"lod_distance",
+					"secondary_lod_distance"
+			),
+			&SubGridManager::initialize,
+			DEFVAL(512.f),
+			DEFVAL(4),
+			DEFVAL(48.f),
+			DEFVAL(48.f)
 	);
 	ClassDB::bind_method(D_METHOD("save_all"), &SubGridManager::save_all);
 	ClassDB::bind_method(D_METHOD("load_all"), &SubGridManager::load_all);
@@ -92,12 +105,45 @@ void SubGridManager::initialize(
 		VoxelLodTerrain *terrain,
 		const String &saves_dir,
 		Ref<VoxelMesherBlocky> mesher,
-		Ref<VoxelBlockyLibrary> library
+		Ref<VoxelBlockyLibrary> library,
+		float view_distance,
+		int lod_count,
+		float lod_distance,
+		float secondary_lod_distance
 ) {
 	_terrain = terrain;
 	_saves_dir = saves_dir;
 	_mesher = mesher;
 	_library = library;
+
+	_lod_count = CLAMP(lod_count, 1, SUBGRID_MAX_LODS);
+	_lod_distance = MAX(lod_distance, 1.f);
+	_secondary_lod_distance = MAX(secondary_lod_distance, 0.f);
+	_recompute_lod_distances();
+
+	const float min_view_distance = _lod_distances[_lod_count - 1];
+	if (view_distance < min_view_distance) {
+		WARN_PRINT(
+				String("SubGridManager: view_distance ") + rtos(view_distance) +
+				" is smaller than the outermost LOD distance " + rtos(min_view_distance) +
+				" - clamping up to avoid flushing ship data from RAM while it's still meant to be rendered."
+		);
+		view_distance = min_view_distance;
+	}
+
+	// Preserve the same 50-voxel hysteresis gap the old hardcoded 200.f/250.f pair had, now anchored to the configurable view_distance instead.
+	_unload_distance = view_distance;
+	_load_distance = MAX(view_distance - 50.f, 0.f);
+
+	// Same margin reasoning as before, just derived now instead of read from a static array.
+	_viewer_pairing_distance = _lod_distances[_lod_count - 1] + 32.f;
+}
+
+void SubGridManager::_recompute_lod_distances() {
+	_lod_distances[0] = _lod_distance;
+	for (int lod = 1; lod < _lod_count; lod++) {
+		_lod_distances[lod] = _lod_distance + _secondary_lod_distance * static_cast<float>(1 << lod);
+	}
 }
 
 void SubGridManager::set_block_mass(int voxel_id, float mass) {
@@ -204,7 +250,7 @@ void SubGridManager::mark_chunk_dirty(const String &uuid_str, Vector3i lod0_chun
 	schedule_chunk_remesh(state->lods[0], lod0_chunk_pos);
 
 	// LOD1+: affected[lod] are LOD-space positions
-	for (int lod = 1; lod < SUBGRID_MAX_LODS; lod++) {
+	for (int lod = 1; lod < _lod_count; lod++) {
 		for (const Vector3i &lod_pos : affected[lod]) {
 			schedule_chunk_remesh(state->lods[lod], lod_pos);
 		}
@@ -217,7 +263,7 @@ void SubGridManager::_mark_all_dirty(ShipState &state) {
 	}
 	// Re-trigger meshing for every chunk currently being viewed, at every LOD. Mirrors the old "mark every chunk dirty regardless of whether it's viewed" intent, adapted: a chunk
 	// nobody is viewing doesn't have a ChunkMeshBlockState to mark, and doesn't need one, it'll get fresh voxel data the moment a viewer's box reaches it anyway.
-	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
+	for (int lod = 0; lod < _lod_count; lod++) {
 		ShipLod &ship_lod = state.lods[lod];
 		// Collect positions first: schedule_chunk_remesh() doesn't mutate mesh_state's key set
 		// (only pending_update / per-block fields), so iterating mesh_state directly while
@@ -866,7 +912,7 @@ void SubGridManager::_process_lod_for_ship(const String &uuid, ShipState &state)
 	process_ship_lod_streaming(
 			state,
 			state.node->get_chunk_map(),
-			Span<const float>(LOD_DISTANCES, SUBGRID_MAX_LODS),
+			Span<const float>(_lod_distances.data(), _lod_count),
 			_viewer_pairing_distance
 	);
 }
@@ -874,7 +920,7 @@ void SubGridManager::_process_lod_for_ship(const String &uuid, ShipState &state)
 void SubGridManager::_apply_lod_visibility_changes(ShipState &state) {
 	RenderingServer *rs = RenderingServer::get_singleton();
 
-	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
+	for (int lod = 0; lod < _lod_count; lod++) {
 		ShipLod &ship_lod = state.lods[lod];
 		const bool is_coarse = lod > _collision_safe_lod_max;
 
@@ -917,7 +963,7 @@ void SubGridManager::_apply_lod_visibility_changes(ShipState &state) {
 
 	ERR_FAIL_COND_MSG(
 			state.coarse_lod_active_count < 0,
-			"coarse_lod_active_count went negative, activate/deactivate events are unbalanced somewhere"
+			"coarse_lod_active_count went negative - activate/deactivate events are unbalanced somewhere"
 	);
 
 	_update_collision_suspension(state);
@@ -958,7 +1004,7 @@ void SubGridManager::_submit_pending_tasks(const String &uuid, ShipState &state)
 	// MIRROR of send_mesh_requests()'s state transition (MESH_UPDATE_NOT_SENT ->
 	// MESH_UPDATE_SENT, update_list_index reset to -1), throttled by MAX_CONCURRENT_TASKS
 	// since this module fires tasks via std::async instead of upstream's managed worker pool.
-	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
+	for (int lod = 0; lod < _lod_count; lod++) {
 		ShipLod &ship_lod = state.lods[lod];
 		if (ship_lod.pending_update.is_empty()) {
 			continue;
@@ -1185,7 +1231,7 @@ std::shared_ptr<VoxelBuffer> SubGridManager::_build_padded_buffer(VoxelSubGrid *
 int SubGridManager::_total_in_flight() const {
 	int total = 0;
 	for (const auto &[_, state] : _ships) {
-		for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
+		for (int lod = 0; lod < _lod_count; lod++) {
 			for (const KeyValue<Vector3i, ChunkMeshBlockState> &kv : state.lods[lod].mesh_state) {
 				if (kv.value.state == MESH_UPDATE_SENT) {
 					total += 1;

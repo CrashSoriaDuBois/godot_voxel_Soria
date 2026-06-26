@@ -106,7 +106,7 @@ void view_mesh_box(const Box3i box_to_add, ShipLod &lod, const SubGridChunkMap &
 	});
 }
 
-void unview_mesh_box(const Box3i out_of_range_box, SubGridManager::ShipState &ship, int lod_index) {
+void unview_mesh_box(const Box3i out_of_range_box, SubGridManager::ShipState &ship, int lod_index, int lod_count) {
 	ShipLod &lod = ship.lods[lod_index];
 
 	out_of_range_box.for_each_cell([&lod](Vector3i bpos) {
@@ -138,7 +138,7 @@ void unview_mesh_box(const Box3i out_of_range_box, SubGridManager::ShipState &sh
 	//half of the subdivision rule in unview_mesh_box(). The other half, hide the parent only once
 	// children are actually loaded, runs separately, in update_mesh_block_load() below,triggered from process_loaded_chunk_events().
 	const int parent_lod_index = lod_index + 1;
-	if (parent_lod_index >= SUBGRID_MAX_LODS) {
+	if (parent_lod_index >= lod_count) {
 		return;
 	}
 
@@ -152,7 +152,8 @@ void unview_mesh_box(const Box3i out_of_range_box, SubGridManager::ShipState &sh
 		}
 
 		// Only re-show the parent if children were ACTUALLY removed (refcount hit zero), not
-		// just because the viewer that triggered this unview no longer needs them while a different viewer still does.
+		// just because the viewer that triggered this unview no longer needs them while a
+		// different viewer still does.
 		const Vector3i child0 = bpos << 1;
 		const ChunkMeshBlockState *child_block = lod.mesh_state.getptr(child0);
 		if (child_block == nullptr || child_block->mesh_viewers == 0) {
@@ -166,7 +167,8 @@ void update_mesh_block_load(
 		SubGridManager::ShipState &ship,
 		const SubGridChunkMap &chunk_map,
 		Vector3i bpos,
-		int lod_index
+		int lod_index,
+		int lod_count
 ) {
 	ShipLod &lod = ship.lods[lod_index];
 	ChunkMeshBlockState *block = lod.mesh_state.getptr(bpos);
@@ -175,7 +177,7 @@ void update_mesh_block_load(
 	}
 
 	const int parent_lod_index = lod_index + 1;
-	if (parent_lod_index >= SUBGRID_MAX_LODS) {
+	if (parent_lod_index >= lod_count) {
 		// Root LOD: no parent to coordinate with.
 		if (!block->visual_active) {
 			block->visual_active = true;
@@ -184,7 +186,7 @@ void update_mesh_block_load(
 
 		if (lod_index > 0) {
 			for (unsigned int c = 0; c < 8; ++c) {
-				update_mesh_block_load(ship, chunk_map, get_child_position(bpos, c), lod_index - 1);
+				update_mesh_block_load(ship, chunk_map, get_child_position(bpos, c), lod_index - 1, lod_count);
 			}
 		}
 		return;
@@ -203,7 +205,7 @@ void update_mesh_block_load(
 
 		if (lod_index > 0) {
 			for (unsigned int c = 0; c < 8; ++c) {
-				update_mesh_block_load(ship, chunk_map, get_child_position(bpos, c), lod_index - 1);
+				update_mesh_block_load(ship, chunk_map, get_child_position(bpos, c), lod_index - 1, lod_count);
 			}
 		}
 		return;
@@ -251,7 +253,7 @@ void update_mesh_block_load(
 
 		if (lod_index > 0) {
 			for (unsigned int cc = 0; cc < 8; ++cc) {
-				update_mesh_block_load(ship, chunk_map, get_child_position(sibling_bpos, cc), lod_index - 1);
+				update_mesh_block_load(ship, chunk_map, get_child_position(sibling_bpos, cc), lod_index - 1, lod_count);
 			}
 		}
 	}
@@ -286,8 +288,9 @@ bool find_paired_viewer(const Vector<PairedShipViewer> &viewers, ViewerID id, in
 // as "box went empty" so the box-diff step below correctly unviews everything, before the
 // viewer slot itself disappears in remove_unpaired_viewers().
 void pair_ship_viewers(SubGridManager::ShipState &state, Span<const float> lod_distances, float pairing_distance) {
+	const int lod_count = static_cast<int>(lod_distances.size());
 	ERR_FAIL_COND_MSG(
-			lod_distances.size() != SUBGRID_MAX_LODS, "lod_distances must have exactly SUBGRID_MAX_LODS entries"
+			lod_count < 1 || lod_count > SUBGRID_MAX_LODS, "lod_distances size must be between 1 and SUBGRID_MAX_LODS"
 	);
 	ERR_FAIL_COND(state.node == nullptr);
 
@@ -306,7 +309,7 @@ void pair_ship_viewers(SubGridManager::ShipState &state, Span<const float> lod_d
 
 		if (!still_in_range) {
 			pv.prev_state = pv.state;
-			for (int lod = 0; lod < SUBGRID_MAX_LODS; ++lod) {
+			for (int lod = 0; lod < lod_count; ++lod) {
 				pv.state.mesh_box_per_lod[lod] = Box3i();
 			}
 		}
@@ -343,9 +346,9 @@ void pair_ship_viewers(SubGridManager::ShipState &state, Span<const float> lod_d
 		pv.prev_state = pv.state;
 		pv.state.local_position_voxels = math::floor_to_int(world_to_local.xform(viewer.world_position));
 
-		for (int lod = 0; lod < SUBGRID_MAX_LODS; ++lod) {
+		for (int lod = 0; lod < lod_count; ++lod) {
 			// MIRROR: root LOD needn't be even (no parent to subdivide into).
-			const bool make_even = (lod != SUBGRID_MAX_LODS - 1);
+			const bool make_even = (lod != lod_count - 1);
 			const int lod_chunk_size = chunk_size << lod;
 			const int distance_voxels = (int)lod_distances[lod];
 
@@ -375,14 +378,14 @@ void remove_unpaired_viewers(SubGridManager::ShipState &state) {
 	}
 }
 
-void process_mesh_boxes(SubGridManager::ShipState &state, const SubGridChunkMap &chunk_map) {
+void process_mesh_boxes(SubGridManager::ShipState &state, const SubGridChunkMap &chunk_map, int lod_count) {
 	for (int vi = 0; vi < state.paired_viewers.size(); ++vi) {
 		const PairedShipViewer &pv = state.paired_viewers[vi];
 
 		// Iterating from big to small LOD, same order upstream uses, so a future early-exit
 		// on "box doesn't intersect ship bounds at all" can be added the same way upstream
 		// does it, without reordering anything else.
-		for (int lod_index = SUBGRID_MAX_LODS - 1; lod_index >= 0; --lod_index) {
+		for (int lod_index = lod_count - 1; lod_index >= 0; --lod_index) {
 			const Box3i &new_box = pv.state.mesh_box_per_lod[lod_index];
 			const Box3i &prev_box = pv.prev_state.mesh_box_per_lod[lod_index];
 			if (new_box == prev_box) {
@@ -400,16 +403,16 @@ void process_mesh_boxes(SubGridManager::ShipState &state, const SubGridChunkMap 
 			StdVector<Box3i> removed;
 			prev_box.difference_to_vec(new_box, removed);
 			for (const Box3i &b : removed) {
-				unview_mesh_box(b, state, lod_index);
+				unview_mesh_box(b, state, lod_index, lod_count);
 			}
 		}
 	}
 }
 
-void process_loaded_chunk_events(SubGridManager::ShipState &state, const SubGridChunkMap &chunk_map) {
+void process_loaded_chunk_events(SubGridManager::ShipState &state, const SubGridChunkMap &chunk_map, int lod_count) {
 	for (int i = 0; i < state.pending_loaded_chunks.size(); ++i) {
 		const LoadedChunkEvent &ev = state.pending_loaded_chunks[i];
-		update_mesh_block_load(state, chunk_map, ev.position, ev.lod_index);
+		update_mesh_block_load(state, chunk_map, ev.position, ev.lod_index, lod_count);
 	}
 	state.pending_loaded_chunks.clear();
 }
@@ -426,10 +429,16 @@ void process_ship_lod_streaming(
 		return;
 	}
 
+	// lod_distances.size() IS the effective LOD count for this call, see this function's header comment in sub_grid_lod_streaming.h.
+	const int lod_count = static_cast<int>(lod_distances.size());
+
+	// pair viewers -> diff boxes -> drop unpaired viewers -> trigger visibility from already-loaded chunks. The
+	// one upstream step genuinely absent here is data-block load/unload (process_data_blocks_sliding_box), 
+	// ships have no separate data-streaming layer to drive, since SubGridChunkMap is always fully resident once LOADED.
 	pair_ship_viewers(state, lod_distances, viewer_pairing_distance);
-	process_mesh_boxes(state, chunk_map);
+	process_mesh_boxes(state, chunk_map, lod_count);
 	remove_unpaired_viewers(state);
-	process_loaded_chunk_events(state, chunk_map);
+	process_loaded_chunk_events(state, chunk_map, lod_count);
 }
 
 } // namespace zylann::voxel

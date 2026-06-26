@@ -39,7 +39,11 @@ public:
 			VoxelLodTerrain *terrain,
 			const String &saves_dir,
 			Ref<VoxelMesherBlocky> mesher,
-			Ref<VoxelBlockyLibrary> library
+			Ref<VoxelBlockyLibrary> library,
+			float view_distance = 512.f,
+			int lod_count = 4,
+			float lod_distance = 48.f,
+			float secondary_lod_distance = 48.f
 	);
 
 	// Block mass table. call before ships are assembled or loaded.
@@ -245,12 +249,28 @@ private:
 	// -----------------------------------------------------------------------
 	// LOD
 
-	static const float LOD_DISTANCES[4];
+	// Number of LOD levels actually in use, 1..SUBGRID_MAX_LODS. Set (and clamped) by initialize(). SubGridChunkMap always 
+	// builds all SUBGRID_MAX_LODS levels regardless (see sub_grid_chunk_map.h), this only controls how many of them the 
+	// streaming/viewer-pairing system in sub_grid_lod_streaming.cpp actually treats as real, including which one it treats as the "root" (no-parent) level.
+	int _lod_count = 4;
+
+	//Stored separately from the derived per-LOD distances below so initialize() can be called again
+	// later if you ever want to support reconfiguring at runtime (not wired up yet, would need to recompute
+	// _lod_distances and re-pair all ships' viewer boxes)
+	float _lod_distance = 48.f;
+	float _secondary_lod_distance = 48.f;
+
+	// Per-LOD distance in world voxels, index 0..(_lod_count - 1). Computed once in initialize() by _recompute_lod_distances()
+	FixedArray<float, SUBGRID_MAX_LODS> _lod_distances;
+
+	// Recomputes _lod_distances from _lod_distance / _secondary_lod_distance / _lod_count
+	// Called once from initialize()
+	void _recompute_lod_distances();
 
 	// Pairing range for sub_grid_lod_streaming.cpp's viewer pairing pass: must be at least
 	// LOD_DISTANCES[SUBGRID_MAX_LODS - 1], plus margin so a viewer doesn't pair/unpair right
 	// at the edge of the outermost LOD box every frame.
-	float _viewer_pairing_distance = LOD_DISTANCES[SUBGRID_MAX_LODS - 1] + 32.f;
+	float _viewer_pairing_distance = 0.f;
 
 	// Highest LOD index at which the terrain we're physically resting on is still guaranteed
 	// to have collision. LOD_DISTANCES must be tuned to coarsen the subgrid before the
