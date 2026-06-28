@@ -86,6 +86,17 @@ void schedule_chunk_remesh(ShipLod &lod, Vector3i bpos) {
 
 namespace {
 
+void view_one_chunk(Vector3i bpos, ShipLod &lod) {
+	ChunkMeshBlockState &block = lod.mesh_state[bpos]; // get-or-default-insert
+
+	const bool first_viewer = (block.mesh_viewers == 0);
+	block.mesh_viewers += 1;
+
+	if (first_viewer) {
+		schedule_chunk_remesh(lod, bpos);
+	}
+}
+
 void view_mesh_box(const Box3i box_to_add, ShipLod &lod, const SubGridChunkMap &chunk_map, int lod_index) {
 	const HashSet<Vector3i> &existing = chunk_map.get_lod_chunk_positions(lod_index);
 
@@ -94,15 +105,7 @@ void view_mesh_box(const Box3i box_to_add, ShipLod &lod, const SubGridChunkMap &
 			// Sparse ship: nothing here to mesh.
 			return;
 		}
-
-		ChunkMeshBlockState &block = lod.mesh_state[bpos]; // get-or-default-insert
-
-		const bool first_viewer = (block.mesh_viewers == 0);
-		block.mesh_viewers += 1;
-
-		if (first_viewer) {
-			schedule_chunk_remesh(lod, bpos);
-		}
+		view_one_chunk(bpos, lod);
 	});
 }
 
@@ -409,6 +412,9 @@ void process_mesh_boxes(SubGridManager::ShipState &state, const SubGridChunkMap 
 	}
 }
 
+// MIRROR of process_loaded_mesh_blocks_trigger_visibility_changes(), simplified: no mutex
+// (see LoadedChunkEvent's comment), and only a "visual" event kind exists here (no separate
+// collision event - see ChunkMeshBlockState's comment on why).
 void process_loaded_chunk_events(SubGridManager::ShipState &state, const SubGridChunkMap &chunk_map, int lod_count) {
 	for (int i = 0; i < state.pending_loaded_chunks.size(); ++i) {
 		const LoadedChunkEvent &ev = state.pending_loaded_chunks[i];
@@ -418,6 +424,40 @@ void process_loaded_chunk_events(SubGridManager::ShipState &state, const SubGrid
 }
 
 } // anonymous namespace
+
+// MIRROR of nothing upstream - this closes a gap specific to sparse, mutable ships that
+// VLT's dense, append-only-at-the-edges terrain never has: a voxel edit can create a brand
+// new chunk inside a region a viewer's box already covers, without the box itself changing.
+// process_mesh_boxes only discovers chunks via box.difference_to_vec(prev_box) - if the box
+// is identical to last frame, nothing gets re-scanned, so a freshly created chunk would
+// otherwise never get a ChunkMeshBlockState at all until something perturbs some viewer's
+// box enough to re-diff over that exact cell (which is what made this look like it could be
+// "fixed" by changing LOD and going back - that's just incidentally re-running the box diff
+// over the same area). Call this from SubGridManager::mark_chunk_dirty for every LOD0/LOD1+
+// position a voxel edit touches, in addition to (not instead of) schedule_chunk_remesh.
+void notify_chunk_edited(SubGridManager::ShipState &state, Vector3i bpos, int lod_index) {
+	ShipLod &lod = state.lods[lod_index];
+
+	if (lod.mesh_state.getptr(bpos) == nullptr) {
+		// Not tracked yet - check whether any currently-paired viewer's box already covers
+		// this position (true for essentially every real edit, since editing requires being
+		// near the chunk in the first place) and, if so, view it exactly as if the box-diff
+		// had discovered it normally - including the proper per-viewer refcounting, so a
+		// later unview from any one of them doesn't erase it while another still needs it.
+		for (int i = 0; i < state.paired_viewers.size(); ++i) {
+			const PairedShipViewer &pv = state.paired_viewers[i];
+			if (pv.state.mesh_box_per_lod[lod_index].contains(bpos)) {
+				view_one_chunk(bpos, lod);
+			}
+		}
+	}
+
+	// Either this just got tracked above (view_one_chunk already scheduled it on first view),
+	// or it was already tracked from before (e.g. re-editing an existing chunk) and needs an
+	// explicit remesh trigger here. schedule_chunk_remesh's update_list_index guard makes
+	// calling it after view_one_chunk in the first case a harmless no-op, not a double-queue.
+	schedule_chunk_remesh(lod, bpos);
+}
 
 void process_ship_lod_streaming(
 		SubGridManager::ShipState &state,

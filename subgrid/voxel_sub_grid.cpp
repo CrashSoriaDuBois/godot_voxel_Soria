@@ -1,11 +1,11 @@
 #include "voxel_sub_grid.h"
-#include "terrain/variable_lod/voxel_lod_terrain.h"
+#include "core/io/dir_access.h"
 #include "core/math/math_defs.h"
 #include "core/object/object.h"
 #include "edition/voxel_tool.h"
 #include "sub_grid_manager.h"
+#include "terrain/variable_lod/voxel_lod_terrain.h"
 #include "voxel_tool_sub_grid.h"
-#include "core/io/dir_access.h"
 
 namespace zylann::voxel {
 
@@ -28,7 +28,11 @@ void VoxelSubGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_voxel_tool"), &VoxelSubGrid::get_voxel_tool);
 
 	ClassDB::bind_method(D_METHOD("grab", "grab_point_local", "strength"), &VoxelSubGrid::grab, DEFVAL(1.0f));
-	ClassDB::bind_method(D_METHOD("grab_with_rotation", "grab_point_local", "strength"), &VoxelSubGrid::grab_with_rotation, DEFVAL(1.0f));
+	ClassDB::bind_method(
+			D_METHOD("grab_with_rotation", "grab_point_local", "strength"),
+			&VoxelSubGrid::grab_with_rotation,
+			DEFVAL(1.0f)
+	);
 	ClassDB::bind_method(D_METHOD("release"), &VoxelSubGrid::release);
 	ClassDB::bind_method(D_METHOD("set_grab_target", "target"), &VoxelSubGrid::set_grab_target);
 	ClassDB::bind_method(D_METHOD("apply_impulse", "impulse", "world_point"), &VoxelSubGrid::apply_impulse);
@@ -83,34 +87,35 @@ void VoxelSubGrid::initialize_root_from_disk(
 		Ref<VoxelMesherBlocky> mesher,
 		Ref<VoxelBlockyLibrary> library
 ) {
-    _meta = meta;
-    _saves_dir = saves_dir;
-    _mesher = mesher;
-    _library = library;
-    _promoted_pivot_world = meta.promoted_pivot_world;
-    _is_world_anchored = meta.is_terrain_anchored;
+	_meta = meta;
+	_saves_dir = saves_dir;
+	_mesher = mesher;
+	_library = library;
+	_promoted_pivot_world = meta.promoted_pivot_world;
+	_is_world_anchored = meta.is_terrain_anchored;
 
-    load_chunks_from_stream();
+	load_chunks_from_stream();
 
-    print_line(String("initialize_root_from_disk:"));
-    print_line(String("  world_position = ") + String(meta.world_position));
-    print_line(String("  world_rotation = (") + 
-        rtos(meta.world_rotation.x) + ", " + rtos(meta.world_rotation.y) + ", " +
-        rtos(meta.world_rotation.z) + ", " + rtos(meta.world_rotation.w) + ")");
-    print_line(String("  is_terrain_anchored = ") + (meta.is_terrain_anchored ? "true" : "false"));
-    print_line(String("  is_root = ") + (meta.is_root ? "true" : "false"));
-    print_line(String("  promoted_pivot_world = ") + String(meta.promoted_pivot_world));
+	print_line(String("initialize_root_from_disk:"));
+	print_line(String("  world_position = ") + String(meta.world_position));
+	print_line(
+			String("  world_rotation = (") + rtos(meta.world_rotation.x) + ", " + rtos(meta.world_rotation.y) + ", " +
+			rtos(meta.world_rotation.z) + ", " + rtos(meta.world_rotation.w) + ")"
+	);
+	print_line(String("  is_terrain_anchored = ") + (meta.is_terrain_anchored ? "true" : "false"));
+	print_line(String("  is_root = ") + (meta.is_root ? "true" : "false"));
+	print_line(String("  promoted_pivot_world = ") + String(meta.promoted_pivot_world));
 
-    Quaternion q = _meta.world_rotation;
-    print_line(String("  quat length_squared = ") + rtos(q.length_squared()));
+	Quaternion q = _meta.world_rotation;
+	print_line(String("  quat length_squared = ") + rtos(q.length_squared()));
 
-    if (q.length_squared() < 0.0001f) {
-        q = Quaternion();
-    } else {
-        q = q.normalized();
-    }
-    set_global_position(_meta.world_position);
-    set_global_basis(Basis(q));
+	if (q.length_squared() < 0.0001f) {
+		q = Quaternion();
+	} else {
+		q = q.normalized();
+	}
+	set_global_position(_meta.world_position);
+	set_global_basis(Basis(q));
 }
 
 void VoxelSubGrid::initialize_child(
@@ -296,24 +301,24 @@ void VoxelSubGrid::_close_stream() {
 }
 
 void VoxelSubGrid::save_and_close() {
-    flush_dirty_chunks();
-    _close_stream();
+	flush_dirty_chunks();
+	_close_stream();
 }
 
 void VoxelSubGrid::destroy() {
-    flush_dirty_chunks();
-    _close_stream();
+	flush_dirty_chunks();
+	_close_stream();
 	// File deletion must happen after save thread closes the stream.
 	// For now, push close and delete file after a brief wait, or
 	// add a delete_after_close flag to SaveRequest.
-    if (_manager != nullptr) {
-        _manager->wait_save_queue();
-    }
-    String saves_dir_abs = ProjectSettings::get_singleton()->globalize_path(_saves_dir);
-    String uuid_str = uuid_to_string(_meta.uuid);
-    String db_path = saves_dir_abs.path_join("ships").path_join(uuid_str + ".sqlite");
+	if (_manager != nullptr) {
+		_manager->wait_save_queue();
+	}
+	String saves_dir_abs = ProjectSettings::get_singleton()->globalize_path(_saves_dir);
+	String uuid_str = uuid_to_string(_meta.uuid);
+	String db_path = saves_dir_abs.path_join("ships").path_join(uuid_str + ".sqlite");
 	DirAccess::remove_absolute(db_path);
-    queue_free();
+	queue_free();
 }
 
 void VoxelSubGrid::_save_chunk(Vector3i chunk_pos) {
@@ -442,14 +447,15 @@ void VoxelSubGrid::_disassemble_root_to_terrain(VoxelLodTerrain *terrain) {
 
 	for (VoxelSubGrid *child : children_snapshot) {
 		Transform3D child_world_t = child->get_global_transform();
-    
+
 		Transform3D parent_world_t = get_global_transform();
-		Vector3 pivot_world = parent_world_t.xform(Vector3(child->get_metadata().pivot_in_parent_local) + Vector3(0.5f, 0.5f, 0.5f));
+		Vector3 pivot_world =
+				parent_world_t.xform(Vector3(child->get_metadata().pivot_in_parent_local) + Vector3(0.5f, 0.5f, 0.5f));
 
 		if (_manager != nullptr) {
 			_manager->unregister_ship(_manager->uuid_for_node(child));
 		}
-    
+
 		child->_promoted_world_transform = child_world_t;
 		child->_promoted_pivot_world = pivot_world;
 		child->_is_world_anchored = true;
@@ -457,6 +463,8 @@ void VoxelSubGrid::_disassemble_root_to_terrain(VoxelLodTerrain *terrain) {
 		// This child is becoming an independent ship
 		child->_meta.is_root = true;
 		memset(child->_meta.parent_uuid, 0, 16);
+
+		child->_meta.promoted_pivot_world = pivot_world;
 
 		child->_meta.world_position = child_world_t.origin;
 		child->_meta.world_rotation = child_world_t.basis.get_rotation_quaternion();
@@ -591,8 +599,8 @@ double VoxelSubGrid::advance_rotation(double delta) {
 }
 
 Transform3D VoxelSubGrid::compute_local_transform() const {
-	// This is the same math that was in _apply_transform_from_angle,now returning a Transform3D instead of calling set_transform()
-	// SubGridManager calls this and applies the result to AnimatableBody3D and the VoxelSubGrid Node3D
+	// This is the same math that was in _apply_transform_from_angle,now returning a Transform3D instead of calling
+	// set_transform() SubGridManager calls this and applies the result to AnimatableBody3D and the VoxelSubGrid Node3D
 
 	Vector3 facing = Vector3(_meta.rotation_axis).normalized();
 	Vector3 pivot_in_child_local = Vector3(0.5f, 0.5f, 0.5f) - facing * 0.5f;

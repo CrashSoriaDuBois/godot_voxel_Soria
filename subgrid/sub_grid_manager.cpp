@@ -247,12 +247,12 @@ void SubGridManager::mark_chunk_dirty(const String &uuid_str, Vector3i lod0_chun
 	// them, so there's nothing lost by not tracking them here.
 
 	// LOD0
-	schedule_chunk_remesh(state->lods[0], lod0_chunk_pos);
+	notify_chunk_edited(*state, lod0_chunk_pos, 0);
 
 	// LOD1+: affected[lod] are LOD-space positions
 	for (int lod = 1; lod < _lod_count; lod++) {
 		for (const Vector3i &lod_pos : affected[lod]) {
-			schedule_chunk_remesh(state->lods[lod], lod_pos);
+			notify_chunk_edited(*state, lod_pos, lod);
 		}
 	}
 }
@@ -401,6 +401,12 @@ void SubGridManager::_create_root_body(const String &uuid, ShipState &state) {
 
 	state.body_rid = body;
 
+	// Collision layer/mask must be set BEFORE the sleep call below, not after: changing a
+	// body's collision_layer/collision_mask forces Godot's physics server to re-evaluate its
+	// broadphase pairs, which wakes a sleeping body as a side effect.
+	
+	_apply_collision_layers(state, state.node->get_metadata().is_terrain_anchored);
+
 	// Start asleep: at this exact moment there are zero collision shapes built for this ship
 	// (collision_built_chunks is empty, meshing/collision is async and hasn't had a chance to
 	// run yet), so gravity must not act on it until _update_collision_suspension positively
@@ -425,6 +431,10 @@ void SubGridManager::_create_child_body(const String &uuid, ShipState &state) {
 	body->set_owner(state.node->get_owner());
 
 	state.animatable_body = body;
+
+	// Unlike _create_root_body, this path is shared by both normal sub-contraptions AND terrain-anchored promoted roots
+	// (see _register_single's branching), the metadata check here is what actually distinguishes them, not which function got called.
+	_apply_collision_layers(state, state.node->get_metadata().is_terrain_anchored);
 }
 
 void SubGridManager::_destroy_body(ShipState &state) {
@@ -445,6 +455,42 @@ void SubGridManager::_destroy_body(ShipState &state) {
 		state.animatable_body->queue_free();
 		state.animatable_body = nullptr;
 	}
+}
+
+void SubGridManager::_apply_collision_layers(ShipState &state, bool is_terrain_anchored) {
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+
+	RID body_rid;
+	bool is_root_rigidbody = false;
+	if (state.body_rid.is_valid()) {
+		body_rid = state.body_rid;
+		is_root_rigidbody = true;
+	} else if (state.animatable_body != nullptr) {
+		body_rid = state.animatable_body->get_rid();
+	} else {
+		return;
+	}
+
+	const uint32_t subgrid_part_bit = 1u << (SUBGRID_PART_LAYER_BIT - 1);
+	const uint32_t terrain_anchored_bit = 1u << (TERRAIN_ANCHORED_LAYER_BIT - 1);
+	const uint32_t ship_hull_bit = 1u << (SHIP_HULL_LAYER_BIT - 1);
+
+	// A real root rigidbody is never terrain-anchored in practice, but checking state.body_rid directly here rather 
+	// than trusting is_terrain_anchored to always be false for roots means this stays correct even if that branching ever changes.
+	uint32_t layer;
+	if (is_root_rigidbody) {
+		layer = ship_hull_bit;
+	} else {
+		layer = is_terrain_anchored ? terrain_anchored_bit : subgrid_part_bit;
+	}
+	ps->body_set_collision_layer(body_rid, layer);
+
+	// Hulls (root rigidbodies AND terrain-anchored statics) collide with everything except
+	// turrets, that includes each other, terrain, and the player, via the OR-rule (A and B
+	// collide if A.layer & B.mask OR B.layer & A.mask is nonzero), without needing to know which bits terrain/player actually use.
+	const uint32_t mask = is_root_rigidbody || is_terrain_anchored ? ~uint32_t(0) & ~subgrid_part_bit
+																   : ~uint32_t(0) & ~subgrid_part_bit & ~ship_hull_bit;
+	ps->body_set_collision_mask(body_rid, mask);
 }
 
 void SubGridManager::_apply_collision_result(ShipState &state, Vector3i chunk_pos, const SubGridCollisionOutput &col) {
@@ -835,7 +881,7 @@ void SubGridManager::_load_ship(const String &uuid, ShipState &state) {
 	state.load_state = LOADED;
 	_mark_all_dirty(state);
 
-	if (state.node->is_root()) {
+	if (state.node->is_root() && !state.node->get_metadata().is_terrain_anchored) {
 		_create_root_body(uuid, state);
 	} else {
 		_create_child_body(uuid, state);

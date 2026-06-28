@@ -247,6 +247,14 @@ private:
 	void _free_chunk_renders(ShipState &state);
 
 	// -----------------------------------------------------------------------
+	// Collision layers
+	static constexpr int SUBGRID_PART_LAYER_BIT = 10;
+	static constexpr int TERRAIN_ANCHORED_LAYER_BIT = 11;
+	static constexpr int SHIP_HULL_LAYER_BIT = 12;
+
+	void _apply_collision_layers(ShipState &state, bool is_terrain_anchored);
+
+	// -----------------------------------------------------------------------
 	// LOD
 
 	// Number of LOD levels actually in use, 1..SUBGRID_MAX_LODS. Set (and clamped) by initialize(). SubGridChunkMap always 
