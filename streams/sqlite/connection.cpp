@@ -200,26 +200,41 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 	const CoordinateColumnType block_key_column_type = get_coordinate_column_type(preferred_coordinate_format);
 
 	// Create tables if they don't exist.
-	const char *tables[3] = {
+	const char *tables[4] = {
 		"CREATE TABLE IF NOT EXISTS meta (version INTEGER, block_size_po2 INTEGER, coordinate_format INTEGER)",
-		"",
-		"CREATE TABLE IF NOT EXISTS channels (idx INTEGER PRIMARY KEY, depth INTEGER)"
+		"", // blocks — filled by switch below
+		"CREATE TABLE IF NOT EXISTS channels (idx INTEGER PRIMARY KEY, depth INTEGER)",
+		"" // block_entities — filled by switch below
 	};
+
 	switch (block_key_column_type) {
 		case COORDINATE_COLUMN_U64:
 			tables[1] = "CREATE TABLE IF NOT EXISTS blocks (loc INTEGER PRIMARY KEY, vb BLOB, instances BLOB)";
+			tables[3] = "CREATE TABLE IF NOT EXISTS block_entities "
+						"(loc INTEGER NOT NULL, local_key INTEGER NOT NULL, "
+						"action_type INTEGER NOT NULL, data BLOB, "
+						"PRIMARY KEY (loc, local_key))";
 			break;
 		case COORDINATE_COLUMN_STRING:
 			tables[1] = "CREATE TABLE IF NOT EXISTS blocks (loc TEXT PRIMARY KEY, vb BLOB, instances BLOB)";
+			tables[3] = "CREATE TABLE IF NOT EXISTS block_entities "
+						"(loc TEXT NOT NULL, local_key INTEGER NOT NULL, "
+						"action_type INTEGER NOT NULL, data BLOB, "
+						"PRIMARY KEY (loc, local_key))";
 			break;
 		case COORDINATE_COLUMN_BLOB:
 			tables[1] = "CREATE TABLE IF NOT EXISTS blocks (loc BLOB PRIMARY KEY, vb BLOB, instances BLOB)";
+			tables[3] = "CREATE TABLE IF NOT EXISTS block_entities "
+						"(loc BLOB NOT NULL, local_key INTEGER NOT NULL, "
+						"action_type INTEGER NOT NULL, data BLOB, "
+						"PRIMARY KEY (loc, local_key))";
 			break;
 		default:
 			ZN_CRASH_MSG("Invalid column type");
 			break;
 	}
-	for (size_t i = 0; i < 3; ++i) {
+
+	for (size_t i = 0; i < 4; ++i) {
 		rc = sqlite3_exec(db, tables[i], nullptr, nullptr, &error_message);
 		if (rc != SQLITE_OK) {
 			ZN_PRINT_ERROR(format("Failed to create table: {}", error_message));
@@ -304,6 +319,36 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 		return false;
 	}
 
+	if (!prepare(
+				db,
+				&_save_block_entity_statement,
+				"INSERT INTO block_entities VALUES (:loc, :local_key, :action_type, :data) "
+				"ON CONFLICT(loc, local_key) DO UPDATE SET action_type=excluded.action_type, data=excluded.data"
+		)) {
+		return false;
+	}
+	if (!prepare(
+				db,
+				&_load_block_entity_statement,
+				"SELECT action_type, data FROM block_entities WHERE loc=:loc AND local_key=:local_key"
+		)) {
+		return false;
+	}
+	if (!prepare(
+				db,
+				&_delete_block_entity_statement,
+				"DELETE FROM block_entities WHERE loc=:loc AND local_key=:local_key"
+		)) {
+		return false;
+	}
+	if (!prepare(
+				db,
+				&_load_next_local_key_statement,
+				"SELECT COALESCE(MAX(local_key)+1, 0) FROM block_entities WHERE loc=:loc"
+		)) {
+		return false;
+	}
+
 	// Is the database setup?
 	Meta meta = load_meta();
 	if (meta.version == -1) {
@@ -363,6 +408,10 @@ void Connection::close() {
 	finalize(_save_channel_statement);
 	finalize(_load_all_blocks_statement);
 	finalize(_load_all_block_keys_statement);
+	finalize(_save_block_entity_statement);
+	finalize(_load_block_entity_statement);
+	finalize(_delete_block_entity_statement);
+	finalize(_load_next_local_key_statement);
 	sqlite3_close(_db);
 	_db = nullptr;
 	_opened_path.clear();
@@ -890,6 +939,147 @@ void Connection::migrate_to_latest_version() {
 		ZN_ASSERT_RETURN(migrate_to_next_version());
 		ZN_ASSERT_RETURN(prev != _meta.version);
 	}
+}
+
+bool Connection::save_block_entity(
+		const BlockLocation loc,
+		const int local_key,
+		const int action_type,
+		const Span<const uint8_t> data
+) {
+	sqlite3 *db = _db;
+	sqlite3_stmt *stmt = _save_block_entity_statement;
+
+	int rc = sqlite3_reset(stmt);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(db));
+		return false;
+	}
+
+	BindBlockCoordinates coord_binding;
+	if (!coord_binding.bind(db, stmt, 1, _meta.coordinate_format, loc)) {
+		return false;
+	}
+
+	rc = sqlite3_bind_int(stmt, 2, local_key);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(db));
+		return false;
+	}
+
+	rc = sqlite3_bind_int(stmt, 3, action_type);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(db));
+		return false;
+	}
+
+	if (data.size() == 0) {
+		rc = sqlite3_bind_null(stmt, 4);
+	} else {
+		rc = sqlite3_bind_blob(stmt, 4, data.data(), data.size(), SQLITE_TRANSIENT);
+	}
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(db));
+		return false;
+	}
+
+	rc = sqlite3_step(stmt);
+	if (rc != SQLITE_DONE) {
+		ERR_PRINT(sqlite3_errmsg(db));
+		return false;
+	}
+
+	return true;
+}
+
+bool Connection::load_block_entity(
+		const BlockLocation loc,
+		const int local_key,
+		int &out_action_type,
+		StdVector<uint8_t> &out_data
+) {
+	sqlite3 *db = _db;
+	sqlite3_stmt *stmt = _load_block_entity_statement;
+
+	int rc = sqlite3_reset(stmt);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(db));
+		return false;
+	}
+
+	BindBlockCoordinates coord_binding;
+	if (!coord_binding.bind(db, stmt, 1, _meta.coordinate_format, loc)) {
+		return false;
+	}
+
+	rc = sqlite3_bind_int(stmt, 2, local_key);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(db));
+		return false;
+	}
+
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		out_action_type = sqlite3_column_int(stmt, 0);
+		const void *blob = sqlite3_column_blob(stmt, 1);
+		const size_t blob_size = sqlite3_column_bytes(stmt, 1);
+		if (blob != nullptr && blob_size > 0) {
+			out_data.resize(blob_size);
+			memcpy(out_data.data(), blob, blob_size);
+		}
+		sqlite3_step(stmt); // consume SQLITE_DONE
+		return true;
+	}
+	return false; // not found
+}
+
+bool Connection::delete_block_entity(const BlockLocation loc, const int local_key) {
+	sqlite3 *db = _db;
+	sqlite3_stmt *stmt = _delete_block_entity_statement;
+
+	int rc = sqlite3_reset(stmt);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(db));
+		return false;
+	}
+
+	BindBlockCoordinates coord_binding;
+	if (!coord_binding.bind(db, stmt, 1, _meta.coordinate_format, loc)) {
+		return false;
+	}
+
+	rc = sqlite3_bind_int(stmt, 2, local_key);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(db));
+		return false;
+	}
+
+	rc = sqlite3_step(stmt);
+	return rc == SQLITE_DONE;
+}
+
+int Connection::get_next_local_key(const BlockLocation loc) {
+	sqlite3 *db = _db;
+	sqlite3_stmt *stmt = _load_next_local_key_statement;
+
+	int rc = sqlite3_reset(stmt);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(db));
+		return -1;
+	}
+
+	BindBlockCoordinates coord_binding;
+	if (!coord_binding.bind(db, stmt, 1, _meta.coordinate_format, loc)) {
+		return -1;
+	}
+
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		const int next_key = sqlite3_column_int(stmt, 0);
+		sqlite3_step(stmt);
+		return next_key;
+	}
+	return -1;
 }
 
 } // namespace zylann::voxel::sqlite

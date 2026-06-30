@@ -512,13 +512,13 @@ void generate_mesh(
 
 							// compute light factor for this voxel face
 							float light_factor = 1.0f;
-							if (has_light) {
-								// Sample light from the air voxel on the other side of this face
-								const int neighbor_light_idx = voxel_index + side_neighbor_lut[side];
-								const uint8_t light_val = light_buffer[neighbor_light_idx];
-								const float raw = get_light_intensity(light_val) / 15.0f;
-								light_factor = 0.05f + raw * 0.95f;
-							}
+						//	if (has_light) {
+						//	 Sample light from the air voxel on the other side of this face. comment out to stop test light propagation
+						//		const int neighbor_light_idx = voxel_index + side_neighbor_lut[side];
+						//		const uint8_t light_val = light_buffer[neighbor_light_idx];
+						//		const float raw = get_light_intensity(light_val) / 15.0f;
+						//		light_factor = 0.05f + raw * 0.95f;
+						//	}
 
 							if (bake_occlusion) {
 								for (unsigned int i = 0; i < vertex_count; ++i) {

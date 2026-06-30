@@ -664,6 +664,95 @@ bool VoxelStreamSQLite::copy_blocks_to_other_sqlite_stream(Ref<VoxelStreamSQLite
 	return success;
 }
 
+bool VoxelStreamSQLite::save_block_entity(Vector3i chunk_pos, int local_key, int action_type, PackedByteArray data) {
+	const ConnectionResult con_res = get_connection();
+	if (con_res.code != ConnectionResult::SUCCESS) {
+		return false;
+	}
+	sqlite::Connection *con = con_res.connection;
+	const ScopeRecycle con_scope(this, con);
+
+	BlockLocation loc;
+	loc.position = chunk_pos;
+	loc.lod = 0;
+
+	ERR_FAIL_COND_V(con->begin_transaction() == false, false);
+	const bool ok = con->save_block_entity(loc, local_key, action_type, Span<const uint8_t>(data.ptr(), data.size()));
+	ERR_FAIL_COND_V(con->end_transaction() == false, false);
+	return ok;
+}
+
+Dictionary VoxelStreamSQLite::load_block_entity(Vector3i chunk_pos, int local_key) {
+	Dictionary result;
+
+	const ConnectionResult con_res = get_connection();
+	if (con_res.code != ConnectionResult::SUCCESS) {
+		return result;
+	}
+	sqlite::Connection *con = con_res.connection;
+	const ScopeRecycle con_scope(this, con);
+
+	BlockLocation loc;
+	loc.position = chunk_pos;
+	loc.lod = 0;
+
+	int action_type = 0;
+	StdVector<uint8_t> raw_data;
+
+	ERR_FAIL_COND_V(con->begin_transaction() == false, result);
+	const bool found = con->load_block_entity(loc, local_key, action_type, raw_data);
+	ERR_FAIL_COND_V(con->end_transaction() == false, result);
+
+	if (!found) {
+		return result;
+	} // empty dict = not found
+
+	PackedByteArray bytes;
+	if (raw_data.size() > 0) {
+		bytes.resize(raw_data.size());
+		memcpy(bytes.ptrw(), raw_data.data(), raw_data.size());
+	}
+	result["action_type"] = action_type;
+	result["data"] = bytes;
+	return result;
+}
+
+bool VoxelStreamSQLite::delete_block_entity(Vector3i chunk_pos, int local_key) {
+	const ConnectionResult con_res = get_connection();
+	if (con_res.code != ConnectionResult::SUCCESS) {
+		return false;
+	}
+	sqlite::Connection *con = con_res.connection;
+	const ScopeRecycle con_scope(this, con);
+
+	BlockLocation loc;
+	loc.position = chunk_pos;
+	loc.lod = 0;
+
+	ERR_FAIL_COND_V(con->begin_transaction() == false, false);
+	const bool ok = con->delete_block_entity(loc, local_key);
+	ERR_FAIL_COND_V(con->end_transaction() == false, false);
+	return ok;
+}
+
+int VoxelStreamSQLite::get_next_local_key(Vector3i chunk_pos) {
+	const ConnectionResult con_res = get_connection();
+	if (con_res.code != ConnectionResult::SUCCESS) {
+		return -1;
+	}
+	sqlite::Connection *con = con_res.connection;
+	const ScopeRecycle con_scope(this, con);
+
+	BlockLocation loc;
+	loc.position = chunk_pos;
+	loc.lod = 0;
+
+	ERR_FAIL_COND_V(con->begin_transaction() == false, -1);
+	const int key = con->get_next_local_key(loc);
+	ERR_FAIL_COND_V(con->end_transaction() == false, -1);
+	return key;
+}
+
 void VoxelStreamSQLite::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_database_path", "path"), &VoxelStreamSQLite::set_database_path);
 	ClassDB::bind_method(D_METHOD("get_database_path"), &VoxelStreamSQLite::get_database_path);
@@ -676,6 +765,18 @@ void VoxelStreamSQLite::_bind_methods() {
 	);
 	ClassDB::bind_method(
 			D_METHOD("get_preferred_coordinate_format"), &VoxelStreamSQLite::get_preferred_coordinate_format
+	);
+	
+	ClassDB::bind_method(D_METHOD("save_block_entity", "chunk_pos", "local_key", "action_type", "data"), &VoxelStreamSQLite::save_block_entity
+	);
+
+	ClassDB::bind_method(D_METHOD("load_block_entity", "chunk_pos", "local_key"), &VoxelStreamSQLite::load_block_entity
+	);
+
+	ClassDB::bind_method(D_METHOD("delete_block_entity", "chunk_pos", "local_key"), &VoxelStreamSQLite::delete_block_entity
+	);
+
+	ClassDB::bind_method(D_METHOD("get_next_local_key", "chunk_pos"), &VoxelStreamSQLite::get_next_local_key
 	);
 
 	BIND_ENUM_CONSTANT(COORDINATE_FORMAT_INT64_X16_Y16_Z16_L16);
