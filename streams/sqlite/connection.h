@@ -104,6 +104,9 @@ public:
 	bool delete_block_entity(const BlockLocation loc, const int local_key);
 	int get_next_local_key(const BlockLocation loc);
 
+	bool save_chunk_last_modified(const BlockLocation loc, double timestamp);
+	double load_chunk_last_modified(const BlockLocation loc); // returns -1 if not found
+
 private:
 	int load_version();
 	Meta load_meta();
@@ -132,6 +135,9 @@ private:
 	sqlite3_stmt *_load_block_entity_statement = nullptr;
 	sqlite3_stmt *_delete_block_entity_statement = nullptr;
 	sqlite3_stmt *_load_next_local_key_statement = nullptr;
+
+	sqlite3_stmt *_save_chunk_meta_statement = nullptr;
+	sqlite3_stmt *_load_chunk_meta_statement = nullptr;
 };
 
 } // namespace zylann::voxel::sqlite

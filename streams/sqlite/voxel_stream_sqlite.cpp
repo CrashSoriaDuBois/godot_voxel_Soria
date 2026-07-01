@@ -753,6 +753,36 @@ int VoxelStreamSQLite::get_next_local_key(Vector3i chunk_pos) {
 	return key;
 }
 
+bool VoxelStreamSQLite::save_chunk_last_modified(Vector3i chunk_pos, double timestamp) {
+	const ConnectionResult con_res = get_connection();
+	if (con_res.code != ConnectionResult::SUCCESS) {
+		return false;
+	}
+	sqlite::Connection *con = con_res.connection;
+	const ScopeRecycle con_scope(this, con);
+
+	BlockLocation loc;
+	loc.position = chunk_pos;
+	loc.lod = 0;
+
+	return con->save_chunk_last_modified(loc, timestamp);
+}
+
+double VoxelStreamSQLite::load_chunk_last_modified(Vector3i chunk_pos) {
+	const ConnectionResult con_res = get_connection();
+	if (con_res.code != ConnectionResult::SUCCESS) {
+		return -1.0;
+	}
+	sqlite::Connection *con = con_res.connection;
+	const ScopeRecycle con_scope(this, con);
+
+	BlockLocation loc;
+	loc.position = chunk_pos;
+	loc.lod = 0;
+
+	return con->load_chunk_last_modified(loc);
+}
+
 void VoxelStreamSQLite::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_database_path", "path"), &VoxelStreamSQLite::set_database_path);
 	ClassDB::bind_method(D_METHOD("get_database_path"), &VoxelStreamSQLite::get_database_path);
@@ -777,6 +807,12 @@ void VoxelStreamSQLite::_bind_methods() {
 	);
 
 	ClassDB::bind_method(D_METHOD("get_next_local_key", "chunk_pos"), &VoxelStreamSQLite::get_next_local_key
+	);
+
+	ClassDB::bind_method(D_METHOD("save_chunk_last_modified", "chunk_pos", "timestamp"), &VoxelStreamSQLite::save_chunk_last_modified
+	);
+
+	ClassDB::bind_method(D_METHOD("load_chunk_last_modified", "chunk_pos"), &VoxelStreamSQLite::load_chunk_last_modified
 	);
 
 	BIND_ENUM_CONSTANT(COORDINATE_FORMAT_INT64_X16_Y16_Z16_L16);

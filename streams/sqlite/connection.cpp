@@ -200,11 +200,12 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 	const CoordinateColumnType block_key_column_type = get_coordinate_column_type(preferred_coordinate_format);
 
 	// Create tables if they don't exist.
-	const char *tables[4] = {
+	const char *tables[5] = {
 		"CREATE TABLE IF NOT EXISTS meta (version INTEGER, block_size_po2 INTEGER, coordinate_format INTEGER)",
 		"", // blocks — filled by switch below
 		"CREATE TABLE IF NOT EXISTS channels (idx INTEGER PRIMARY KEY, depth INTEGER)",
-		"" // block_entities — filled by switch below
+		"", // block_entities — filled by switch below
+		"" // chunk_meta — filled below
 	};
 
 	switch (block_key_column_type) {
@@ -214,6 +215,8 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 						"(loc INTEGER NOT NULL, local_key INTEGER NOT NULL, "
 						"action_type INTEGER NOT NULL, data BLOB, "
 						"PRIMARY KEY (loc, local_key))";
+			tables[4] = "CREATE TABLE IF NOT EXISTS chunk_meta "
+						"(loc INTEGER PRIMARY KEY, last_modified REAL)";
 			break;
 		case COORDINATE_COLUMN_STRING:
 			tables[1] = "CREATE TABLE IF NOT EXISTS blocks (loc TEXT PRIMARY KEY, vb BLOB, instances BLOB)";
@@ -221,6 +224,8 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 						"(loc TEXT NOT NULL, local_key INTEGER NOT NULL, "
 						"action_type INTEGER NOT NULL, data BLOB, "
 						"PRIMARY KEY (loc, local_key))";
+			tables[4] = "CREATE TABLE IF NOT EXISTS chunk_meta "
+						"(loc TEXT PRIMARY KEY, last_modified REAL)";
 			break;
 		case COORDINATE_COLUMN_BLOB:
 			tables[1] = "CREATE TABLE IF NOT EXISTS blocks (loc BLOB PRIMARY KEY, vb BLOB, instances BLOB)";
@@ -228,13 +233,15 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 						"(loc BLOB NOT NULL, local_key INTEGER NOT NULL, "
 						"action_type INTEGER NOT NULL, data BLOB, "
 						"PRIMARY KEY (loc, local_key))";
+			tables[4] = "CREATE TABLE IF NOT EXISTS chunk_meta "
+						"(loc BLOB PRIMARY KEY, last_modified REAL)";
 			break;
 		default:
 			ZN_CRASH_MSG("Invalid column type");
 			break;
 	}
 
-	for (size_t i = 0; i < 4; ++i) {
+	for (size_t i = 0; i < 5; ++i) {
 		rc = sqlite3_exec(db, tables[i], nullptr, nullptr, &error_message);
 		if (rc != SQLITE_OK) {
 			ZN_PRINT_ERROR(format("Failed to create table: {}", error_message));
@@ -346,6 +353,17 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 				&_load_next_local_key_statement,
 				"SELECT COALESCE(MAX(local_key)+1, 0) FROM block_entities WHERE loc=:loc"
 		)) {
+		return false;
+	}
+	if (!prepare(
+				db,
+				&_save_chunk_meta_statement,
+				"INSERT INTO chunk_meta VALUES (:loc, :last_modified) "
+				"ON CONFLICT(loc) DO UPDATE SET last_modified=excluded.last_modified"
+		)) {
+		return false;
+	}
+	if (!prepare(db, &_load_chunk_meta_statement, "SELECT last_modified FROM chunk_meta WHERE loc=:loc")) {
 		return false;
 	}
 
@@ -1080,6 +1098,51 @@ int Connection::get_next_local_key(const BlockLocation loc) {
 		return next_key;
 	}
 	return -1;
+}
+
+bool Connection::save_chunk_last_modified(const BlockLocation loc, double timestamp) {
+	sqlite3_stmt *stmt = _save_chunk_meta_statement;
+	int rc = sqlite3_reset(stmt);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(_db));
+		return false;
+	}
+
+	BindBlockCoordinates coord;
+	if (!coord.bind(_db, stmt, 1, _meta.coordinate_format, loc)) {
+		return false;
+	}
+
+	rc = sqlite3_bind_double(stmt, 2, timestamp);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(_db));
+		return false;
+	}
+
+	rc = sqlite3_step(stmt);
+	return rc == SQLITE_DONE;
+}
+
+double Connection::load_chunk_last_modified(const BlockLocation loc) {
+	sqlite3_stmt *stmt = _load_chunk_meta_statement;
+	int rc = sqlite3_reset(stmt);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(_db));
+		return -1.0;
+	}
+
+	BindBlockCoordinates coord;
+	if (!coord.bind(_db, stmt, 1, _meta.coordinate_format, loc)) {
+		return -1.0;
+	}
+
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		const double result = sqlite3_column_double(stmt, 0);
+		sqlite3_step(stmt); // consume SQLITE_DONE
+		return result;
+	}
+	return -1.0; // not found
 }
 
 } // namespace zylann::voxel::sqlite
