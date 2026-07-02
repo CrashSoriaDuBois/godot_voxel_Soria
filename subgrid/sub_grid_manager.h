@@ -165,6 +165,7 @@ public:
 		AnimatableBody3D *animatable_body = nullptr;
 		HashMap<Vector3i, ChunkCollisionData> chunk_collision;
 		HashSet<Vector3i> collision_built_chunks; // LOD0 positions only
+		int32_t min_chunk_y = INT32_MAX;
 
 		// Count of currently-active chunks at lod > SubGridManager::_collision_safe_lod_max.
 		// Maintained incrementally in _apply_lod_visibility_changes as to_activate_visuals /
@@ -309,7 +310,7 @@ private:
 	// _drive_grabbed_ships setting BODY_STATE_LINEAR_VELOCITY every physics frame - no
 	// special-casing needed here for that.
 	void _update_collision_suspension(ShipState &state);
-
+	bool _center_collision_safe(const ShipState &state) const;
 	// World offset of a LOD-space chunk in subgrid-local space
 	static Vector3 _lod_chunk_local_offset(Vector3i lod_pos, int lod) {
 		const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;

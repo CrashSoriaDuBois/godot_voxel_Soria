@@ -165,6 +165,12 @@ void SubGridManager::_register_single(VoxelSubGrid *sg, const String &parent_uui
 	state.node = sg;
 	state.parent_uuid = parent_uuid;
 	state.load_state = LOADED;
+	state.min_chunk_y = INT32_MAX;
+	for (const Vector3i &pos : sg->get_chunk_map().get_all_chunk_positions()) {
+		if (pos.y < state.min_chunk_y) {
+			state.min_chunk_y = pos.y;
+		}
+	}
 
 	for (int lod = 0; lod < SUBGRID_MAX_LODS; lod++) {
 		ShipLod &ship_lod = state.lods[lod];
@@ -703,6 +709,7 @@ void SubGridManager::grab_subgrid(VoxelSubGrid *sg, Vector3 grab_point_local, bo
 	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 
 	// Zero velocity so it doesn't carry momentum into the grab
+	ps->body_set_mode(state->body_rid, PhysicsServer3D::BODY_MODE_RIGID);
 	ps->body_set_state(state->body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, Vector3());
 	ps->body_set_state(state->body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
 
@@ -719,9 +726,8 @@ void SubGridManager::release_subgrid(VoxelSubGrid *sg) {
 	ShipState *state = _ships.getptr(uuid);
 	ERR_FAIL_COND_MSG(state == nullptr, "VoxelSubGrid not registered in manager.");
 
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 	if (state->grabbed && state->body_rid.is_valid()) {
-		PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
-
 		// Clear velocity so the last frame doesn't launch it
 		ps->body_set_state(state->body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, Vector3());
 		ps->body_set_state(state->body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
@@ -729,6 +735,9 @@ void SubGridManager::release_subgrid(VoxelSubGrid *sg) {
 		ps->body_set_param(state->body_rid, PhysicsServer3D::BODY_PARAM_GRAVITY_SCALE, 1.0f);
 	}
 	state->grabbed = false;
+	if (state->collision_suspended && state->body_rid.is_valid()) {
+		ps->body_set_mode(state->body_rid, PhysicsServer3D::BODY_MODE_STATIC);
+	}
 }
 
 void SubGridManager::set_grab_target(VoxelSubGrid *sg, Transform3D target) {
@@ -1032,9 +1041,15 @@ void SubGridManager::_update_collision_suspension(ShipState &state) {
 		return;
 	}
 
-	PhysicsServer3D::get_singleton()->body_set_state(
-			state.body_rid, PhysicsServer3D::BODY_STATE_SLEEPING, should_be_suspended
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	ps->body_set_mode(
+			state.body_rid, should_be_suspended ? PhysicsServer3D::BODY_MODE_STATIC : PhysicsServer3D::BODY_MODE_RIGID
 	);
+	if (!should_be_suspended) {
+		// Coming out of STATIC: make sure no stale velocity survives the mode switch.
+		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, Vector3());
+		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
+	}
 	state.collision_suspended = should_be_suspended;
 
 	// Waking up: nothing else to do, the body resumes integrating next physics step.
