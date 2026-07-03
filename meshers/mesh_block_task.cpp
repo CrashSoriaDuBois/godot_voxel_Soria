@@ -250,6 +250,9 @@ static const Vector3i NEIGHBOR_OFFSETS[26] = {
 	{ -1, 1, 1 },  { 1, -1, -1 }, { 1, -1, 1 }, { 1, 1, -1 },  { 1, 1, 1 }
 };
 
+// New constant, separate from LIGHT_PADDING
+//static constexpr int TEXTURE_BORDER = 1; // or 2, tune to shader needs
+
 static void extract_light_slices(
 		const StdVector<uint8_t> &big_buffer,
 		const Vector3i big_size,
@@ -257,48 +260,29 @@ static void extract_light_slices(
 		const int block_size,
 		VoxelMesher::Output &output
 ) {
-	// Lambda to copy one block_size^3 region out of the big buffer
-	auto extract_block = [&](Vector3i origin, StdVector<uint8_t> &out_data) {
-		out_data.resize(block_size * block_size * block_size);
-		for (int z = 0; z < block_size; ++z) {
-			for (int x = 0; x < block_size; ++x) {
-				for (int y = 0; y < block_size; ++y) {
+	auto extract_block = [&](Vector3i origin, int size, StdVector<uint8_t> &out_data) {
+		out_data.resize(size * size * size);
+		for (int z = 0; z < size; ++z) {
+			for (int x = 0; x < size; ++x) {
+				for (int y = 0; y < size; ++y) {
 					const int bx = origin.x + x;
 					const int by = origin.y + y;
 					const int bz = origin.z + z;
 					const int big_idx = by + bx * big_size.y + bz * big_size.x * big_size.y;
-					const int out_idx = y + x * block_size + z * block_size * block_size;
+					const int out_idx = y + x * size + z * size * size;
 					out_data[out_idx] = big_buffer[big_idx];
 				}
 			}
 		}
 	};
 
-	// Block A (self)
-	const Vector3i self_origin(padding, padding, padding);
-	extract_block(self_origin, output.light_surface.data);
+	// Self block, WITH a thin halo from big_buf (which already has real neighbor data)
+	const Vector3i self_origin(padding - TEXTURE_BORDER, padding - TEXTURE_BORDER, padding - TEXTURE_BORDER);
+	const int padded_block_size = block_size + 2 * TEXTURE_BORDER;
+	extract_block(self_origin, padded_block_size, output.light_surface.data);
 	output.light_surface.was_computed = true;
 
-	// 26 neighbors
-	for (int i = 0; i < 26; ++i) {
-		const Vector3i &off = NEIGHBOR_OFFSETS[i];
-		const Vector3i neighbor_origin(
-				self_origin.x + off.x * block_size,
-				self_origin.y + off.y * block_size,
-				self_origin.z + off.z * block_size
-		);
-
-		if (neighbor_origin.x < 0 || neighbor_origin.y < 0 || neighbor_origin.z < 0 ||
-			neighbor_origin.x + block_size > big_size.x || neighbor_origin.y + block_size > big_size.y ||
-			neighbor_origin.z + block_size > big_size.z) {
-			output.neighbor_light_surfaces[i].valid = false;
-			continue;
-		}
-
-		output.neighbor_light_surfaces[i].offset = off;
-		output.neighbor_light_surfaces[i].valid = true;
-		extract_block(neighbor_origin, output.neighbor_light_surfaces[i].data);
-	}
+	// No neighbor extraction needed anymore — drop the 26-neighbor loop entirely
 }
 
 Ref<ArrayMesh> build_mesh(

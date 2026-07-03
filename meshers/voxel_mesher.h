@@ -85,8 +85,8 @@ public:
 		LightSurface light_surface;
 
 		struct NeighborLightSurface {
-			Vector3i offset; // e.g. (-1,0,0), (1,1,-1) etc, all 26 combinations
-			StdVector<uint8_t> data; // 16^3 = 4096 bytes
+			StdVector<uint8_t> data;
+			Vector3i offset; // in mesh block units, e.g. (-1,0,0)
 			bool valid = false;
 		};
 		// 26 neighbors: 6 faces + 12 edges + 8 corners

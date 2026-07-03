@@ -684,20 +684,18 @@ void VoxelLodTerrainUpdateTask::flush_pending_lod_edits(
 		for (const Box3i voxel_box : tls_modified_voxel_areas_lod0) {
 			// Padding is required for edits near chunk borders, which can affect multiple meshes despite only affecting
 			// one data block
-			const Box3i padded_voxel_box = voxel_box.padded(1);
-			const Box3i mesh_block_box = padded_voxel_box.downscaled(mesh_block_size_at_lod);
+			const Box3i light_padded_box = voxel_box.padded(LIGHT_PADDING);
+			const Box3i light_mesh_block_box = light_padded_box.downscaled(mesh_block_size_at_lod);
 
-			mesh_block_box.for_each_cell([&lod](Vector3i mesh_block_pos) {
-				auto mesh_block_it = lod.mesh_map_state.map.find(mesh_block_pos);
-				if (mesh_block_it != lod.mesh_map_state.map.end()) {
-					// If a mesh block state exists here, it will need an update.
-					// If there is none, it will probably get created later when we come closer to it
-					mesh_block_it->second.light_dirty = true; // ADD THIS
-					schedule_mesh_update( //
-							mesh_block_it->second, //
-							mesh_block_pos, //
-							lod.mesh_blocks_pending_update, //
-							mesh_block_it->second.mesh_viewers.get() > 0 //
+			light_mesh_block_box.for_each_cell([&lod](Vector3i mesh_block_pos) {
+				auto it = lod.mesh_map_state.map.find(mesh_block_pos);
+				if (it != lod.mesh_map_state.map.end()) {
+					it->second.light_dirty = true;
+					schedule_mesh_update(
+							it->second,
+							mesh_block_pos,
+							lod.mesh_blocks_pending_update,
+							it->second.mesh_viewers.get() > 0
 					);
 				}
 			});

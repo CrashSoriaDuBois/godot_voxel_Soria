@@ -266,6 +266,9 @@ void VoxelMeshBlockVLT::set_shader_material(Ref<ShaderMaterial> material) {
 		_shader_material->set_shader_parameter(sn.u_block_local_transform, local_transform);
 		_shader_material->set_shader_parameter(sn.u_voxel_virtual_texture_offset_scale, Vector4(0, 0, 0, 1));
 	}
+	if (_light_texture.is_valid() && material.is_valid()) {
+		material->set_shader_parameter("u_light_texture", Variant(_light_texture));
+	}
 }
 
 void VoxelMeshBlockVLT::set_material_override(Ref<Material> material) {
@@ -289,6 +292,63 @@ void VoxelMeshBlockVLT::set_material_override_internal(Ref<Material> material) {
 				mi.set_material_override(material);
 			}
 		}
+	}
+}
+
+void VoxelMeshBlockVLT::update_light_texture(const StdVector<uint8_t> &light_data, int block_size) {
+	// light_data is block_size^3 bytes, each byte = packed (color_index<<4 | intensity)
+	// We unpack into RGBA8 for the shader to sample easily
+	const int voxel_count = block_size * block_size * block_size;
+	ZN_ASSERT_RETURN(static_cast<int>(light_data.size()) == voxel_count);
+
+	PackedByteArray image_data;
+	image_data.resize(voxel_count * 4); // RGBA8
+	uint8_t *w = image_data.ptrw();
+
+	for (int i = 0; i < voxel_count; ++i) {
+		const uint8_t packed = light_data[i];
+		const uint8_t intensity = (packed & 0xF);
+		const uint8_t color_idx = (packed >> 4) & 0xF;
+		// R = intensity normalized, G = color_index, B = 0, A = 255
+		w[i * 4 + 0] = uint8_t(intensity * 17); // 0-15 → 0-255
+		w[i * 4 + 1] = uint8_t(color_idx * 17);
+		w[i * 4 + 2] = 0;
+		w[i * 4 + 3] = 255;
+	}
+
+	// Build one layer (one Z slice) per Z index
+	Vector<Ref<Image>> layers;
+	layers.resize(block_size);
+	for (int z = 0; z < block_size; ++z) {
+		PackedByteArray layer_data;
+		layer_data.resize(block_size * block_size * 4);
+		uint8_t *lw = layer_data.ptrw();
+		for (int x = 0; x < block_size; ++x) {
+			for (int y = 0; y < block_size; ++y) {
+				// index layout matches voxel buffer: y + x*row + z*deck
+				const int src = (y + x * block_size + z * block_size * block_size) * 4;
+				const int dst = (x + y * block_size) * 4; // width axis = x, matches shader's uvw.x
+				lw[dst + 0] = w[src + 0];
+				lw[dst + 1] = w[src + 1];
+				lw[dst + 2] = w[src + 2];
+				lw[dst + 3] = w[src + 3];
+			}
+		}
+		Ref<Image> img = Image::create_from_data(block_size, block_size, false, Image::FORMAT_RGBA8, layer_data);
+		layers.write[z] = img;
+	}
+
+	if (_light_texture.is_null()) {
+		_light_texture.instantiate();
+		_light_texture->create(Image::FORMAT_RGBA8, block_size, block_size, block_size, false, layers);
+	} else {
+		_light_texture->update(layers);
+	}
+
+	// Assign to shader material
+	Ref<ShaderMaterial> sm = get_shader_material();
+	if (sm.is_valid()) {
+		sm->set_shader_parameter("u_light_texture", Variant(_light_texture));
 	}
 }
 

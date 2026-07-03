@@ -33,7 +33,7 @@ class MeshBlockTask
 {
 public:
 	bool light_dirty = false;
-	static const int LIGHT_PADDING = 15;
+	//static const int LIGHT_PADDING = 15;
 	MeshBlockTask();
 	~MeshBlockTask();
 

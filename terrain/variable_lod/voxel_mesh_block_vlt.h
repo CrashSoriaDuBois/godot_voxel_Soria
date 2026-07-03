@@ -5,6 +5,9 @@
 #include "../../util/memory/memory.h"
 #include "../../util/tasks/time_spread_task_runner.h"
 #include "../voxel_mesh_block.h"
+#include "../../util/godot/classes/image_texture_3d.h"
+
+class ImageTexture3D;
 
 namespace zylann::voxel {
 
@@ -96,6 +99,7 @@ public:
 	// To be used only if the material override on the terrain is not a ShaderMaterial
 	void set_material_override(Ref<Material> material);
 
+	void update_light_texture(const StdVector<uint8_t> &light_data, int block_size);
 	// Transform
 
 	void set_parent_transform(const Transform3D &parent_transform);
@@ -123,6 +127,8 @@ public:
 private:
 	void set_material_override_internal(Ref<Material> material);
 	void _set_visible(bool visible);
+
+	Ref<ImageTexture3D> _light_texture;
 
 	inline bool _is_transition_visible(unsigned int side) const {
 		return _transition_mask & (1 << side);

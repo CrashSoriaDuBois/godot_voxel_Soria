@@ -2095,6 +2095,28 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 #endif
 		);
 
+		if (ob.surfaces.light_surface.was_computed && ob.lod == 0) {
+			block->update_light_texture(ob.surfaces.light_surface.data, get_data_block_size() + 2 * TEXTURE_BORDER);
+		}
+
+		// ADD neighbor light updates:
+		if (ob.lod == 0) {
+			for (int i = 0; i < 26; ++i) {
+				const VoxelMesher::Output::NeighborLightSurface &neighbor = ob.surfaces.neighbor_light_surfaces[i];
+				if (!neighbor.valid) {
+					continue;
+				}
+				// Calculate neighbor block position
+				const Vector3i neighbor_bpos = ob.position + neighbor.offset;
+				VoxelMeshBlockVLT *neighbor_block = mesh_map.get_block(neighbor_bpos);
+				if (neighbor_block == nullptr) {
+					continue;
+				}
+				// Update only the texture, no remesh
+				//neighbor_block->update_light_texture(neighbor.data, get_data_block_size());
+			}
+		}
+
 		if (assign_material_after_mesh) {
 			// Do this after assigning the mesh when not using a ShaderMaterial.
 			// This is because we don't create a per-chunk material in this case, and so chunks don't hold it, so
