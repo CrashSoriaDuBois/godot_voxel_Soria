@@ -925,6 +925,14 @@ void VoxelLodTerrain::reset_mesh_maps() {
 			});
 		}
 #endif
+		if (!_mesh_block_lod_listeners.empty()) {
+			Span<IMeshBlockLodListener *> listeners = to_span(_mesh_block_lod_listeners);
+			mesh_map.for_each_block([lod_index, listeners](VoxelMeshBlockVLT &block) {
+				for (IMeshBlockLodListener *listener : listeners) {
+					listener->on_terrain_mesh_block_exited(block.position, lod_index);
+				}
+			});
+		}
 
 		// mesh_map.for_each_block(BeforeUnloadMeshAction{ _shader_material_pool });
 
@@ -1561,6 +1569,9 @@ void VoxelLodTerrain::apply_main_thread_update_tasks() {
 				_instancer->on_mesh_block_exit(bpos, lod_index);
 			}
 #endif
+			for (IMeshBlockLodListener *listener : _mesh_block_lod_listeners) {
+				listener->on_terrain_mesh_block_exited(bpos, lod_index);
+			}
 			/*
 #ifdef DEBUG_ENABLED
 			debug_removed_blocks.insert(bpos);
@@ -1982,6 +1993,9 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 				_instancer->on_mesh_block_exit(ob.position, ob.lod);
 			}
 #endif
+			for (IMeshBlockLodListener *listener : _mesh_block_lod_listeners) {
+				listener->on_terrain_mesh_block_exited(ob.position, ob.lod);
+			}
 		}
 		// ZN_PRINT_VERBOSE(format("Empty block pos {} lod {} time {}", ob.position, int(ob.lod),
 		// 		Time::get_singleton()->get_ticks_msec()));
@@ -1997,18 +2011,16 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 
 		block->set_world(get_world_3d());
 
+		// Check whether this was "a first load" of any of the features that produces the mesh.
+		// Moved outside VOXEL_ENABLE_INSTANCER: mesh_block_lod_listeners needs this regardless of
+		// whether the instancer feature is compiled in.
+		const bool first_mesh_load = (first_visual_load || first_collision_load);
+
 #ifdef VOXEL_ENABLE_INSTANCER
 		// TODO Need a more generic API for this kind of stuff
 
-		// Check whether this was "a first load" of any of the features that produces the mesh:
-		// We don't create MeshBlocks when loaded meshes turn out to be empty. But that means we can't just rely on
-		// `block == nullptr` to find out that it has loaded in. For example, the block being created could also be
-		// an area that just didn't have a mesh before, because voxels produced no surface there. So that made instances
-		// generating as we dig or build, which is unexpected.
-		const bool first_mesh_load = (first_visual_load || first_collision_load);
-
+		// We would have to know if specific voxels got edited, or different from the generator
 		if (_instancer != nullptr && first_mesh_load && ob.surfaces.surfaces.size() > 0) {
-			// We would have to know if specific voxels got edited, or different from the generator
 			_instancer->on_mesh_block_enter(
 					ob.position,
 					ob.lod,
@@ -2018,6 +2030,12 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 			);
 		}
 #endif
+
+		if (first_mesh_load) {
+			for (IMeshBlockLodListener *listener : _mesh_block_lod_listeners) {
+				listener->on_terrain_mesh_block_entered(ob.position, ob.lod);
+			}
+		}
 
 		block->set_collision_enabled(collision_active);
 	}
@@ -3853,6 +3871,26 @@ int /*Error*/ VoxelLodTerrain::_b_debug_dump_as_scene(String fpath, bool include
 bool VoxelLodTerrain::_b_is_area_meshed(AABB aabb, int lod_index) const {
 	ERR_FAIL_INDEX_V(lod_index, static_cast<int>(constants::MAX_LOD), false);
 	return is_area_meshed(Box3i(aabb.position, aabb.size), lod_index);
+}
+
+void VoxelLodTerrain::add_mesh_block_lod_listener(IMeshBlockLodListener *listener) {
+	ZN_ASSERT_RETURN(listener != nullptr);
+#ifdef DEBUG_ENABLED
+	for (IMeshBlockLodListener *existing : _mesh_block_lod_listeners) {
+		ZN_ASSERT_RETURN_MSG(existing != listener, "Listener already registered");
+	}
+#endif
+	_mesh_block_lod_listeners.push_back(listener);
+}
+
+void VoxelLodTerrain::remove_mesh_block_lod_listener(IMeshBlockLodListener *listener) {
+	for (size_t i = 0; i < _mesh_block_lod_listeners.size(); ++i) {
+		if (_mesh_block_lod_listeners[i] == listener) {
+			_mesh_block_lod_listeners[i] = _mesh_block_lod_listeners.back();
+			_mesh_block_lod_listeners.pop_back();
+			return;
+		}
+	}
 }
 
 void VoxelLodTerrain::_bind_methods() {

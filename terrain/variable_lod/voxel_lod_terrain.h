@@ -20,6 +20,18 @@
 
 namespace zylann::voxel {
 
+class IMeshBlockLodListener {
+public:
+	virtual ~IMeshBlockLodListener() {}
+
+	// Called when a mesh block becomes active at lod_index (mirrors what VoxelInstancer
+	// receives via on_mesh_block_enter, same position/LOD semantics).
+	virtual void on_terrain_mesh_block_entered(Vector3i render_grid_position, unsigned int lod_index) = 0;
+
+	// Called when a mesh block is deactivated/unloaded at lod_index (mirrors on_mesh_block_exit).
+	virtual void on_terrain_mesh_block_exited(Vector3i render_grid_position, unsigned int lod_index) = 0;
+};
+
 class VoxelTool;
 class VoxelStream;
 class VoxelSaveCompletionTracker;
@@ -271,6 +283,9 @@ public:
 	void set_instancer(VoxelInstancer *instancer);
 #endif
 
+	void add_mesh_block_lod_listener(IMeshBlockLodListener *listener);
+	void remove_mesh_block_lod_listener(IMeshBlockLodListener *listener);
+
 	VolumeID get_volume_id() const override {
 		return _volume_id;
 	}
@@ -430,6 +445,7 @@ private:
 #ifdef VOXEL_ENABLE_INSTANCER
 	VoxelInstancer *_instancer = nullptr;
 #endif
+	StdVector<IMeshBlockLodListener *> _mesh_block_lod_listeners;
 
 	Ref<VoxelMesher> _mesher;
 
