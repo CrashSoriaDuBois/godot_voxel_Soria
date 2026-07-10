@@ -20,6 +20,7 @@
 #include <mutex>
 #include <thread>
 
+#include "terrain/variable_lod/voxel_lod_terrain.h" // for IMeshBlockLodListener
 // Forward declare Godot types to avoid heavy includes in header
 class AnimatableBody3D;
 
@@ -28,7 +29,7 @@ namespace zylann::voxel {
 class VoxelSubGrid;
 class VoxelLodTerrain;
 
-class SubGridManager : public Node {
+class SubGridManager : public Node, public IMeshBlockLodListener {
 	GDCLASS(SubGridManager, Node)
 
 public:
@@ -136,6 +137,13 @@ private:
 	enum LoadState { SLEEPING, LOADED };
 
 public:
+
+	// -----------------------------------------------------------------------
+	// IMeshBlockLodListener
+	void on_terrain_mesh_block_entered(Vector3i render_grid_position, unsigned int lod_index)override;
+	void on_terrain_mesh_block_exited(Vector3i render_grid_position, unsigned int lod_index) override;
+
+
 	struct ShipState {
 		VoxelSubGrid *node = nullptr;
 		LoadState load_state = SLEEPING;
@@ -173,10 +181,17 @@ public:
 		// and correct as long as every active->inactive AND active->gone transition pushes a
 		// matching to_deactivate_visuals entry (see unview_mesh_box's comment on this).
 		int coarse_lod_active_count = 0;
+		// Two independent reasons a ship must stay frozen. Either one being true keeps the
+		// body suspended; both must clear before it's safe to simulate.
+		bool own_collision_unsafe = false; // ship's own hull LOD/collision state
+
+		bool ground_confirmed = false; // true once a real physics raycast has hit ground under the keel
+		bool awaiting_ground_confirmation = false;
+		uint64_t next_ground_check_msec = 0;
 		// Whether body_rid (root rigidbodies only) is currently force-slept because of the
 		// above. Tracked separately so body_set_state(BODY_STATE_SLEEPING) is only called on
 		// the actual 0<->positive transition, not every frame.
-		bool collision_suspended = false;
+		bool collision_suspended = false;// actual current physics mode (OR of the above two)
 
 		bool grabbed = false;
 		bool grab_rotate = false;
@@ -310,7 +325,16 @@ private:
 	// _drive_grabbed_ships setting BODY_STATE_LINEAR_VELOCITY every physics frame - no
 	// special-casing needed here for that.
 	void _update_collision_suspension(ShipState &state);
-	bool _center_collision_safe(const ShipState &state) const;
+	void _apply_combined_suspension(ShipState &state);
+	bool _is_ship_footprint_terrain_loaded(const ShipState &state) const;
+	bool _voxel_footprint_is_solid(const ShipState &state) const;
+
+	bool _confirm_ground(ShipState &state);
+	bool _check_open_air_column(ShipState &state, Vector3i first_below_chunk, Vector3 com_world);
+	bool _chunk_buffer_is_pure_air(const std::shared_ptr<VoxelBuffer> &voxels) const;
+	bool _chunk_has_terrain_collision(Vector3i chunk_bpos, int chunk_size) const;
+
+	//bool _center_collision_safe(const ShipState &state) const;
 	// World offset of a LOD-space chunk in subgrid-local space
 	static Vector3 _lod_chunk_local_offset(Vector3i lod_pos, int lod) {
 		const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
@@ -349,6 +373,46 @@ private:
 		}
 		return s;
 	}
+	// -----------------------------------------------------------------------
+	// Terrain LOD-transition snap correction (cosmetic only - safety comes entirely from
+	// _update_collision_suspension / BODY_MODE_STATIC; this just avoids a visible pop/clip
+	// when the ground under a resting ship changes resolution).
+
+	static constexpr int SHIP_INDEX_CELL_SIZE = 64;
+	HashMap<Vector3i, Vector<String>> _ship_cell_index; // cell -> ship uuids currently in it
+	HashMap<String, Vector3i> _ship_last_cell; // uuid -> cell it's filed under
+
+	static Vector3i _world_pos_to_cell(Vector3 world_pos) {
+		return Vector3i(
+				(int)Math::floor(world_pos.x / SHIP_INDEX_CELL_SIZE),
+				(int)Math::floor(world_pos.y / SHIP_INDEX_CELL_SIZE),
+				(int)Math::floor(world_pos.z / SHIP_INDEX_CELL_SIZE)
+		);
+	}
+	void _update_ship_cell_index(const String &uuid, Vector3 world_pos);
+	void _remove_ship_from_cell_index(const String &uuid);
+
+	void _on_terrain_mesh_block_lod_event(Vector3i render_grid_position, unsigned int lod_index);
+	void _check_terrain_snap_correction(ShipState &state, Vector3i render_grid_position, unsigned int lod_index);
+
+	// How much upward correction is worth actually applying vs. treated as noise.
+	float _snap_correction_threshold = 0.05f;
+
+	void _on_terrain_ground_lod_event(Vector3i render_grid_position, unsigned int lod_index, bool entered);
+	Vector3i _terrain_block_pos_for_ship_keel(const ShipState &state, unsigned int lod_index) const;
+	void _process_ground_confirmations();
+	bool _raycast_confirms_ground(const ShipState &state) const;
+
+	//__________________________________________________________
+	//LOAD SAFETY
+	RID _physics_space;
+
+	// Cached probe shape used by _chunk_has_terrain_collision. Mutable because the check is logically
+	// const (it doesn't change ship/manager state) but lazily builds/rebuilds the RID on first use or
+	// if chunk size ever changes.
+	mutable RID _chunk_probe_shape;
+	mutable float _chunk_probe_shape_size = -1.f;
+
 };
 
 } // namespace zylann::voxel

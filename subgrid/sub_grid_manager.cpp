@@ -8,11 +8,13 @@
 #include "voxel_sub_grid.h"
 #include <chrono>
 #include <vector>
+#include <cmath>
 
 #include "../util/godot/classes/rendering_server.h"
 #include "../util/godot/classes/viewport.h"
 #include "../util/godot/classes/world_3d.h"
 #include "lod/sub_grid_lod_streaming.h"
+#include "../util/godot/classes/time.h"
 
 namespace zylann::voxel {
 
@@ -65,6 +67,9 @@ void SubGridManager::_notification(int p_what) {
 			break;
 
 		case NOTIFICATION_EXIT_TREE: {
+			if (_terrain != nullptr) {
+				_terrain->remove_mesh_block_lod_listener(this);
+			}
 			// Save all ships before shutdown so nothing is lost even if the user didn't call save_all explicitly.
 			for (auto &[uuid, state] : _ships) {
 				if (state.node == nullptr || state.load_state != LOADED) {
@@ -89,6 +94,12 @@ void SubGridManager::_notification(int p_what) {
 				f.wait();
 			}
 			_pending_futures.clear();
+
+			if (_chunk_probe_shape.is_valid()) {
+				PhysicsServer3D::get_singleton()->free_rid(_chunk_probe_shape);
+				_chunk_probe_shape = RID();
+			}
+
 			for (auto &[uuid, state] : _ships) {
 				_free_chunk_renders(state);
 				_destroy_body(state);
@@ -116,10 +127,15 @@ void SubGridManager::initialize(
 	_mesher = mesher;
 	_library = library;
 
+	_physics_space = get_viewport()->get_world_3d()->get_space();
+
 	_lod_count = CLAMP(lod_count, 1, SUBGRID_MAX_LODS);
 	_lod_distance = MAX(lod_distance, 1.f);
 	_secondary_lod_distance = MAX(secondary_lod_distance, 0.f);
 	_recompute_lod_distances();
+
+	_viewer_pairing_distance = _lod_distances[_lod_count - 1] + 32.f;
+	_terrain->add_mesh_block_lod_listener(this);
 
 	const float min_view_distance = _lod_distances[_lod_count - 1];
 	if (view_distance < min_view_distance) {
@@ -182,6 +198,7 @@ void SubGridManager::_register_single(VoxelSubGrid *sg, const String &parent_uui
 	}
 	state.paired_viewers.clear();
 	state.pending_loaded_chunks.clear();
+	state.coarse_lod_active_count = 0;
 
 	//mesh_state is empty for every LOD until a viewer's box first reaches this ship in _process_lod_for_ship (next frame), at which
 	// point view_mesh_box schedules a remesh for every chunk it views automatically - there's nothing to "mark dirty" before any chunk is being viewed yet.
@@ -231,6 +248,7 @@ void SubGridManager::unregister_ship(const String &uuid_str) {
 		_free_chunk_renders(*state);
 		_destroy_body(*state);
 	}
+	_remove_ship_from_cell_index(uuid_str);
 	_ships.erase(uuid_str);
 }
 
@@ -413,14 +431,11 @@ void SubGridManager::_create_root_body(const String &uuid, ShipState &state) {
 	
 	_apply_collision_layers(state, state.node->get_metadata().is_terrain_anchored);
 
-	// Start asleep: at this exact moment there are zero collision shapes built for this ship
-	// (collision_built_chunks is empty, meshing/collision is async and hasn't had a chance to
-	// run yet), so gravity must not act on it until _update_collision_suspension positively
-	// confirms real collision exists nearby. Setting this explicitly here, rather than relying
-	// on _update_collision_suspension's first call landing before the next physics step,
-	// removes any dependency on call ordering within the frame.
-	ps->body_set_state(body, PhysicsServer3D::BODY_STATE_SLEEPING, true);
+	//Static mode makes it immovable regardless of what touches it, until _apply_combined_suspension explicitly lifts it.
+	ps->body_set_mode(body, PhysicsServer3D::BODY_MODE_STATIC);
 	state.collision_suspended = true;
+	state.ground_confirmed = false;
+	state.awaiting_ground_confirmation = false;
 }
 
 void SubGridManager::_create_child_body(const String &uuid, ShipState &state) {
@@ -614,6 +629,7 @@ void SubGridManager::_process_physics(double delta) {
 	_drive_grabbed_ships(delta);
 	_update_rotations(delta);
 	_sync_all_transforms();
+	_process_ground_confirmations();
 }
 
 void SubGridManager::_update_rotations(double delta) {
@@ -697,6 +713,7 @@ void SubGridManager::_sync_all_transforms() {
 			Vector3 local_offset = _lod_chunk_local_offset(chunk_pos, lod);
 			rs->instance_set_transform(render.instance_rid, world_t * Transform3D(Basis(), local_offset));
 		}
+		_update_ship_cell_index(uuid, world_t.origin);
 	}
 }
 
@@ -908,6 +925,7 @@ void SubGridManager::_unload_ship(const String &uuid, ShipState &state) {
 	}
 	state.paired_viewers.clear();
 	state.pending_loaded_chunks.clear();
+	state.coarse_lod_active_count = 0;
 
 	// Force all chunks dirty for save
 	const HashSet<Vector3i> &positions = state.node->get_chunk_map().get_all_chunk_positions();
@@ -945,6 +963,7 @@ void SubGridManager::_unload_ship(const String &uuid, ShipState &state) {
 	state.node->clear_chunk_buffers();
 	state.chunk_collision.clear();
 	state.collision_built_chunks.clear();
+	_remove_ship_from_cell_index(uuid);
 	state.load_state = SLEEPING;
 }
 
@@ -1026,36 +1045,27 @@ void SubGridManager::_apply_lod_visibility_changes(ShipState &state) {
 
 void SubGridManager::_update_collision_suspension(ShipState &state) {
 	if (!state.body_rid.is_valid()) {
-		// Sub-contraption (AnimatableBody3D, kinematic) or not yet given a body, never gravity-simulated in the first place, nothing to suspend.
 		return;
 	}
+	state.own_collision_unsafe = state.coarse_lod_active_count > 0 || state.collision_built_chunks.size() == 0;
+	_apply_combined_suspension(state);
+}
 
-	// coarse_lod_active_count == 0 is ambiguous on its own: it's true both when the ship has
-	// resolved down to fine LOD (safe) AND when nothing has loaded at all yet, e.g. right
-	// after _load_ship/_create_root_body, before any async mesh/collision task has had time
-	// to complete (NOT safe, terrain underneath may have no confirmed collision yet either).
-	// Require actual built collision as positive evidence before ever waking, on top of the
-	// coarse-chunk check.
-	const bool should_be_suspended = state.coarse_lod_active_count > 0 || state.collision_built_chunks.size() == 0;
+void SubGridManager::_apply_combined_suspension(ShipState &state) {
+	const bool should_be_suspended = state.own_collision_unsafe || !state.ground_confirmed;
+
 	if (should_be_suspended == state.collision_suspended) {
 		return;
 	}
-
 	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 	ps->body_set_mode(
 			state.body_rid, should_be_suspended ? PhysicsServer3D::BODY_MODE_STATIC : PhysicsServer3D::BODY_MODE_RIGID
 	);
 	if (!should_be_suspended) {
-		// Coming out of STATIC: make sure no stale velocity survives the mode switch.
 		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, Vector3());
 		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
 	}
 	state.collision_suspended = should_be_suspended;
-
-	// Waking up: nothing else to do, the body resumes integrating next physics step.
-	// Going to sleep: if it was grabbed, _drive_grabbed_ships will set
-	// BODY_STATE_LINEAR_VELOCITY on it next physics frame regardless, which wakes a sleeping
-	// body as a side effect in Godot, grabbing always wins, no special-casing needed.
 }
 
 // ____________________________________________________________________________
@@ -1462,6 +1472,447 @@ Vector<SubGridMetadata> SubGridManager::_load_metadata_index() {
 		result.push_back(SubGridMetadata::deserialize(bytes));
 	}
 	return result;
+}
+
+void SubGridManager::_check_terrain_snap_correction(
+		ShipState &state,
+		Vector3i render_grid_position,
+		unsigned int lod_index
+) {
+	int col_vertex_max = -1;
+	int col_index_max = -1;
+	Array surface = _terrain->get_mesh_block_surface(render_grid_position, lod_index, col_vertex_max, col_index_max);
+	if (surface.is_empty()) {
+		return;
+	}
+
+	PackedVector3Array vertices = surface[Mesh::ARRAY_VERTEX];
+	if (vertices.is_empty()) {
+		return;
+	}
+
+	float min_local_y = vertices[0].y;
+	for (const Vector3 &v : vertices) {
+		if (v.y < min_local_y) {
+			min_local_y = v.y;
+		}
+	}
+
+	const int mesh_block_size = _terrain->get_mesh_block_size() << lod_index;
+	const Vector3 chunk_local_origin = Vector3(render_grid_position * mesh_block_size);
+	const float terrain_h_local = chunk_local_origin.y + min_local_y;
+	const float terrain_h_world = _terrain->get_global_transform().xform(Vector3(0, terrain_h_local, 0)).y;
+
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	Transform3D t = ps->body_get_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
+
+	Variant com_variant = ps->body_get_param(state.body_rid, PhysicsServer3D::BODY_PARAM_CENTER_OF_MASS);
+	Vector3 com_local = com_variant;
+	Vector3 com_world = t.xform(com_local);
+
+	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+	float com_to_keel = com_local.y - static_cast<float>(state.min_chunk_y * cs);
+	float hull_bottom_world_y = com_world.y - com_to_keel;
+
+	float correction = terrain_h_world - hull_bottom_world_y;
+	if (correction > _snap_correction_threshold) {
+		t.origin.y += correction;
+		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM, t);
+	}
+}
+
+// ____________________________________________________________________________
+// LOAD SAFETY
+void SubGridManager::_update_ship_cell_index(const String &uuid, Vector3 world_pos) {
+	const Vector3i new_cell = _world_pos_to_cell(world_pos);
+
+	Vector3i *last_cell = _ship_last_cell.getptr(uuid);
+	if (last_cell != nullptr && *last_cell == new_cell) {
+		return;
+	}
+
+	if (last_cell != nullptr) {
+		Vector<String> *old_bucket = _ship_cell_index.getptr(*last_cell);
+		if (old_bucket != nullptr) {
+			old_bucket->erase(uuid);
+			if (old_bucket->is_empty()) {
+				_ship_cell_index.erase(*last_cell);
+			}
+		}
+	}
+
+	_ship_cell_index[new_cell].push_back(uuid);
+	_ship_last_cell[uuid] = new_cell;
+}
+
+void SubGridManager::_remove_ship_from_cell_index(const String &uuid) {
+	Vector3i *last_cell = _ship_last_cell.getptr(uuid);
+	if (last_cell == nullptr) {
+		return;
+	}
+	Vector<String> *bucket = _ship_cell_index.getptr(*last_cell);
+	if (bucket != nullptr) {
+		bucket->erase(uuid);
+		if (bucket->is_empty()) {
+			_ship_cell_index.erase(*last_cell);
+		}
+	}
+	_ship_last_cell.erase(uuid);
+}
+// ____________________________________________________________________________
+// load TerrainLod signals
+void SubGridManager::on_terrain_mesh_block_entered(Vector3i render_grid_position, unsigned int lod_index) {
+	_on_terrain_ground_lod_event(render_grid_position, lod_index, /*entered=*/true);
+}
+
+void SubGridManager::on_terrain_mesh_block_exited(Vector3i render_grid_position, unsigned int lod_index) {
+	_on_terrain_ground_lod_event(render_grid_position, lod_index, /*entered=*/false);
+}
+
+void SubGridManager::_on_terrain_ground_lod_event(Vector3i render_grid_position, unsigned int lod_index, bool entered) {
+	if (_terrain == nullptr) {
+		return;
+	}
+	const int mesh_block_size = _terrain->get_mesh_block_size() << lod_index;
+	const Vector3 chunk_origin_world =
+			_terrain->get_global_transform().xform(Vector3(render_grid_position * mesh_block_size));
+	const Vector3i min_cell = _world_pos_to_cell(chunk_origin_world) - Vector3i(1, 1, 1);
+	const Vector3i max_cell =
+			_world_pos_to_cell(chunk_origin_world + Vector3(mesh_block_size, mesh_block_size, mesh_block_size)) +
+			Vector3i(1, 1, 1);
+
+	Vector3i cell;
+	for (cell.x = min_cell.x; cell.x <= max_cell.x; ++cell.x) {
+		for (cell.y = min_cell.y; cell.y <= max_cell.y; ++cell.y) {
+			for (cell.z = min_cell.z; cell.z <= max_cell.z; ++cell.z) {
+				Vector<String> *bucket = _ship_cell_index.getptr(cell);
+				if (bucket == nullptr) {
+					continue;
+				}
+				for (const String &uuid : *bucket) {
+					ShipState *state = _ships.getptr(uuid);
+					if (state == nullptr || state->load_state != LOADED || !state->body_rid.is_valid()) {
+						continue;
+					}
+
+					const Vector3i ship_keel_block = _terrain_block_pos_for_ship_keel(*state, lod_index);
+					if (ship_keel_block != render_grid_position) {
+						continue;
+					}
+
+					if (entered) {
+						_check_terrain_snap_correction(*state, render_grid_position, lod_index);
+					} else {
+						state->ground_confirmed = false;
+						_apply_combined_suspension(*state);
+					}
+				}
+			}
+		}
+	}
+}
+
+Vector3i SubGridManager::_terrain_block_pos_for_ship_keel(const ShipState &state, unsigned int lod_index) const {
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	Transform3D t = ps->body_get_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
+	Variant com_variant = ps->body_get_param(state.body_rid, PhysicsServer3D::BODY_PARAM_CENTER_OF_MASS);
+	Vector3 com_local = com_variant;
+	Vector3 com_world = t.xform(com_local);
+
+	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+	float com_to_keel = com_local.y - static_cast<float>(state.min_chunk_y * cs);
+	Vector3 keel_world = com_world;
+	keel_world.y -= com_to_keel;
+
+	Vector3 local = _terrain->get_global_transform().affine_inverse().xform(keel_world);
+	return _terrain->voxel_to_mesh_block_position(local, lod_index);
+}
+
+// ____________________________________________________________________________
+// load safety checks
+
+void SubGridManager::_process_ground_confirmations() { //main safety loop callen from _process_physics
+	const uint64_t now = Time::get_singleton()->get_ticks_msec();
+	constexpr uint64_t RETRY_INTERVAL_MSEC = 200;
+
+	for (auto &[uuid, state] : _ships) {
+		//print_line(String("!!_process_ground_confirmations"));
+		if (state.load_state != LOADED || !state.body_rid.is_valid()) {
+			print_line(String("!!_ship not LOADED"));
+			continue;
+		}
+		// Any ship whose own hull is safe but ground isn't confirmed yet is a candidate,
+		// regardless of whether a terrain event ever told us to start looking.
+		if (state.own_collision_unsafe || state.ground_confirmed) {
+			print_line(
+					String("!!own_collision_unsafe: ") + (state.own_collision_unsafe ? "true" : "false") +
+					String(". !!ground_confirmed: ") + (state.ground_confirmed ? "true" : "false")
+			);
+			continue;
+		}
+		if (now < state.next_ground_check_msec) {
+			continue;
+		}
+		state.next_ground_check_msec = now + RETRY_INTERVAL_MSEC;
+
+		if (!_is_ship_footprint_terrain_loaded(state)) {
+			print_line(String("!!!_is_ship_footprint_terrain_loaded(state)"));
+			continue; // cheap guard: don't bother raycasting if data isn't even loaded yet
+		}
+		if (_confirm_ground(state)) {
+			state.ground_confirmed = true;
+			_apply_combined_suspension(state);
+		}
+	}
+}
+
+bool SubGridManager::_raycast_confirms_ground(const ShipState &state) const {
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	Transform3D t = ps->body_get_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
+	Variant com_variant = ps->body_get_param(state.body_rid, PhysicsServer3D::BODY_PARAM_CENTER_OF_MASS);
+	Vector3 com_local = com_variant;
+	Vector3 com_world = t.xform(com_local);
+
+	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+	const float com_to_keel = com_local.y - static_cast<float>(state.min_chunk_y * cs);
+	Vector3 keel_world = com_world;
+	keel_world.y -= com_to_keel;
+
+	const float margin = cs * 0.5f;
+
+	PhysicsDirectSpaceState3D::RayParameters params;
+	params.from = com_world; // per earlier fix, starts at COM not keel
+	params.to = keel_world - Vector3(0, margin, 0);
+	params.exclude.insert(state.body_rid); // keep as a safety net
+	params.collide_with_bodies = true;
+	params.collide_with_areas = false;
+	params.collision_mask = 1; // terrain layer/mask bit 1, excludes all ship bodies (bits 10-12
+
+	RID space = ps->body_get_space(state.body_rid);
+	PhysicsDirectSpaceState3D *space_state = ps->space_get_direct_state(space);
+	if (space_state == nullptr) {
+		return false;
+	}
+
+	PhysicsDirectSpaceState3D::RayResult result;
+	return space_state->intersect_ray(params, result);
+}
+
+
+
+bool SubGridManager::_is_ship_footprint_terrain_loaded(const ShipState &state) const {
+	if (_terrain == nullptr || state.node == nullptr) {
+		return false; // no terrain reference, conservatively treat as unsafe
+	}
+	print_line(String("!!_is_ship_footprint_terrain_loaded"));
+
+	const HashSet<Vector3i> &positions = state.node->get_chunk_map().get_all_chunk_positions();
+	if (positions.is_empty()) {
+		return false; // nothing to check against, but also nothing to stand on. unsafe
+	}
+
+	// Compute the LOD0 chunk bounds directly from known chunk positions, rather than relying
+	// on a bounding-box accessor that doesn't exist on SubGridChunkMap.
+	Vector3i min_pos = *positions.begin();
+	Vector3i max_pos = min_pos;
+	for (const Vector3i &pos : positions) {
+		min_pos = min_pos.min(pos);
+		max_pos = max_pos.max(pos);
+	}
+
+	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+	const AABB ship_local_aabb(Vector3(min_pos * cs), Vector3((max_pos - min_pos + Vector3i(1, 1, 1)) * cs));
+
+	const Transform3D t = state.node->get_global_transform();
+	const AABB ship_world_aabb = t.xform(ship_local_aabb).grow(4.f);
+
+	const Transform3D terrain_to_local = _terrain->get_global_transform().affine_inverse();
+	const AABB local_aabb = terrain_to_local.xform(ship_world_aabb);
+
+	const Box3i voxel_box = Box3i::from_min_max(
+			math::floor_to_int(local_aabb.position), math::ceil_to_int(local_aabb.position + local_aabb.size)
+	);
+
+	return _terrain->get_storage().is_area_loaded(voxel_box);
+}
+
+bool SubGridManager::_voxel_footprint_is_solid(const ShipState &state) const {
+	if (_terrain == nullptr || !state.body_rid.is_valid()) {
+		return false;
+	}
+
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	Transform3D t = ps->body_get_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
+	Variant com_variant = ps->body_get_param(state.body_rid, PhysicsServer3D::BODY_PARAM_CENTER_OF_MASS);
+	Vector3 com_local = com_variant;
+	Vector3 com_world = t.xform(com_local);
+
+	Transform3D terrain_to_local = _terrain->get_global_transform().affine_inverse();
+	Vector3 sample_local = terrain_to_local.xform(com_world);
+
+	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+	const float com_to_keel = com_local.y - static_cast<float>(state.min_chunk_y * cs);
+	const int sample_range_voxels = static_cast<int>(std::ceil(com_to_keel)) + 4; // correct: std::ceil takes/returns float
+
+	const Vector3i top = math::floor_to_int(sample_local);
+	const Vector3i bottom = top - Vector3i(0, sample_range_voxels, 0);
+	const Box3i probe_box = Box3i::from_min_max(bottom, top + Vector3i(1, 1, 1));
+
+	if (!_terrain->get_storage().is_area_loaded(probe_box)) {
+		return false; // don't trust unloaded data either way; treat as "not confirmed yet"
+	}
+
+	for (int dy = 0; dy <= sample_range_voxels; dy++) {
+		Vector3i probe_pos = top - Vector3i(0, dy, 0);
+		VoxelSingleValue v;
+		v.i = 0;
+		v = _terrain->get_storage().get_voxel(probe_pos, VoxelBuffer::CHANNEL_TYPE, v);
+		if (v.i != 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool SubGridManager::_chunk_buffer_is_pure_air(const std::shared_ptr<VoxelBuffer> &voxels) const {
+	if (!voxels) {
+		print_line("_chunk_buffer_is_pure_air: voxels == nullptr");
+		return false;
+	}
+	if (!voxels->is_uniform(VoxelBuffer::CHANNEL_TYPE)) {
+		print_line("_chunk_buffer_is_pure_air: channel not uniform (real per-voxel array)");
+		return false;
+	}
+	uint64_t v = voxels->get_voxel(0, 0, 0, VoxelBuffer::CHANNEL_TYPE);
+	print_line(String("_chunk_buffer_is_pure_air: uniform value = ") + itos(v));
+	return v == 0;
+}
+
+bool SubGridManager::_chunk_has_terrain_collision(Vector3i chunk_bpos, int chunk_size) const {
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+
+	// Shrink slightly so the probe can't clip into a neighboring chunk's collision shapes across a
+	// shared seam (epsilon overlap at chunk boundaries).
+	const float margin = 0.1f;
+	const float box_size = static_cast<float>(chunk_size) - margin * 2.f;
+
+	if (!_chunk_probe_shape.is_valid() || _chunk_probe_shape_size != box_size) {
+		if (_chunk_probe_shape.is_valid()) {
+			ps->free_rid(_chunk_probe_shape);
+		}
+		_chunk_probe_shape = ps->box_shape_create();
+		ps->shape_set_data(_chunk_probe_shape, Vector3(box_size, box_size, box_size) * 0.5f);
+		_chunk_probe_shape_size = box_size;
+	}
+
+	Transform3D probe_t;
+	probe_t.origin = _terrain->get_global_transform().xform(
+			Vector3(chunk_bpos * chunk_size) + Vector3(chunk_size, chunk_size, chunk_size) * 0.5f
+	);
+
+	PhysicsDirectSpaceState3D::ShapeParameters params;
+	params.shape_rid = _chunk_probe_shape;
+	params.transform = probe_t;
+	params.collision_mask = 1; // terrain layer only, same convention as _raycast_confirms_ground
+	params.collide_with_bodies = true;
+	params.collide_with_areas = false;
+
+	PhysicsDirectSpaceState3D *space_state = ps->space_get_direct_state(_physics_space);
+	if (space_state == nullptr) {
+		return false;
+	}
+
+	// max_results = 1: we only care whether anything is there, not what or how much. Lets the
+	// physics engine early-out on first hit instead of enumerating every overlapping shape.
+	PhysicsDirectSpaceState3D::ShapeResult result;
+	int hit_count = space_state->intersect_shape(params, &result, 1);
+	return hit_count > 0;
+}
+
+bool SubGridManager::_check_open_air_column(ShipState &state, Vector3i first_below_chunk, Vector3 com_world) {
+	print_line(String("!!_check_open_air_column"));
+	VoxelEngine::Viewer::Distances view_distances;
+	bool has_viewer = false;
+	VoxelEngine::get_singleton().for_each_viewer([&view_distances,
+												  &has_viewer](ViewerID, const VoxelEngine::Viewer &viewer) {
+		if (!has_viewer) {
+			view_distances = viewer.view_distances;
+			has_viewer = true;
+		}
+	});
+	if (!has_viewer) {
+		// No viewer info to reason about streaming radius, stay frozen, retry next tick.
+		return false;
+	}
+
+	const int cs = 1 << _terrain->get_data_block_size_pow2();
+	const int lod0_chunks_available = static_cast<int>(view_distances.vertical) / cs;
+	print_line(String("!!lod0_chunks_available =") + lod0_chunks_available);
+	if (lod0_chunks_available < 6) {
+		print_line(String("!!lod0_chunks_available less than 6"));
+		// Not enough guaranteed-LOD0 vertical range to trust a multi-chunk walk; fall back to the simple single-ray check.
+		return _raycast_confirms_ground(state);
+	}
+
+	Vector3i chunk_bpos = first_below_chunk;
+	for (int i = 0; i < lod0_chunks_available; ++i, chunk_bpos.y -= 1) {
+		const Box3i voxel_box(chunk_bpos * cs, Vector3i(cs, cs, cs));
+		if (!_terrain->get_storage().is_area_loaded(voxel_box)) {
+			// Column data ran out before we could confirm either way. Inconclusive, stay frozen,
+			// retry next tick (next_ground_check_msec already throttles this to 200ms).
+			return false;
+		}
+
+		std::shared_ptr<VoxelBuffer> voxels = _terrain->get_storage().try_get_block_voxels(chunk_bpos);
+		if (_chunk_buffer_is_pure_air(voxels)) {
+			continue;
+		}
+
+		return _chunk_has_terrain_collision(chunk_bpos, cs);
+	}
+
+	// Walked the entire guaranteed-LOD0 vertical range and every chunk was confirmed pure air:
+	// nothing to stand on within view distance. Stop waiting and let the ship fall.
+	return true;
+}
+
+bool SubGridManager::_confirm_ground(ShipState &state) {
+	if (_terrain == nullptr || !state.body_rid.is_valid()) {
+		return false;
+	}
+	print_line(String("!!_confirm_ground"));
+
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	Transform3D t = ps->body_get_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
+	Variant com_variant = ps->body_get_param(state.body_rid, PhysicsServer3D::BODY_PARAM_CENTER_OF_MASS);
+	Vector3 com_local = com_variant;
+	Vector3 com_world = t.xform(com_local);
+
+	const Transform3D terrain_to_local = _terrain->get_global_transform().affine_inverse();
+	const Vector3 com_terrain_local = terrain_to_local.xform(com_world);
+
+	const Vector3i com_chunk = _terrain->voxel_to_data_block_position(com_terrain_local, 0);
+	const Vector3i below_chunk = com_chunk - Vector3i(0, 1, 0);
+
+	const int cs = 1 << _terrain->get_data_block_size_pow2();
+	const Box3i below_voxel_box(below_chunk * cs, Vector3i(cs, cs, cs));
+
+	if (!_terrain->get_storage().is_area_loaded(below_voxel_box)) {
+		// The chunk directly below the ship might be outside the footprint area the caller already
+		// verified is loaded (_is_ship_footprint_terrain_loaded checks the ship's own footprint, not
+		// necessarily one chunk further down). Fall back to the plain raycast rather than assume.
+		return _raycast_confirms_ground(state);
+	}
+
+	std::shared_ptr<VoxelBuffer> below_voxels = _terrain->get_storage().try_get_block_voxels(below_chunk);
+	if (!_chunk_buffer_is_pure_air(below_voxels)) { //currently main codebranch executed. all non uder modified chunks wil return false as below_voxels dosent have a buffer
+													//TO DO: optimize a VoxelBoxMover block all air check and use it inside "_chunk_buffer_is_pure_air"
+		print_line(String("!!chunk under hull is not pure air, raycast"));
+		// Solid (or unknown/generator-backed) ground right under the ship, cheap path, no need for the open-air column walk.
+		return _raycast_confirms_ground(state);
+	}
+
+	return _check_open_air_column(state, below_chunk, com_world);
 }
 
 } // namespace zylann::voxel
