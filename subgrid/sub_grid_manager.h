@@ -333,6 +333,7 @@ private:
 	bool _check_open_air_column(ShipState &state, Vector3i first_below_chunk, Vector3 com_world);
 	bool _chunk_buffer_is_pure_air(const std::shared_ptr<VoxelBuffer> &voxels) const;
 	bool _chunk_has_terrain_collision(Vector3i chunk_bpos, int chunk_size) const;
+	bool _generator_column_is_solid(Vector3i top_voxel, int sample_range_voxels) const;
 
 	//bool _center_collision_safe(const ShipState &state) const;
 	// World offset of a LOD-space chunk in subgrid-local space

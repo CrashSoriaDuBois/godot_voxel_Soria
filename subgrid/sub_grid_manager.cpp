@@ -1600,9 +1600,10 @@ void SubGridManager::_on_terrain_ground_lod_event(Vector3i render_grid_position,
 						continue;
 					}
 
-					if (entered) {
-						_check_terrain_snap_correction(*state, render_grid_position, lod_index);
-					} else {
+					//if (entered) {
+					//	_check_terrain_snap_correction(*state, render_grid_position, lod_index); //snap logic i forget to mention in commit. dosent work
+					//}
+					else {
 						state->ground_confirmed = false;
 						_apply_combined_suspension(*state);
 					}
@@ -1636,18 +1637,18 @@ void SubGridManager::_process_ground_confirmations() { //main safety loop callen
 	constexpr uint64_t RETRY_INTERVAL_MSEC = 200;
 
 	for (auto &[uuid, state] : _ships) {
-		//print_line(String("!!_process_ground_confirmations"));
+		
 		if (state.load_state != LOADED || !state.body_rid.is_valid()) {
-			print_line(String("!!_ship not LOADED"));
+//			print_line(String("!!_ship not LOADED"));
 			continue;
 		}
 		// Any ship whose own hull is safe but ground isn't confirmed yet is a candidate,
 		// regardless of whether a terrain event ever told us to start looking.
 		if (state.own_collision_unsafe || state.ground_confirmed) {
-			print_line(
-					String("!!own_collision_unsafe: ") + (state.own_collision_unsafe ? "true" : "false") +
-					String(". !!ground_confirmed: ") + (state.ground_confirmed ? "true" : "false")
-			);
+//			print_line(
+//					String("!!own_collision_unsafe: ") + (state.own_collision_unsafe ? "true" : "false") +
+//					String(". !!ground_confirmed: ") + (state.ground_confirmed ? "true" : "false")
+//			);
 			continue;
 		}
 		if (now < state.next_ground_check_msec) {
@@ -1656,10 +1657,11 @@ void SubGridManager::_process_ground_confirmations() { //main safety loop callen
 		state.next_ground_check_msec = now + RETRY_INTERVAL_MSEC;
 
 		if (!_is_ship_footprint_terrain_loaded(state)) {
-			print_line(String("!!!_is_ship_footprint_terrain_loaded(state)"));
+//			print_line(String("!!!_is_ship_footprint_terrain_loaded(state)"));
 			continue; // cheap guard: don't bother raycasting if data isn't even loaded yet
 		}
 		if (_confirm_ground(state)) {
+//			print_line(String("!!!state ground and rigibody active"));
 			state.ground_confirmed = true;
 			_apply_combined_suspension(state);
 		}
@@ -1704,7 +1706,7 @@ bool SubGridManager::_is_ship_footprint_terrain_loaded(const ShipState &state) c
 	if (_terrain == nullptr || state.node == nullptr) {
 		return false; // no terrain reference, conservatively treat as unsafe
 	}
-	print_line(String("!!_is_ship_footprint_terrain_loaded"));
+//	print_line(String("!!_is_ship_footprint_terrain_loaded"));
 
 	const HashSet<Vector3i> &positions = state.node->get_chunk_map().get_all_chunk_positions();
 	if (positions.is_empty()) {
@@ -1776,15 +1778,15 @@ bool SubGridManager::_voxel_footprint_is_solid(const ShipState &state) const {
 
 bool SubGridManager::_chunk_buffer_is_pure_air(const std::shared_ptr<VoxelBuffer> &voxels) const {
 	if (!voxels) {
-		print_line("_chunk_buffer_is_pure_air: voxels == nullptr");
+//		print_line("_chunk_buffer_is_pure_air: voxels == nullptr");
 		return false;
 	}
 	if (!voxels->is_uniform(VoxelBuffer::CHANNEL_TYPE)) {
-		print_line("_chunk_buffer_is_pure_air: channel not uniform (real per-voxel array)");
+//		print_line("_chunk_buffer_is_pure_air: channel not uniform (real per-voxel array)");
 		return false;
 	}
 	uint64_t v = voxels->get_voxel(0, 0, 0, VoxelBuffer::CHANNEL_TYPE);
-	print_line(String("_chunk_buffer_is_pure_air: uniform value = ") + itos(v));
+//	print_line(String("_chunk_buffer_is_pure_air: uniform value = ") + itos(v));
 	return v == 0;
 }
 
@@ -1832,24 +1834,34 @@ bool SubGridManager::_chunk_has_terrain_collision(Vector3i chunk_bpos, int chunk
 bool SubGridManager::_check_open_air_column(ShipState &state, Vector3i first_below_chunk, Vector3 com_world) {
 	print_line(String("!!_check_open_air_column"));
 	VoxelEngine::Viewer::Distances view_distances;
+	Vector3 viewer_world_pos;
 	bool has_viewer = false;
-	VoxelEngine::get_singleton().for_each_viewer([&view_distances,
-												  &has_viewer](ViewerID, const VoxelEngine::Viewer &viewer) {
-		if (!has_viewer) {
-			view_distances = viewer.view_distances;
-			has_viewer = true;
-		}
-	});
+	VoxelEngine::get_singleton().for_each_viewer(
+			[&view_distances, &viewer_world_pos, &has_viewer](ViewerID, const VoxelEngine::Viewer &viewer) {
+				if (!has_viewer) {
+					view_distances = viewer.view_distances;
+					viewer_world_pos = viewer.world_position;
+					has_viewer = true;
+				}
+			}
+	);
 	if (!has_viewer) {
-		// No viewer info to reason about streaming radius, stay frozen, retry next tick.
 		return false;
 	}
 
 	const int cs = 1 << _terrain->get_data_block_size_pow2();
-	const int lod0_chunks_available = static_cast<int>(view_distances.vertical) / cs;
-	print_line(String("!!lod0_chunks_available =") + lod0_chunks_available);
+	// Convert viewer's world position to terrain/local chunk space, so it's directly comparable to first_below_chunk
+	const Transform3D terrain_to_local = _terrain->get_global_transform().affine_inverse();
+	const Vector3 viewer_local = terrain_to_local.xform(viewer_world_pos);
+	const Vector3i viewer_chunk = _terrain->voxel_to_data_block_position(viewer_local, 0);
+
+	const int vertical_chunk_offset = std::abs(viewer_chunk.y - first_below_chunk.y);
+
+	const int lod0_chunks_total = static_cast<int>(view_distances.vertical) / cs;
+	const int lod0_chunks_available = lod0_chunks_total - vertical_chunk_offset;
+//	print_line(String("!!lod0_chunks_available =") + itos(lod0_chunks_available));
 	if (lod0_chunks_available < 6) {
-		print_line(String("!!lod0_chunks_available less than 6"));
+//		print_line(String("!!lod0_chunks_available less than 6"));
 		// Not enough guaranteed-LOD0 vertical range to trust a multi-chunk walk; fall back to the simple single-ray check.
 		return _raycast_confirms_ground(state);
 	}
@@ -1858,21 +1870,31 @@ bool SubGridManager::_check_open_air_column(ShipState &state, Vector3i first_bel
 	for (int i = 0; i < lod0_chunks_available; ++i, chunk_bpos.y -= 1) {
 		const Box3i voxel_box(chunk_bpos * cs, Vector3i(cs, cs, cs));
 		if (!_terrain->get_storage().is_area_loaded(voxel_box)) {
-			// Column data ran out before we could confirm either way. Inconclusive, stay frozen,
-			// retry next tick (next_ground_check_msec already throttles this to 200ms).
 			return false;
 		}
 
 		std::shared_ptr<VoxelBuffer> voxels = _terrain->get_storage().try_get_block_voxels(chunk_bpos);
-		if (_chunk_buffer_is_pure_air(voxels)) {
-			continue;
+
+		if (voxels) {
+//			print_line(String("!!buffer saved data avalible"));
+			if (_chunk_buffer_is_pure_air(voxels)) {
+//				print_line(String("!!buffer avalible is all air"));
+				continue;
+			}
+			return _chunk_has_terrain_collision(chunk_bpos, cs);
 		}
 
+//		print_line(String("!!no resident buffer"));
+		// No resident buffer, cheap generator-only estimate before paying for a physics query.
+		const Vector3i chunk_top_voxel = chunk_bpos * cs + Vector3i(0, cs - 1, 0);
+		if (!_generator_column_is_solid(chunk_top_voxel, cs)) {
+//			print_line(String("!!generated buffer all air"));
+			continue; // generator says air, keep walking down without touching physics
+		}
+//		print_line(String("!!generated buffer not all air, _check_open_air_column returned false"));
 		return _chunk_has_terrain_collision(chunk_bpos, cs);
 	}
-
-	// Walked the entire guaranteed-LOD0 vertical range and every chunk was confirmed pure air:
-	// nothing to stand on within view distance. Stop waiting and let the ship fall.
+//	print_line(String("!!_check_open_air_column returned true"));
 	return true;
 }
 
@@ -1880,7 +1902,7 @@ bool SubGridManager::_confirm_ground(ShipState &state) {
 	if (_terrain == nullptr || !state.body_rid.is_valid()) {
 		return false;
 	}
-	print_line(String("!!_confirm_ground"));
+//	print_line(String("!!_confirm_ground"));
 
 	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 	Transform3D t = ps->body_get_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
@@ -1905,14 +1927,40 @@ bool SubGridManager::_confirm_ground(ShipState &state) {
 	}
 
 	std::shared_ptr<VoxelBuffer> below_voxels = _terrain->get_storage().try_get_block_voxels(below_chunk);
-	if (!_chunk_buffer_is_pure_air(below_voxels)) { //currently main codebranch executed. all non uder modified chunks wil return false as below_voxels dosent have a buffer
-													//TO DO: optimize a VoxelBoxMover block all air check and use it inside "_chunk_buffer_is_pure_air"
-		print_line(String("!!chunk under hull is not pure air, raycast"));
-		// Solid (or unknown/generator-backed) ground right under the ship, cheap path, no need for the open-air column walk.
-		return _raycast_confirms_ground(state);
+
+	if (below_voxels) {
+		// We have real resident data (possibly edited), trust it directly.
+		if (!_chunk_buffer_is_pure_air(below_voxels)) {
+			return _raycast_confirms_ground(state);
+		}
+		return _check_open_air_column(state, below_chunk, com_world);
 	}
 
-	return _check_open_air_column(state, below_chunk, com_world);
+	// No resident buffer, fall back to a cheap generator only estimate, explicitly a different,
+	// weaker source of truth than confirmed resident data (won't reflect edits).
+	const Vector3i below_chunk_top_voxel = below_chunk * cs + Vector3i(0, cs - 1, 0);
+	if (!_generator_column_is_solid(below_chunk_top_voxel, cs)) {
+		return _check_open_air_column(state, below_chunk, com_world);
+	}
+	return _raycast_confirms_ground(state);
+}
+
+bool SubGridManager::_generator_column_is_solid(Vector3i top_voxel, int sample_range_voxels) const {
+	const Box3i box =
+			Box3i::from_min_max(top_voxel - Vector3i(0, sample_range_voxels, 0), top_voxel + Vector3i(1, 1, 1));
+
+	VoxelBuffer column(VoxelBuffer::ALLOCATOR_POOL);
+	_terrain->get_storage().get_voxels_batch(box, VoxelBuffer::CHANNEL_TYPE, column);
+
+	if (column.is_uniform(VoxelBuffer::CHANNEL_TYPE)) {
+		return column.get_voxel(0, 0, 0, VoxelBuffer::CHANNEL_TYPE) != 0;
+	}
+	for (int y = 0; y < box.size.y; ++y) {
+		if (column.get_voxel(0, y, 0, VoxelBuffer::CHANNEL_TYPE) != 0) {
+			return true;
+		}
+	}
+	return false;
 }
 
 } // namespace zylann::voxel

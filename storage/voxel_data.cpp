@@ -255,6 +255,21 @@ VoxelSingleValue VoxelData::get_voxel(Vector3i pos, unsigned int channel_index, 
 	}
 }
 
+
+void VoxelData::get_voxels_batch(Box3i voxel_box, unsigned int channel_index, VoxelBuffer &out_buffer) const {
+	ZN_PROFILE_SCOPE();
+
+	out_buffer.create(voxel_box.size);
+	// Match format for this one channel so is_uniform/compression behaves correctly
+	out_buffer.set_channel_depth(channel_index, get_format().depths[channel_index]);
+
+	const unsigned int channels_mask = (1u << channel_index);
+
+	// Reuses the exact same resident-vs-generate logic `copy()` already has, just scoped to a single channel instead of a full 
+	// multi-channel copy, same locking discipline, same generator batching via generate_block rather than per-voxel generate_single
+	copy(voxel_box.position, out_buffer, channels_mask, /*with_metadata=*/false);
+}
+
 std::shared_ptr<VoxelBuffer> VoxelData::try_get_writable_voxel_buffer_assuming_spatial_lock(
 		Lod &lod,
 		const Vector3i bpos

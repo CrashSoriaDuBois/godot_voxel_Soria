@@ -112,6 +112,8 @@ public:
 	float get_voxel_f(Vector3i pos, unsigned int channel_index) const;
 	bool try_set_voxel_f(const real_t value, const Vector3i pos, const unsigned int channel_index);
 
+	void get_voxels_batch(Box3i voxel_box, unsigned int channel_index, VoxelBuffer &out_buffer) const;
+
 	// Copies voxel data in a box from LOD0.
 	// `channels_mask` bits tell which channel is read.
 	void copy(
