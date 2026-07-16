@@ -265,6 +265,10 @@ void VoxelLodTerrain::set_material(Ref<Material> p_material) {
 							encode_lod_info_for_shader_uniform(lod_index, lod_count)
 					);
 				}
+				sm->set_shader_parameter(
+						VoxelStringNames::get_singleton().u_block_size,
+						static_cast<int>(get_data_block_size() << lod_index)
+				);
 				block.set_shader_material(sm);
 			});
 		}
@@ -1937,6 +1941,19 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 
 	VoxelMesher::Output &mesh_data = ob.surfaces;
 
+	if (ob.light_only) {
+		if (block == nullptr) {
+			// No mesh block exists here (never meshed, or was unloaded). Nothing to light.
+			return;
+		}
+		if (ob.surfaces.light_surface.was_computed) {
+			block->update_light_texture(
+					ob.surfaces.light_surface.texture_data, get_data_block_size() + 2 * TEXTURE_BORDER
+			);
+		}
+		return;
+	}
+
 	Ref<ArrayMesh> mesh;
 	Ref<ArrayMesh> shadow_occluder_mesh;
 	if (ob.visual_was_required && visual_expected) {
@@ -2063,6 +2080,12 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 							encode_lod_info_for_shader_uniform(ob.lod, lod_count)
 					);
 				}
+				if (sm.is_valid()) {
+					sm->set_shader_parameter(
+							VoxelStringNames::get_singleton().u_block_size,
+							static_cast<int>(get_data_block_size() << ob.lod)
+					);
+				}
 
 				// Set individual shader material, because each block can have dynamic parameters,
 				// used to smooth seams without re-uploading meshes and allow to implement LOD fading
@@ -2096,10 +2119,10 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 		);
 
 		if (ob.surfaces.light_surface.was_computed && ob.lod == 0) {
-			block->update_light_texture(ob.surfaces.light_surface.data, get_data_block_size() + 2 * TEXTURE_BORDER);
+			block->update_light_texture(ob.surfaces.light_surface.texture_data, get_data_block_size() + 2 * TEXTURE_BORDER);
 		}
 
-		// ADD neighbor light updates:
+		/*// ADD neighbor light updates:
 		if (ob.lod == 0) {
 			for (int i = 0; i < 26; ++i) {
 				const VoxelMesher::Output::NeighborLightSurface &neighbor = ob.surfaces.neighbor_light_surfaces[i];
@@ -2115,7 +2138,7 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 				// Update only the texture, no remesh
 				//neighbor_block->update_light_texture(neighbor.data, get_data_block_size());
 			}
-		}
+		}*/
 
 		if (assign_material_after_mesh) {
 			// Do this after assigning the mesh when not using a ShaderMaterial.
@@ -2175,20 +2198,28 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 				block->update_navmesh(ob.surfaces.navmesh_surface_mesh, get_global_transform(), nav_map);
 			}
 			if (ob.lod == 0 && ob.surfaces.light_surface.was_computed && !ob.surfaces.light_surface.data.empty()) {
-				SpatialLock3D::Write swlock(
-						_data->get_spatial_lock(0), BoxBounds3i(ob.position, ob.position + Vector3i(1, 1, 1))
-				);
-				std::shared_ptr<VoxelBuffer> vb = _data->try_get_block_voxels(ob.position);
-				if (vb != nullptr) {
-					const size_t expected = ob.surfaces.light_surface.data.size();
-					const size_t actual = vb->get_volume();
-					if (expected == actual) {
-						vb->decompress_channel(VoxelBuffer::CHANNEL_DATA5);
-						Span<uint8_t> dst;
-						if (vb->get_channel_as_bytes(VoxelBuffer::CHANNEL_DATA5, dst)) {
-							memcpy(dst.data(), ob.surfaces.light_surface.data.data(), expected);
+				bool wrote = false;
+				{
+					SpatialLock3D::Write swlock(
+							_data->get_spatial_lock(0), BoxBounds3i(ob.position, ob.position + Vector3i(1, 1, 1))
+					);
+					std::shared_ptr<VoxelBuffer> vb = _data->try_get_block_voxels(ob.position);
+					if (vb != nullptr) {
+						const size_t expected = ob.surfaces.light_surface.data.size();
+						const size_t actual = vb->get_volume();
+						if (expected == actual) {
+							vb->decompress_channel(VoxelBuffer::CHANNEL_DATA5);
+							Span<uint8_t> dst;
+							if (vb->get_channel_as_bytes(VoxelBuffer::CHANNEL_DATA5, dst)) {
+								memcpy(dst.data(), ob.surfaces.light_surface.data.data(), expected);
+								wrote = true;
+							}
 						}
 					}
+				} // swlock released here
+				if (wrote) {
+					_data->mark_block_modified(ob.position, 0);
+					_data->propagate_channel_upward(ob.position, VoxelBuffer::CHANNEL_DATA5);
 				}
 			}
 

@@ -889,8 +889,8 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 	// The flood fill is NOT done here. It is done in mesh_block_task::build_mesh()
 	// on the large 46^3 buffer BEFORE calling mesher->build().
 	// Here we only read whatever light data was placed into CHANNEL_DATA5.
-	const int padded_volume = block_size.x * block_size.y * block_size.z;
-	bool has_light = false;
+	 const int padded_volume = block_size.x * block_size.y * block_size.z;
+	 bool has_light = false;/*
 	{
 		Span<const uint8_t> existing_light;
 		has_light = voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_DATA5, existing_light);
@@ -921,7 +921,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 					String(" voxels_size=") + String(voxels.get_size())
 			);
 		}
-	}
+	} */
 
 	unsigned int material_count = 0;
 	{

@@ -79,7 +79,8 @@ public:
 		Array shadow_occluder;
 
 		struct LightSurface {
-			StdVector<uint8_t> data;
+			StdVector<uint8_t> data; // raw, unpadded (block_size^3), for CHANNEL_DATA5 persistence
+			StdVector<uint8_t> texture_data; // padded with TEXTURE_BORDER halo, for update_light_texture
 			bool was_computed = false;
 		};
 		LightSurface light_surface;

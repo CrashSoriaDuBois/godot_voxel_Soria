@@ -254,43 +254,45 @@ static const Vector3i NEIGHBOR_OFFSETS[26] = {
 //static constexpr int TEXTURE_BORDER = 1; // or 2, tune to shader needs
 
 static void extract_light_slices(
-		const StdVector<uint8_t> &big_buffer,
-		const Vector3i big_size,
-		const int padding,
-		const int block_size,
-		VoxelMesher::Output &output
+        const StdVector<uint8_t> &big_buffer,
+        const Vector3i big_size,
+        const int padding,
+        const int block_size,
+        VoxelMesher::Output &output
 ) {
-	auto extract_block = [&](Vector3i origin, int size, StdVector<uint8_t> &out_data) {
-		out_data.resize(size * size * size);
-		for (int z = 0; z < size; ++z) {
-			for (int x = 0; x < size; ++x) {
-				for (int y = 0; y < size; ++y) {
-					const int bx = origin.x + x;
-					const int by = origin.y + y;
-					const int bz = origin.z + z;
-					const int big_idx = by + bx * big_size.y + bz * big_size.x * big_size.y;
-					const int out_idx = y + x * size + z * size * size;
-					out_data[out_idx] = big_buffer[big_idx];
-				}
-			}
-		}
-	};
+    auto extract_block = [&](Vector3i origin, int size, StdVector<uint8_t> &out_data) {
+        out_data.resize(size * size * size);
+        for (int z = 0; z < size; ++z) {
+            for (int x = 0; x < size; ++x) {
+                for (int y = 0; y < size; ++y) {
+                    const int bx = origin.x + x;
+                    const int by = origin.y + y;
+                    const int bz = origin.z + z;
+                    const int big_idx = by + bx * big_size.y + bz * big_size.x * big_size.y;
+                    const int out_idx = y + x * size + z * size * size;
+                    out_data[out_idx] = big_buffer[big_idx];
+                }
+            }
+        }
+    };
 
-	// Self block, WITH a thin halo from big_buf (which already has real neighbor data)
-	const Vector3i self_origin(padding - TEXTURE_BORDER, padding - TEXTURE_BORDER, padding - TEXTURE_BORDER);
-	const int padded_block_size = block_size + 2 * TEXTURE_BORDER;
-	extract_block(self_origin, padded_block_size, output.light_surface.data);
-	output.light_surface.was_computed = true;
+    // Raw slice, exactly block_size^3. this is what gets persisted into CHANNEL_DATA5
+    const Vector3i raw_origin(padding, padding, padding);
+    extract_block(raw_origin, block_size, output.light_surface.data);
 
-	// No neighbor extraction needed anymore — drop the 26-neighbor loop entirely
+    // Padded slice with TEXTURE_BORDER halo. this is what the texture/shader consumes
+    const Vector3i padded_origin(padding - TEXTURE_BORDER, padding - TEXTURE_BORDER, padding - TEXTURE_BORDER);
+    const int padded_block_size = block_size + 2 * TEXTURE_BORDER;
+    extract_block(padded_origin, padded_block_size, output.light_surface.texture_data);
+
+    output.light_surface.was_computed = true;
 }
 
 Ref<ArrayMesh> build_mesh(
 		Span<const VoxelMesher::Output::Surface> surfaces,
 		Mesh::PrimitiveType primitive,
 		int flags,
-		// This vector indexes surfaces to the material they use (if a surface uses a material but is empty, it
-		// won't be added to the mesh)
+		// This vector indexes surfaces to the material they use (if a surface uses a material but is empty, it won't be added to the mesh)
 		StdVector<uint16_t> &mesh_material_indices
 ) {
 	ZN_PROFILE_SCOPE();
@@ -399,6 +401,12 @@ void MeshBlockTask::run(zylann::ThreadedTaskContext &ctx) {
 		ZN_ASSERT(data != nullptr);
 		const VoxelFormat format = data->get_format();
 		format.configure_buffer(_voxels);
+	}
+	if (light_mode != LIGHT_MODE_FULL) {
+		gather_light_only();
+		build_light_only();
+		_has_run = true;
+		return;
 	}
 
 #ifdef VOXEL_ENABLE_GPU
@@ -548,9 +556,10 @@ void MeshBlockTask::build_mesh() {
 
 	const Vector3i origin_in_voxels = mesh_block_position * (mesh_block_size << lod_index);
 
-	    // --- DO THE LIGHT FLOOD FIRST, before calling mesher->build() ---
+	    // DO THE LIGHT FLOOD FIRST, before calling mesher->build() 
 
 	if (_needs_light_recompute) {
+		print_line(String("!!!doing heavy flood lod=") + itos(lod_index));
 		Span<const uint8_t> light_type_channel;
 		if (_light_voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_TYPE, light_type_channel)) {
 			const Vector3i light_block_size = _light_voxels.get_size();
@@ -673,7 +682,41 @@ void MeshBlockTask::build_mesh() {
 					String("ERROR: could not read CHANNEL_TYPE from _light_voxels pos=") + String(mesh_block_position)
 			);
 		}
+	} else {
+		// No flood needed: light was already computed previously and lives in stored CHANNEL_DATA5.
+		// Gather a small TEXTURE_BORDER-padded buffer of just that channel and extract from it directly.
+		const int block_size = data->get_block_size();
+
+		VoxelBuffer texture_gather_voxels(VoxelBuffer::ALLOCATOR_POOL);
+		const VoxelFormat format = data->get_format();
+		format.configure_buffer(texture_gather_voxels);
+
+		copy_block_and_neighbors(
+				to_span(blocks, blocks_count),
+				texture_gather_voxels,
+				TEXTURE_BORDER,
+				TEXTURE_BORDER,
+				(1 << VoxelBuffer::CHANNEL_DATA5),
+				meshing_dependency->generator,
+				*data,
+				lod_index,
+				mesh_block_position,
+				nullptr,
+				nullptr
+		);
+
+		Span<const uint8_t> stored_light;
+		if (texture_gather_voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_DATA5, stored_light)) {
+			StdVector<uint8_t> big_buf;
+			big_buf.resize(stored_light.size());
+			memcpy(big_buf.data(), stored_light.data(), stored_light.size());
+			extract_light_slices(
+					big_buf, texture_gather_voxels.get_size(), TEXTURE_BORDER, block_size, _surfaces_output
+			);
+		}
+		// If CHANNEL_DATA5 was never computed for this block (still COMPRESSION_UNIFORM), leave light_surface unset update_light_texture simply won't be called for it downstream.
 	}
+
 
 	const VoxelMesher::Input input{
 		_voxels,
@@ -686,40 +729,10 @@ void MeshBlockTask::build_mesh() {
 		lod_hint,
 		// TODO Gathering detail texture information is not always necessary
 		true, // detail_texture_hint
-		false // always false here — flood already done above
+		false // always false here. flood already done above
 	};
 
 	mesher->build(_surfaces_output, input);
-
-	// Light flood on the big buffer — runs after the normal mesher
-	if (_needs_light_recompute) {
-		Span<const uint8_t> light_type_channel;
-		if (_light_voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_TYPE, light_type_channel)) {
-			const Vector3i light_block_size = _light_voxels.get_size();
-			StdVector<uint8_t> &big_buf = get_tls_light_buffer();
-
-			Ref<VoxelMesherBlocky> blocky_mesher;
-			if (zylann::godot::try_get_as(meshing_dependency->mesher, blocky_mesher) && blocky_mesher.is_valid()) {
-				Ref<VoxelBlockyLibraryBase> lib = blocky_mesher->get_library();
-				if (lib.is_valid()) {
-					RWLockRead lock(lib->get_baked_data_rw_lock());
-					const blocky::BakedLibrary &baked = lib->get_baked_data();
-					const VoxelBuffer::Depth depth = _light_voxels.get_channel_depth(VoxelBuffer::CHANNEL_TYPE);
-
-					if (depth == VoxelBuffer::DEPTH_8_BIT) {
-						blocky::flood_fill_light(light_type_channel, light_block_size, baked, big_buf);
-					} else if (depth == VoxelBuffer::DEPTH_16_BIT) {
-						Span<const uint16_t> ids = light_type_channel.reinterpret_cast_to<const uint16_t>();
-						blocky::flood_fill_light(ids, light_block_size, baked, big_buf);
-					}
-
-					extract_light_slices(
-							big_buf, light_block_size, LIGHT_PADDING, data->get_block_size(), _surfaces_output
-					);
-				}
-			}
-		}
-	}
 
 #ifdef VOXEL_ENABLE_SMOOTH_MESHING
 	const bool mesh_is_empty = VoxelMesher::is_mesh_empty(_surfaces_output.surfaces);
@@ -821,7 +834,7 @@ bool MeshBlockTask::is_cancelled() {
 
 void MeshBlockTask::apply_result() {
 	if (VoxelEngine::get_singleton().is_volume_valid(volume_id)) {
-		// The request response must match the dependency it would have been requested with.
+				// The request response must match the dependency it would have been requested with.
 		// If it doesn't match, we are no longer interested in the result.
 		// It is assumed that if a dependency is changed, a new copy of it is made and the old one is marked
 		// invalid.
@@ -843,6 +856,7 @@ void MeshBlockTask::apply_result() {
 			o.mesh_material_indices = std::move(_mesh_material_indices);
 			o.has_mesh_resource = _has_mesh_resource;
 			o.visual_was_required = require_visual;
+			o.light_only = (light_mode != LIGHT_MODE_FULL);
 #ifdef VOXEL_ENABLE_SMOOTH_MESHING
 			o.detail_textures = _detail_textures;
 #endif
@@ -857,6 +871,100 @@ void MeshBlockTask::apply_result() {
 		// This can happen if the user removes the volume while requests are still about to return
 		ZN_PRINT_VERBOSE("Mesh request response came back but volume wasn't found");
 	}
+}
+
+void MeshBlockTask::gather_light_only() {
+	print_line("!!!gather_light_only");
+	ZN_ASSERT(meshing_dependency != nullptr);
+	ZN_ASSERT(data != nullptr);
+
+	if (light_mode == LIGHT_MODE_FLOOD_ONLY) {
+		const VoxelFormat format = data->get_format();
+		format.configure_buffer(_light_voxels);
+
+		copy_block_and_neighbors(
+				to_span(blocks, blocks_count),
+				_light_voxels,
+				LIGHT_PADDING,
+				LIGHT_PADDING,
+				(1 << VoxelBuffer::CHANNEL_TYPE),
+				meshing_dependency->generator,
+				*data,
+				lod_index,
+				mesh_block_position,
+				nullptr,
+				nullptr
+		);
+	}
+	// LIGHT_MODE_UPLOAD_ONLY needs nothing here; build_light_only() reads the block's own stored CHANNEL_DATA5 directly.
+}
+
+void MeshBlockTask::build_light_only() {
+	print_line("!!!build_light_only");
+	if (light_mode == LIGHT_MODE_FLOOD_ONLY) {
+		Span<const uint8_t> light_type_channel;
+		if (_light_voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_TYPE, light_type_channel)) {
+			const Vector3i light_block_size = _light_voxels.get_size();
+			StdVector<uint8_t> &big_buf = get_tls_light_buffer();
+
+			Ref<VoxelMesherBlocky> blocky_mesher;
+			if (zylann::godot::try_get_as(meshing_dependency->mesher, blocky_mesher) && blocky_mesher.is_valid()) {
+				Ref<VoxelBlockyLibraryBase> lib = blocky_mesher->get_library();
+				if (lib.is_valid()) {
+					RWLockRead lock(lib->get_baked_data_rw_lock());
+					const blocky::BakedLibrary &baked = lib->get_baked_data();
+					const VoxelBuffer::Depth depth = _light_voxels.get_channel_depth(VoxelBuffer::CHANNEL_TYPE);
+
+					if (depth == VoxelBuffer::DEPTH_8_BIT) {
+						blocky::flood_fill_light(light_type_channel, light_block_size, baked, big_buf);
+					} else if (depth == VoxelBuffer::DEPTH_16_BIT) {
+						Span<const uint16_t> ids = light_type_channel.reinterpret_cast_to<const uint16_t>();
+						blocky::flood_fill_light(ids, light_block_size, baked, big_buf);
+					}
+
+					// Persist raw slice into this block's own stored CHANNEL_DATA5
+					const int padding = LIGHT_PADDING;
+					const int block_size = data->get_block_size();
+					const int light_row = light_block_size.y;
+					const int light_deck = light_block_size.x * light_row;
+
+					StdVector<uint8_t> small_light(block_size * block_size * block_size, 0);
+					for (int z = 0; z < block_size; ++z) {
+						for (int x = 0; x < block_size; ++x) {
+							for (int y = 0; y < block_size; ++y) {
+								const int lx = x + padding;
+								const int ly = y + padding;
+								const int lz = z + padding;
+								const int big_idx = ly + lx * light_row + lz * light_deck;
+								const int small_idx = y + x * block_size + z * block_size * block_size;
+								small_light[small_idx] = big_buf[big_idx];
+							}
+						}
+					}
+
+					extract_light_slices(big_buf, light_block_size, padding, block_size, _surfaces_output);
+				}
+			}
+		}
+
+	} else if (light_mode == LIGHT_MODE_UPLOAD_ONLY) {
+		// No flood. Just read this block's own stored CHANNEL_DATA5 and re-slice with a thin TEXTURE_BORDER halo taken from the small buffer we gathered
+		// (or directly from _voxels, if it already contains CHANNEL_DATA5 with padding).
+		Span<const uint8_t> stored_light;
+		if (_voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_DATA5, stored_light)) {
+			const Vector3i small_size = _voxels.get_size();
+			const int block_size = data->get_block_size();
+			// _voxels here is expected to already carry TEXTURE_BORDER-sized padding on CHANNEL_DATA5 gathered the same way _light_voxels is for FLOOD_ONLY,
+			// just with min/max padding = TEXTURE_BORDER instead of LIGHT_PADDING.
+			StdVector<uint8_t> big_buf;
+			big_buf.resize(stored_light.size());
+			memcpy(big_buf.data(), stored_light.data(), stored_light.size());
+
+			extract_light_slices(big_buf, small_size, TEXTURE_BORDER, block_size, _surfaces_output);
+		}
+	}
+
+	_has_mesh_resource = false;
 }
 
 } // namespace zylann::voxel

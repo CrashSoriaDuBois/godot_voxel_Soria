@@ -174,6 +174,7 @@ struct VoxelLodTerrainUpdateData {
 		Vector3i position;
 		TaskCancellationToken cancellation_token;
 		bool require_visual = false;
+		bool requires_geometry = true;
 	};
 
 	struct QuickReloadingBlock {

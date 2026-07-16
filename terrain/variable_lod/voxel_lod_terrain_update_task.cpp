@@ -331,25 +331,32 @@ void send_mesh_requests(
 
 			// We'll allocate this quite often. If it becomes a problem, it should be easy to pool.
 			MeshBlockTask *task = ZN_NEW(MeshBlockTask);
-			task->light_dirty = true; // default for safety
-			
+			//task->light_dirty = true; // default for safety
+
 			{
-				RWLockWrite rlock(lod.mesh_map_state.map_lock); // wlock or rlock i dont know
+				RWLockWrite rlock(lod.mesh_map_state.map_lock);
 				auto state_it = lod.mesh_map_state.map.find(mesh_to_update.position);
 				if (state_it != lod.mesh_map_state.map.end()) {
-					task->light_dirty = state_it->second.light_dirty;
+					const bool light_dirty = state_it->second.light_dirty;
 					state_it->second.light_dirty = false;
 
-					print_line(
-							String("TASK_CREATED pos=") + String(mesh_to_update.position) + String(" light_dirty=") +
-							(task->light_dirty ? "true" : "false")
-					);
+					if (!mesh_to_update.requires_geometry) {
+						// Light-only refresh: no geometry needed regardless of LOD
+						task->light_mode = MeshBlockTask::LIGHT_MODE_FLOOD_ONLY;
+					} else if (lod_index == 0) {
+						task->light_mode = MeshBlockTask::LIGHT_MODE_FULL;
+						task->light_dirty = light_dirty;
+					} else {
+						// LOD1+: always build geometry normally, never flood (LOD-sampled CHANNEL_TYPE
+						// would give wrong results), just extract whatever's already in stored CHANNEL_DATA5.
+						task->light_mode = MeshBlockTask::LIGHT_MODE_FULL;
+						// LOD1+ full geometry build: never floods, just inherits CHANNEL_DATA5
+						// via downscale_to and uploads the texture from it.
+						task->light_dirty = false;
+					}
 				} else {
-					// ADD THIS:
-					print_line(
-							String("TASK_CREATED pos=") + String(mesh_to_update.position) +
-							String(" state_not_found, using default light_dirty=true")
-					);
+					task->light_mode = MeshBlockTask::LIGHT_MODE_FULL;
+					task->light_dirty = false;
 				}
 			}
 			
@@ -684,18 +691,45 @@ void VoxelLodTerrainUpdateTask::flush_pending_lod_edits(
 		for (const Box3i voxel_box : tls_modified_voxel_areas_lod0) {
 			// Padding is required for edits near chunk borders, which can affect multiple meshes despite only affecting
 			// one data block
+
+			// Narrow box: blocks whose geometry actually needs to change
+			const Box3i padded_voxel_box = voxel_box.padded(1);
+			const Box3i mesh_block_box = padded_voxel_box.downscaled(mesh_block_size_at_lod);
+
+			mesh_block_box.for_each_cell([&lod](Vector3i mesh_block_pos) {
+				auto mesh_block_it = lod.mesh_map_state.map.find(mesh_block_pos);
+				if (mesh_block_it != lod.mesh_map_state.map.end()) {
+					// If a mesh block state exists here, it will need an update.
+					// If there is none, it will probably get created later when we come closer to it
+					mesh_block_it->second.light_dirty = true;
+					schedule_mesh_update( //
+							mesh_block_it->second, //
+							mesh_block_pos, //
+							lod.mesh_blocks_pending_update, //
+							mesh_block_it->second.mesh_viewers.get() > 0 //
+							// requires_geometry defaults to true
+					);
+				}
+			});
+
+			// Wide box: neighbors whose LIGHT_PADDING flood radius reaches into the edited area, but whose own geometry did NOT change
 			const Box3i light_padded_box = voxel_box.padded(LIGHT_PADDING);
 			const Box3i light_mesh_block_box = light_padded_box.downscaled(mesh_block_size_at_lod);
 
-			light_mesh_block_box.for_each_cell([&lod](Vector3i mesh_block_pos) {
-				auto it = lod.mesh_map_state.map.find(mesh_block_pos);
-				if (it != lod.mesh_map_state.map.end()) {
-					it->second.light_dirty = true;
+			light_mesh_block_box.for_each_cell([&lod, &mesh_block_box](Vector3i mesh_block_pos) {
+				// Skip blocks already handled by the narrow geometry pass above
+				if (mesh_block_box.contains(mesh_block_pos)) {
+					return;
+				}
+				auto mesh_block_it = lod.mesh_map_state.map.find(mesh_block_pos);
+				if (mesh_block_it != lod.mesh_map_state.map.end()) {
+					mesh_block_it->second.light_dirty = true;
 					schedule_mesh_update(
-							it->second,
+							mesh_block_it->second,
 							mesh_block_pos,
 							lod.mesh_blocks_pending_update,
-							it->second.mesh_viewers.get() > 0
+							mesh_block_it->second.mesh_viewers.get() > 0,
+							false // requires_geometry = false, light-only
 					);
 				}
 			});

@@ -32,6 +32,14 @@ class MeshBlockTask
 #endif
 {
 public:
+	enum LightMode : uint8_t {
+		LIGHT_MODE_FULL, // geometry + (flood if light_dirty) + texture   [LOD0]
+		LIGHT_MODE_FLOOD_ONLY, // flood + texture, skip geometry/collision/navmesh [edit-triggered neighbor refresh]
+		LIGHT_MODE_UPLOAD_ONLY // no flood, just re-extract padded halo from CHANNEL_DATA5 + upload [LOD1+ initial
+							   // build]
+	};
+	LightMode light_mode = LIGHT_MODE_FULL;
+
 	bool light_dirty = false;
 	//static const int LIGHT_PADDING = 15;
 	MeshBlockTask();
@@ -88,6 +96,9 @@ private:
 #endif
 	void gather_voxels_cpu();
 	void build_mesh();
+
+	void gather_light_only();
+	void build_light_only();
 
 	bool _has_run = false;
 	bool _too_far = false;
