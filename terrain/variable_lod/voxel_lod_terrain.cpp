@@ -269,6 +269,10 @@ void VoxelLodTerrain::set_material(Ref<Material> p_material) {
 						VoxelStringNames::get_singleton().u_block_size,
 						static_cast<int>(get_data_block_size() << lod_index)
 				);
+				sm->set_shader_parameter(
+						VoxelStringNames::get_singleton().u_texture_border,
+						static_cast<int>(TEXTURE_BORDER << lod_index)
+				);
 				block.set_shader_material(sm);
 			});
 		}
@@ -2085,6 +2089,10 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 							VoxelStringNames::get_singleton().u_block_size,
 							static_cast<int>(get_data_block_size() << ob.lod)
 					);
+					sm->set_shader_parameter(
+							VoxelStringNames::get_singleton().u_texture_border,
+							static_cast<int>(TEXTURE_BORDER << ob.lod)
+					);
 				}
 
 				// Set individual shader material, because each block can have dynamic parameters,
@@ -2118,7 +2126,7 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 #endif
 		);
 
-		if (ob.surfaces.light_surface.was_computed && ob.lod == 0) {
+		if (ob.surfaces.light_surface.was_computed) {
 			block->update_light_texture(ob.surfaces.light_surface.texture_data, get_data_block_size() + 2 * TEXTURE_BORDER);
 		}
 
