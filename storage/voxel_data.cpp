@@ -823,6 +823,38 @@ void VoxelData::propagate_channel_upward(Vector3i lod0_bpos, unsigned int channe
 	}
 }
 
+void VoxelData::mark_area_modified_if_unedited(
+		Box3i p_voxel_box,
+		StdVector<Vector3i> *lod0_new_blocks_to_lod,
+		bool require_lod_updates
+) {
+	const Box3i bbox = p_voxel_box.downscaled(get_block_size());
+	Lod &data_lod0 = _lods[0];
+	SpatialLock3D::Write swlock(data_lod0.spatial_lock, bbox);
+	RWLockRead rlock(data_lod0.map_lock);
+
+	bbox.for_each_cell([&data_lod0, lod0_new_blocks_to_lod, require_lod_updates](Vector3i block_pos_lod0) {
+		VoxelDataBlock *block = data_lod0.map.get_block(block_pos_lod0);
+		if (block == nullptr || !block->has_voxels()) {
+			return;
+		}
+		if (block->is_edited()) {
+			// Already a real edit, skip
+			return;
+		}
+
+		block->set_modified(true);
+		block->set_edited(true);
+
+		if (!block->get_needs_lodding() && require_lod_updates) {
+			block->set_needs_lodding(true);
+			if (lod0_new_blocks_to_lod != nullptr) {
+				lod0_new_blocks_to_lod->push_back(block_pos_lod0);
+			}
+		}
+	});
+}
+
 bool VoxelData::try_set_block(Vector3i block_position, const VoxelDataBlock &block) {
 	bool inserted = true;
 	try_set_block(block_position, block, [&inserted](VoxelDataBlock &existing, const VoxelDataBlock &incoming) {

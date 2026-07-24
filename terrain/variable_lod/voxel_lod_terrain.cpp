@@ -653,6 +653,29 @@ void VoxelLodTerrain::post_edit_area(Box3i p_box, bool update_mesh) {
 #endif
 }
 
+void VoxelLodTerrain::_b_post_edit_area(AABB aabb, bool update_mesh) {
+	ERR_FAIL_COND(!math::is_valid_size(aabb.size));
+	post_edit_area(Box3i(math::round_to_int(aabb.position), math::round_to_int(aabb.size)), update_mesh);
+}
+
+void VoxelLodTerrain::post_edit_area_if_unedited(Box3i p_box, bool update_mesh) {
+	ZN_PROFILE_SCOPE();
+
+	_data->pre_generate_box(p_box);
+	{
+		MutexLock lock(_update_data->state.edit_notifications.mutex);
+		_data->mark_area_modified_if_unedited(
+				p_box, &_update_data->state.edit_notifications.edited_blocks_lod0, update_mesh
+		);
+		_update_data->state.edit_notifications.edited_voxel_areas_lod0.push_back(p_box);
+	}
+}
+
+void VoxelLodTerrain::_b_post_edit_area_if_unedited(AABB aabb, bool update_mesh) {
+	ERR_FAIL_COND(!math::is_valid_size(aabb.size));
+	post_edit_area_if_unedited(Box3i(math::round_to_int(aabb.position), math::round_to_int(aabb.size)), update_mesh);
+}
+
 void VoxelLodTerrain::post_edit_modifiers(Box3i p_voxel_box) {
 	// clear_cached_blocks_in_voxel_area(*_data, p_voxel_box);
 	_data->clear_cached_blocks_in_voxel_area(p_voxel_box);
@@ -2226,7 +2249,7 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 					}
 				} // swlock released here
 				if (wrote) {
-					_data->mark_block_modified(ob.position, 0);
+					//_data->mark_block_modified(ob.position, 0);
 					_data->propagate_channel_upward(ob.position, VoxelBuffer::CHANNEL_DATA5);
 				}
 			}
@@ -4049,6 +4072,9 @@ void VoxelLodTerrain::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_stream_running_in_editor"), &Self::is_stream_running_in_editor);
 
 	ClassDB::bind_method(D_METHOD("is_area_meshed", "area_in_voxels", "lod_index"), &Self::_b_is_area_meshed);
+
+	//ClassDB::bind_method(D_METHOD("post_edit_area", "area", "update_mesh"), &Self::_b_post_edit_area);
+	ClassDB::bind_method(D_METHOD("post_edit_area_if_unedited", "area", "update_mesh"), &Self::_b_post_edit_area_if_unedited);
 
 	// Normalmaps
 

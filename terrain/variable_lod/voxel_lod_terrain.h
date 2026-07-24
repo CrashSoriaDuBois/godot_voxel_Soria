@@ -141,7 +141,12 @@ public:
 
 	// These must be called after an edit
 	void post_edit_area(Box3i p_box, bool update_mesh);
+	void _b_post_edit_area(AABB aabb, bool update_mesh);
+
 	void post_edit_modifiers(Box3i p_voxel_box);
+
+	void post_edit_area_if_unedited(Box3i p_box, bool update_mesh);
+	void _b_post_edit_area_if_unedited(AABB aabb, bool update_mesh);
 
 	// TODO This still sucks atm cuz the edit will still run on the main thread
 	void push_async_edit(IThreadedTask *task, Box3i box, std::shared_ptr<AsyncDependencyTracker> tracker);

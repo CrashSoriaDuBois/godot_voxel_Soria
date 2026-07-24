@@ -804,7 +804,7 @@ void VoxelMesherBlocky::set_tint_mode(const VoxelMesherBlocky::TintMode new_mode
 
 void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::Input &input) {
 
-	print_line(String("BUILD: light_dirty=") + (input.light_dirty ? "true" : "false"));
+	//print_line(String("BUILD: light_dirty=") + (input.light_dirty ? "true" : "false"));
 
 	const VoxelBuffer::ChannelId channel = VoxelBuffer::CHANNEL_TYPE;
 	Parameters params;

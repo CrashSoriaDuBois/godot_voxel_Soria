@@ -559,7 +559,7 @@ void MeshBlockTask::build_mesh() {
 	    // DO THE LIGHT FLOOD FIRST, before calling mesher->build() 
 
 	if (_needs_light_recompute) {
-		print_line(String("!!!doing heavy flood lod=") + itos(lod_index));
+
 		Span<const uint8_t> light_type_channel;
 		if (_light_voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_TYPE, light_type_channel)) {
 			const Vector3i light_block_size = _light_voxels.get_size();
@@ -579,7 +579,7 @@ void MeshBlockTask::build_mesh() {
 						Span<const uint16_t> ids = light_type_channel.reinterpret_cast_to<const uint16_t>();
 						blocky::flood_fill_light(ids, light_block_size, baked, big_buf);
 					}
-
+					print_line(String("!!!doing heavy flood lod=") + itos(lod_index));
 					// ── PRINT 1: inspect big_buf after flood ──
 					{
 						int non_zero = 0;
@@ -874,11 +874,12 @@ void MeshBlockTask::apply_result() {
 }
 
 void MeshBlockTask::gather_light_only() {
-	print_line("!!!gather_light_only");
+
 	ZN_ASSERT(meshing_dependency != nullptr);
 	ZN_ASSERT(data != nullptr);
 
 	if (light_mode == LIGHT_MODE_FLOOD_ONLY) {
+		print_line("!!!LIGHT_MODE_FLOOD_ONLY _ copy_block_and_neighbors");
 		const VoxelFormat format = data->get_format();
 		format.configure_buffer(_light_voxels);
 
@@ -900,8 +901,9 @@ void MeshBlockTask::gather_light_only() {
 }
 
 void MeshBlockTask::build_light_only() {
-	print_line("!!!build_light_only");
+	//print_line("!!!build_light_only");
 	if (light_mode == LIGHT_MODE_FLOOD_ONLY) {
+		print_line("!!!LIGHT_MODE_FLOOD_ONLY");
 		Span<const uint8_t> light_type_channel;
 		if (_light_voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_TYPE, light_type_channel)) {
 			const Vector3i light_block_size = _light_voxels.get_size();
@@ -948,6 +950,7 @@ void MeshBlockTask::build_light_only() {
 		}
 
 	} else if (light_mode == LIGHT_MODE_UPLOAD_ONLY) {
+		print_line("!!!LIGHT_MODE_UPLOAD_ONLY");
 		// No flood. Just read this block's own stored CHANNEL_DATA5 and re-slice with a thin TEXTURE_BORDER halo taken from the small buffer we gathered
 		// (or directly from _voxels, if it already contains CHANNEL_DATA5 with padding).
 		Span<const uint8_t> stored_light;
