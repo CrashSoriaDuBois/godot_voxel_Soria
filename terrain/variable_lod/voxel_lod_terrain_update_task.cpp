@@ -723,7 +723,7 @@ void VoxelLodTerrainUpdateTask::flush_pending_lod_edits(
 				}
 				auto mesh_block_it = lod.mesh_map_state.map.find(mesh_block_pos);
 				if (mesh_block_it != lod.mesh_map_state.map.end()) {
-					mesh_block_it->second.light_dirty = true;
+					mesh_block_it->second.light_dirty = true;//
 					schedule_mesh_update(
 							mesh_block_it->second,
 							mesh_block_pos,

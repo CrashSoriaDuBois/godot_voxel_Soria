@@ -2237,8 +2237,7 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 					std::shared_ptr<VoxelBuffer> vb = _data->try_get_block_voxels(ob.position);
 					if (vb != nullptr) {
 						const size_t expected = ob.surfaces.light_surface.data.size();
-						const size_t actual = vb->get_volume();
-						if (expected == actual) {
+						if (expected == vb->get_volume()) {
 							vb->decompress_channel(VoxelBuffer::CHANNEL_DATA5);
 							Span<uint8_t> dst;
 							if (vb->get_channel_as_bytes(VoxelBuffer::CHANNEL_DATA5, dst)) {
@@ -2247,11 +2246,23 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 							}
 						}
 					}
-				} // swlock released here
-				if (wrote) {
-					//_data->mark_block_modified(ob.position, 0);
-					_data->propagate_channel_upward(ob.position, VoxelBuffer::CHANNEL_DATA5);
 				}
+				if (wrote) {
+					_data->mark_block_modified(ob.position, 0);
+					Vector3i single[1] = { ob.position };
+					_data->update_lods(Span<const Vector3i>(single, 1), nullptr);
+				}
+			}
+
+			if (ob.light_only) {
+				if (block == nullptr)
+					return;
+				if (ob.surfaces.light_surface.was_computed) {
+					block->update_light_texture(
+							ob.surfaces.light_surface.texture_data, get_data_block_size() + 2 * TEXTURE_BORDER
+					);
+				}
+				return;
 			}
 
 			if (ob.lod == 0 && ob.surfaces.light_surface.was_computed) {

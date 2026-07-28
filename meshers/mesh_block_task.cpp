@@ -243,6 +243,17 @@ static StdVector<uint8_t> &get_tls_light_buffer() {
 	return buf;
 }
 
+template <typename T>
+static bool has_any_light_emitter(Span<const T> type_ids, const blocky::BakedLibrary &baked) {
+	for (const T id : type_ids) {
+		const uint32_t model_index = static_cast<uint32_t>(id);
+		if (baked.has_model(model_index) && baked.models[model_index].light_emission > 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static const Vector3i NEIGHBOR_OFFSETS[26] = {
 	{ -1, 0, 0 },  { 1, 0, 0 },	  { 0, -1, 0 }, { 0, 1, 0 },   { 0, 0, -1 },   { 0, 0, 1 },	  { -1, -1, 0 },
 	{ -1, 1, 0 },  { 1, -1, 0 },  { 1, 1, 0 },	{ -1, 0, -1 }, { -1, 0, 1 },   { 1, 0, -1 },  { 1, 0, 1 },
@@ -528,8 +539,18 @@ void MeshBlockTask::gather_voxels_cpu() {
 
 	// Big buffer for light flood (padding = 15), only when dirty
 	_needs_light_recompute = light_dirty;
+	/*
+	if (lod_index == 0) {
+		_needs_light_recompute = light_dirty || !data->has_computed_light(mesh_block_position, lod_index);
+	} else {
+		// LOD1+ never independently floods, regardless of whether CHANNEL_DATA5 was ever computed for it.
+		// It only re-slices whatever it inherited from LOD0 via downscale_to.
+		_needs_light_recompute = false;
+	}
+	*/
 
 	if (_needs_light_recompute) {
+		print_line(String("!!!_needs_light_recompute= true"));
 		const VoxelFormat format = data->get_format();
 		format.configure_buffer(_light_voxels);
 
@@ -683,38 +704,47 @@ void MeshBlockTask::build_mesh() {
 			);
 		}
 	} else {
-		// No flood needed: light was already computed previously and lives in stored CHANNEL_DATA5.
-		// Gather a small TEXTURE_BORDER-padded buffer of just that channel and extract from it directly.
-		const int block_size = data->get_block_size();
+		if (!data->has_computed_light(mesh_block_position, lod_index)) {
+			/* print_line(
+					String("***no computed light yet for pos=") + String(mesh_block_position) + String(" lod=") +
+					itos(lod_index) + String(", skipping texture extraction")
+			);*/
+			// light_surface.was_computed stays false; nothing further to do here.
+		} else {
+			const int block_size = data->get_block_size();
+			VoxelBuffer texture_gather_voxels(VoxelBuffer::ALLOCATOR_POOL);
+			print_line("***light dirty false. check for light in buffer");
+			// No flood needed: light was already computed previously and lives in stored CHANNEL_DATA5.
+			// Gather a small TEXTURE_BORDER-padded buffer of just that channel and extract from it directly.
 
-		VoxelBuffer texture_gather_voxels(VoxelBuffer::ALLOCATOR_POOL);
-		const VoxelFormat format = data->get_format();
-		format.configure_buffer(texture_gather_voxels);
+			const VoxelFormat format = data->get_format();
+			format.configure_buffer(texture_gather_voxels);
 
-		copy_block_and_neighbors(
-				to_span(blocks, blocks_count),
-				texture_gather_voxels,
-				TEXTURE_BORDER,
-				TEXTURE_BORDER,
-				(1 << VoxelBuffer::CHANNEL_DATA5),
-				meshing_dependency->generator,
-				*data,
-				lod_index,
-				mesh_block_position,
-				nullptr,
-				nullptr
-		);
-
-		Span<const uint8_t> stored_light;
-		if (texture_gather_voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_DATA5, stored_light)) {
-			StdVector<uint8_t> big_buf;
-			big_buf.resize(stored_light.size());
-			memcpy(big_buf.data(), stored_light.data(), stored_light.size());
-			extract_light_slices(
-					big_buf, texture_gather_voxels.get_size(), TEXTURE_BORDER, block_size, _surfaces_output
+			copy_block_and_neighbors(
+					to_span(blocks, blocks_count),
+					texture_gather_voxels,
+					TEXTURE_BORDER,
+					TEXTURE_BORDER,
+					(1 << VoxelBuffer::CHANNEL_DATA5),
+					meshing_dependency->generator,
+					*data,
+					lod_index,
+					mesh_block_position,
+					nullptr,
+					nullptr
 			);
-		}
+
+			Span<const uint8_t> stored_light;
+			if (texture_gather_voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_DATA5, stored_light)) {
+				StdVector<uint8_t> big_buf;
+				big_buf.resize(stored_light.size());
+				memcpy(big_buf.data(), stored_light.data(), stored_light.size());
+				extract_light_slices(
+						big_buf, texture_gather_voxels.get_size(), TEXTURE_BORDER, block_size, _surfaces_output
+				);
+			}
 		// If CHANNEL_DATA5 was never computed for this block (still COMPRESSION_UNIFORM), leave light_surface unset update_light_texture simply won't be called for it downstream.
+		}
 	}
 
 
@@ -879,7 +909,7 @@ void MeshBlockTask::gather_light_only() {
 	ZN_ASSERT(data != nullptr);
 
 	if (light_mode == LIGHT_MODE_FLOOD_ONLY) {
-		print_line("!!!LIGHT_MODE_FLOOD_ONLY _ copy_block_and_neighbors");
+		//print_line("!!!LIGHT_MODE_FLOOD_ONLY _ copy_block_and_neighbors");
 		const VoxelFormat format = data->get_format();
 		format.configure_buffer(_light_voxels);
 

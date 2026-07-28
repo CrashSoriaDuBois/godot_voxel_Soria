@@ -823,6 +823,18 @@ void VoxelData::propagate_channel_upward(Vector3i lod0_bpos, unsigned int channe
 	}
 }
 
+bool VoxelData::has_computed_light(Vector3i bpos, unsigned int lod_index) const {
+	const Lod &lod = _lods[lod_index];
+
+	RWLockRead rlock(lod.map_lock);
+	const VoxelDataBlock *block = lod.map.get_block(bpos);
+	if (block == nullptr || !block->has_voxels()) {
+		return false;
+	}
+	return block->get_voxels_const().get_channel_compression(VoxelBuffer::CHANNEL_DATA5) !=
+			VoxelBuffer::COMPRESSION_UNIFORM;
+}
+
 void VoxelData::mark_area_modified_if_unedited(
 		Box3i p_voxel_box,
 		StdVector<Vector3i> *lod0_new_blocks_to_lod,
