@@ -208,7 +208,7 @@ void VoxelToolMultipassGenerator::_set_voxel_f(Vector3i pos, float v) {
 	block->voxels.set_voxel_f(v, rpos, _channel);
 }
 
-void VoxelToolMultipassGenerator::_post_edit(const Box3i &box) {
+void VoxelToolMultipassGenerator::_post_edit(const Box3i &box, bool p_relevant) {
 	// Nothing to do
 }
 
@@ -228,7 +228,7 @@ Vector3i VoxelToolMultipassGenerator::get_main_area_max() const {
 	return (_pass_input.main_block_position + Vector3i(1, _pass_input.grid_size.y, 1)) << _block_size_po2;
 }
 
-void VoxelToolMultipassGenerator::do_path(Span<const Vector3> positions, Span<const float> radii) {
+void VoxelToolMultipassGenerator::do_path(Span<const Vector3> positions, Span<const float> radii, bool p_relevant) {
 	struct GridAccess {
 		PassInput *pass_input;
 		unsigned int block_size_po2;

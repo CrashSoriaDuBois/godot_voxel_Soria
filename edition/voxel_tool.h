@@ -70,15 +70,15 @@ public:
 
 	// The following methods represent one edit each. Pick the correct one for the job.
 	// For example, using `do_box` will be more efficient than calling `do_point` many times.
-	virtual void set_voxel(Vector3i pos, uint64_t v);
-	virtual void set_voxel_f(Vector3i pos, float v);
-	virtual void do_point(Vector3i pos);
-	virtual void do_sphere(Vector3 p_center, float radius);
-	virtual void do_box(Vector3i begin, Vector3i end);
-	virtual void do_path(Span<const Vector3> positions, Span<const float> radii);
-#ifdef VOXEL_ENABLE_MESH_SDF
+	virtual void set_voxel(Vector3i pos, uint64_t v, bool p_relevant = false);
+	virtual void set_voxel_f(Vector3i pos, float v, bool p_relevant = false);
+	virtual void do_point(Vector3i pos, bool p_relevant = false);
+	virtual void do_sphere(Vector3 p_center, float radius, bool p_relevant = false);
+	virtual void do_box(Vector3i begin, Vector3i end, bool p_relevant = false);
+	virtual void do_path(Span<const Vector3> positions, Span<const float> radii, bool p_relevant = false);
+	#ifdef VOXEL_ENABLE_MESH_SDF
 	virtual void do_mesh(const VoxelMeshSDF &mesh_sdf, const Transform3D &transform, const float isolevel);
-#endif
+	#endif
 
 	void sdf_stamp_erase(Ref<godot::VoxelBuffer> stamp, Vector3i pos);
 	void sdf_stamp_erase(const VoxelBuffer &stamp, Vector3i pos);
@@ -141,13 +141,14 @@ protected:
 	virtual float _get_voxel_f(Vector3i pos) const;
 	virtual void _set_voxel(Vector3i pos, uint64_t v);
 	virtual void _set_voxel_f(Vector3i pos, float v);
-	virtual void _post_edit(const Box3i &box);
+	virtual void _post_edit(const Box3i &box, bool p_relevant = false);
 
 	void do_path_chunked(
 			VoxelData &vdata,
 			Span<const Vector3> positions,
 			Span<const float> radii,
-			const bool with_pre_generate
+			const bool with_pre_generate,
+			bool p_relevant = false
 	);
 
 #ifdef VOXEL_ENABLE_MESH_SDF
@@ -169,10 +170,10 @@ private:
 	void _b_set_voxel(Vector3i pos, uint64_t v);
 	void _b_set_voxel_f(Vector3i pos, float v);
 	Ref<VoxelRaycastResult> _b_raycast(Vector3 pos, Vector3 dir, float max_distance, uint32_t collision_mask);
-	void _b_do_point(Vector3i pos);
-	void _b_do_sphere(Vector3 pos, float radius);
-	void _b_do_box(Vector3i begin, Vector3i end);
-	void _b_do_path(PackedVector3Array positions, PackedFloat32Array radii);
+	void _b_do_point(Vector3i pos, bool relevant);
+	void _b_do_sphere(Vector3 pos, float radius, bool relevant);
+	void _b_do_box(Vector3i begin, Vector3i end, bool relevant);
+	void _b_do_path(PackedVector3Array positions, PackedFloat32Array radii, bool relevant);
 #ifdef VOXEL_ENABLE_MESH_SDF
 	void _b_do_mesh(Ref<VoxelMeshSDF> mesh_sdf, Transform3D transform, float isolevel);
 #endif

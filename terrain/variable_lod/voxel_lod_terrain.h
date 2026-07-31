@@ -140,7 +140,7 @@ public:
 	bool get_cache_generated_blocks() const;
 
 	// These must be called after an edit
-	void post_edit_area(Box3i p_box, bool update_mesh);
+	void post_edit_area(Box3i p_box, bool update_mesh, bool p_relevant = true);
 	void _b_post_edit_area(AABB aabb, bool update_mesh);
 
 	void post_edit_modifiers(Box3i p_voxel_box);
@@ -149,7 +149,7 @@ public:
 	void _b_post_edit_area_if_unedited(AABB aabb, bool update_mesh);
 
 	// TODO This still sucks atm cuz the edit will still run on the main thread
-	void push_async_edit(IThreadedTask *task, Box3i box, std::shared_ptr<AsyncDependencyTracker> tracker);
+	void push_async_edit(IThreadedTask *task, Box3i box, std::shared_ptr<AsyncDependencyTracker> tracker,  bool relevant = true);
 	void abort_async_edits();
 
 	void set_voxel_bounds(Box3i p_box);

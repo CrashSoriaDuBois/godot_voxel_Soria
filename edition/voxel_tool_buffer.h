@@ -24,16 +24,16 @@ public:
 	void set_voxel_metadata(const Vector3i pos, const Variant &meta) override;
 	Variant get_voxel_metadata(const Vector3i pos) const override;
 
-	void do_sphere(Vector3 center, float radius) override;
-	void do_box(Vector3i begin, Vector3i end) override;
-	void do_path(Span<const Vector3> positions, Span<const float> radii) override;
+	void do_sphere(Vector3 center, float radius, bool p_relevant = false) override;
+	void do_box(Vector3i begin, Vector3i end, bool p_relevant = false) override;
+	void do_path(Span<const Vector3> positions, Span<const float> radii, bool p_relevant = false) override;
 
 protected:
 	uint64_t _get_voxel(Vector3i pos) const override;
 	float _get_voxel_f(Vector3i pos) const override;
 	void _set_voxel(Vector3i pos, uint64_t v) override;
 	void _set_voxel_f(Vector3i pos, float v) override;
-	void _post_edit(const Box3i &box) override;
+	void _post_edit(const Box3i &box, bool p_relevant = false) override;
 
 private:
 	// When compiling with GodotCpp, `_bind_methods` is not optional.

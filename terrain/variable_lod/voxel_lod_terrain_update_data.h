@@ -228,11 +228,13 @@ struct VoxelLodTerrainUpdateData {
 		IThreadedTask *task;
 		Box3i box;
 		std::shared_ptr<AsyncDependencyTracker> task_tracker;
+		bool relevant = true;
 	};
 
 	struct RunningAsyncEdit {
 		std::shared_ptr<AsyncDependencyTracker> tracker;
 		Box3i box;
+		bool relevant = true;
 	};
 
 	struct Stats {
@@ -309,6 +311,11 @@ struct VoxelLodTerrainUpdateData {
 		BinaryMutex loaded_mesh_blocks_mutex;
 	};
 
+	struct EditedVoxelArea {
+		Box3i box;
+		bool relevant = true;
+	};
+
 	struct EditNotificationInputs {
 		// Entry point for notifying data changes, which will cause data LODs and mesh updates.
 		// Contains blocks that were edited and need their LOD counterparts to be updated.
@@ -319,7 +326,7 @@ struct VoxelLodTerrainUpdateData {
 		// Used specifically to update meshes
 		// TODO Maybe we could use only that? The reason we have edited blocks separately is because edits might affect
 		// only specific blocks and not the full area
-		StdVector<Box3i> edited_voxel_areas_lod0;
+		StdVector<EditedVoxelArea> edited_voxel_areas_lod0;
 
 		BinaryMutex mutex;
 	};

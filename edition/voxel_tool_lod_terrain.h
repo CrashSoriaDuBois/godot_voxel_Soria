@@ -21,9 +21,9 @@ public:
 
 	bool is_area_editable(const Box3i &box) const override;
 	Ref<VoxelRaycastResult> raycast(Vector3 pos, Vector3 dir, float max_distance, uint32_t collision_mask) override;
-	void do_box(Vector3i begin, Vector3i end) override;
-	void do_sphere(Vector3 center, float radius) override;
-	void do_path(Span<const Vector3> positions, Span<const float> radii) override;
+	void do_box(Vector3i begin, Vector3i end, bool p_relevant = false) override;
+	void do_sphere(Vector3 center, float radius, bool p_relevant = false) override;
+	void do_path(Span<const Vector3> positions, Span<const float> radii, bool p_relevant = false) override;
 #ifdef VOXEL_ENABLE_MESH_SDF
 	void do_mesh(const VoxelMeshSDF &mesh_sdf, const Transform3D &transform, const float isolevel) override;
 #endif
@@ -43,7 +43,7 @@ public:
 	int get_raycast_binary_search_iterations() const;
 	void set_raycast_binary_search_iterations(int iterations);
 	void do_sphere_async(Vector3 center, float radius);
-	void do_hemisphere(Vector3 center, float radius, Vector3 flat_direction, float smoothness);
+	void do_hemisphere(Vector3 center, float radius, Vector3 flat_direction, float smoothness, bool p_relevant = false);
 	float get_voxel_f_interpolated(Vector3 position) const override;
 
 	// TODO GDX: it seems binding a method taking a `Node*` fails to compile. It is supposed to be working.
@@ -74,7 +74,7 @@ protected:
 	float _get_voxel_f(Vector3i pos) const override;
 	void _set_voxel(Vector3i pos, uint64_t v) override;
 	void _set_voxel_f(Vector3i pos, float v) override;
-	void _post_edit(const Box3i &box) override;
+	void _post_edit(const Box3i &box, bool p_relevant = false) override;
 
 private:
 	static void _bind_methods();

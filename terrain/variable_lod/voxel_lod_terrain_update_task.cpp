@@ -565,8 +565,8 @@ void process_async_edits(
 
 			boxes_to_preload.push_back(edit.box);
 			tasks_to_schedule.push_back(edit.task);
-			state.running_async_edits.push_back( //
-					VoxelLodTerrainUpdateData::RunningAsyncEdit{ edit.task_tracker, edit.box }
+			state.running_async_edits.push_back(
+					VoxelLodTerrainUpdateData::RunningAsyncEdit{ edit.task_tracker, edit.box, edit.relevant }
 			);
 		}
 
@@ -658,7 +658,7 @@ void VoxelLodTerrainUpdateTask::flush_pending_lod_edits(
 	ZN_PROFILE_SCOPE();
 
 	static thread_local StdVector<Vector3i> tls_modified_lod0_blocks;
-	static thread_local StdVector<Box3i> tls_modified_voxel_areas_lod0;
+	static thread_local StdVector<VoxelLodTerrainUpdateData::EditedVoxelArea> tls_modified_voxel_areas_lod0;
 	// static thread_local StdVector<VoxelData::BlockLocation> tls_updated_block_locations;
 
 	tls_modified_lod0_blocks.clear();
@@ -688,51 +688,50 @@ void VoxelLodTerrainUpdateTask::flush_pending_lod_edits(
 		VoxelLodTerrainUpdateData::Lod &lod = state.lods[lod_index];
 		const int mesh_block_size_at_lod = mesh_block_size << lod_index;
 
-		for (const Box3i voxel_box : tls_modified_voxel_areas_lod0) {
-			// Padding is required for edits near chunk borders, which can affect multiple meshes despite only affecting
-			// one data block
-
-			// Narrow box: blocks whose geometry actually needs to change
+		for (const VoxelLodTerrainUpdateData::EditedVoxelArea &edited_area : tls_modified_voxel_areas_lod0) {
+			const Box3i voxel_box = edited_area.box;
 			const Box3i padded_voxel_box = voxel_box.padded(1);
 			const Box3i mesh_block_box = padded_voxel_box.downscaled(mesh_block_size_at_lod);
 
-			mesh_block_box.for_each_cell([&lod](Vector3i mesh_block_pos) {
+			bool relevant_to_light = false; // conservative default if no baked library available
+
+
+			// Your new filter: an edit explicitly marked not-relevant skips light re-flooding entirely, regardless of what the emitter scan found.
+			relevant_to_light = edited_area.relevant;
+
+			mesh_block_box.for_each_cell([&lod, relevant_to_light](Vector3i mesh_block_pos) {
 				auto mesh_block_it = lod.mesh_map_state.map.find(mesh_block_pos);
 				if (mesh_block_it != lod.mesh_map_state.map.end()) {
-					// If a mesh block state exists here, it will need an update.
-					// If there is none, it will probably get created later when we come closer to it
-					mesh_block_it->second.light_dirty = true;
-					schedule_mesh_update( //
-							mesh_block_it->second, //
-							mesh_block_pos, //
-							lod.mesh_blocks_pending_update, //
-							mesh_block_it->second.mesh_viewers.get() > 0 //
-							// requires_geometry defaults to true
-					);
-				}
-			});
-
-			// Wide box: neighbors whose LIGHT_PADDING flood radius reaches into the edited area, but whose own geometry did NOT change
-			const Box3i light_padded_box = voxel_box.padded(LIGHT_PADDING);
-			const Box3i light_mesh_block_box = light_padded_box.downscaled(mesh_block_size_at_lod);
-
-			light_mesh_block_box.for_each_cell([&lod, &mesh_block_box](Vector3i mesh_block_pos) {
-				// Skip blocks already handled by the narrow geometry pass above
-				if (mesh_block_box.contains(mesh_block_pos)) {
-					return;
-				}
-				auto mesh_block_it = lod.mesh_map_state.map.find(mesh_block_pos);
-				if (mesh_block_it != lod.mesh_map_state.map.end()) {
-					mesh_block_it->second.light_dirty = true;//
+					mesh_block_it->second.light_dirty = relevant_to_light;
 					schedule_mesh_update(
 							mesh_block_it->second,
 							mesh_block_pos,
 							lod.mesh_blocks_pending_update,
-							mesh_block_it->second.mesh_viewers.get() > 0,
-							false // requires_geometry = false, light-only
+							mesh_block_it->second.mesh_viewers.get() > 0
 					);
 				}
 			});
+
+			if (relevant_to_light) {
+				const Box3i light_padded_box = voxel_box.padded(LIGHT_PADDING);
+				const Box3i light_mesh_block_box = light_padded_box.downscaled(mesh_block_size_at_lod);
+
+				light_mesh_block_box.for_each_cell([&lod, &mesh_block_box](Vector3i mesh_block_pos) {
+					if (mesh_block_box.contains(mesh_block_pos))
+						return;
+					auto mesh_block_it = lod.mesh_map_state.map.find(mesh_block_pos);
+					if (mesh_block_it != lod.mesh_map_state.map.end()) {
+						mesh_block_it->second.light_dirty = true;
+						schedule_mesh_update(
+								mesh_block_it->second,
+								mesh_block_pos,
+								lod.mesh_blocks_pending_update,
+								mesh_block_it->second.mesh_viewers.get() > 0,
+								false
+						);
+					}
+				});
+			}
 		}
 	}
 

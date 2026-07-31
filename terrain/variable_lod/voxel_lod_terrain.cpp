@@ -619,12 +619,14 @@ void VoxelLodTerrain::set_mesh_block_visual_active(
 
 // Marks intersecting blocks in the area as modified, updates LODs and schedules remeshing.
 // The provided box must be at LOD0 coordinates.
-void VoxelLodTerrain::post_edit_area(Box3i p_box, bool update_mesh) {
+void VoxelLodTerrain::post_edit_area(Box3i p_box, bool update_mesh, bool p_relevant) {
 	ZN_PROFILE_SCOPE();
 	{
 		MutexLock lock(_update_data->state.edit_notifications.mutex);
 		_data->mark_area_modified(p_box, &_update_data->state.edit_notifications.edited_blocks_lod0, update_mesh);
-		_update_data->state.edit_notifications.edited_voxel_areas_lod0.push_back(p_box);
+		_update_data->state.edit_notifications.edited_voxel_areas_lod0.push_back(
+				VoxelLodTerrainUpdateData::EditedVoxelArea{ p_box, p_relevant }
+		);
 	}
 
 #ifdef TOOLS_ENABLED
@@ -667,7 +669,7 @@ void VoxelLodTerrain::post_edit_area_if_unedited(Box3i p_box, bool update_mesh) 
 		_data->mark_area_modified_if_unedited(
 				p_box, &_update_data->state.edit_notifications.edited_blocks_lod0, update_mesh
 		);
-		_update_data->state.edit_notifications.edited_voxel_areas_lod0.push_back(p_box);
+		_update_data->state.edit_notifications.edited_voxel_areas_lod0.push_back(VoxelLodTerrainUpdateData::EditedVoxelArea{ p_box, false });
 	}
 }
 
@@ -691,7 +693,7 @@ void VoxelLodTerrain::post_edit_modifiers(Box3i p_voxel_box) {
 #endif
 }
 
-void VoxelLodTerrain::push_async_edit(IThreadedTask *task, Box3i box, std::shared_ptr<AsyncDependencyTracker> tracker) {
+void VoxelLodTerrain::push_async_edit(IThreadedTask *task, Box3i box, std::shared_ptr<AsyncDependencyTracker> tracker, bool relevant) {
 	CRASH_COND(task == nullptr);
 	CRASH_COND(tracker == nullptr);
 
@@ -699,6 +701,7 @@ void VoxelLodTerrain::push_async_edit(IThreadedTask *task, Box3i box, std::share
 	e.box = box;
 	e.task = task;
 	e.task_tracker = tracker;
+	e.relevant = relevant;
 
 	VoxelLodTerrainUpdateData::State &state = _update_data->state;
 	MutexLock lock(state.pending_async_edits_mutex);
@@ -1695,7 +1698,8 @@ void VoxelLodTerrain::apply_main_thread_update_tasks() {
 					// Won't be the case if changed only metadata, but so far there is no use case for using an async
 					// edit to change metadata. Metadata is not even used often in smooth terrains (which
 					// VoxelLodTerrain is mostly for)
-					true
+					true,
+					e.relevant
 			);
 			return true;
 

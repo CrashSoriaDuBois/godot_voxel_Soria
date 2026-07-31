@@ -54,9 +54,9 @@ public:
 			PackedInt32Array dst_writable_list
 	) override;
 
-	void do_box(Vector3i begin, Vector3i end) override;
-	void do_sphere(Vector3 center, float radius) override;
-	void do_path(Span<const Vector3> positions, Span<const float> radii) override;
+	void do_box(Vector3i begin, Vector3i end, bool p_relevant = false) override;
+	void do_sphere(Vector3 center, float radius, bool p_relevant = false) override;
+	void do_path(Span<const Vector3> positions, Span<const float> radii, bool p_relevant = false) override;
 #ifdef VOXEL_ENABLE_MESH_SDF
 	void do_mesh(const VoxelMeshSDF &mesh_sdf, const Transform3D &transform, const float isolevel) override;
 #endif
@@ -82,7 +82,7 @@ protected:
 	float _get_voxel_f(Vector3i pos) const override;
 	void _set_voxel(Vector3i pos, uint64_t v) override;
 	void _set_voxel_f(Vector3i pos, float v) override;
-	void _post_edit(const Box3i &box) override;
+	void _post_edit(const Box3i &box, bool p_relevant = false) override;
 
 private:
 	static void _bind_methods();
