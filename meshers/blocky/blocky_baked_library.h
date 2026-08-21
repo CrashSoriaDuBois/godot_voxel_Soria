@@ -132,6 +132,9 @@ struct BakedModel {
 	uint32_t tags_mask;
 	StdVector<AABB> box_collision_aabbs;
 
+	uint8_t light_emission = 0; // 0-15, how bright this block glows
+	uint8_t light_color_index = 0; // 0-15, which color it emits
+
 	inline void clear() {
 		model.clear();
 		empty = true;

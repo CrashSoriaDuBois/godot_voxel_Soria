@@ -1,4 +1,4 @@
-#include "voxel_mesher_blocky.h"
+﻿#include "voxel_mesher_blocky.h"
 #include "../../constants/cube_tables.h"
 #include "../../storage/voxel_buffer.h"
 #include "../../util/containers/span.h"
@@ -14,6 +14,8 @@
 #include "blocky_fluids_meshing_impl.h"
 #include "blocky_lod_skirts.h"
 #include "blocky_shadow_occluders.h"
+#include <queue>
+#include "../../util/string/format.h"
 
 using namespace zylann::godot;
 
@@ -38,6 +40,97 @@ struct NavmeshSurface {
 	StdVector<Vector3f> positions;
 	StdVector<int> indices;
 };
+
+inline uint8_t encode_light(uint8_t color, uint8_t intensity) {
+	return ((color & 0xF) << 4) | (intensity & 0xF);
+}
+inline uint8_t get_light_color(uint8_t v) {
+	return (v >> 4) & 0xF;
+}
+inline uint8_t get_light_intensity(uint8_t v) {
+	return v & 0xF;
+}
+
+template <typename Type_T>
+static void flood_fill_light(
+		const Span<const Type_T> type_buffer,
+		const Vector3i block_size,
+		const BakedLibrary &library,
+		StdVector<uint8_t> &out_light
+) {
+	const int volume = block_size.x * block_size.y * block_size.z;
+	out_light.assign(volume, 0);
+
+	struct LightNode {
+		int index;
+		uint8_t value;
+	};
+
+	// use std::queue — already included transitively, or add #include <queue>
+	std::queue<LightNode> queue;
+
+	const int row_size = block_size.y;
+	const int deck_size = block_size.x * row_size;
+	const int neighbor_offsets[6] = { row_size, -row_size, deck_size, -deck_size, 1, -1 };
+
+	// scan entire padded buffer for light emitters
+	for (int i = 0; i < volume; i++) {
+		const uint32_t voxel_id = static_cast<uint32_t>(type_buffer[i]);
+		if (voxel_id == AIR_ID || !library.has_model(voxel_id)) {
+			continue;
+		}
+		const BakedModel &model = library.models[voxel_id];
+		if (model.light_emission > 0) {
+			const uint8_t encoded = encode_light(model.light_color_index, model.light_emission);
+			out_light[i] = encoded;
+			queue.push({ i, encoded });
+
+			 print_line(
+					String("Found emitter at flat index ") + itos(i) + String(" voxel_id=") + itos(voxel_id) +
+					String(" emission=") + itos(model.light_emission)
+			);
+		}
+	}
+
+	print_line(String("FLOOD: seeds=") + itos((int)queue.size()) + String(" volume=") + itos(volume));
+
+	// BFS flood from all seeds simultaneously
+	while (!queue.empty()) {
+		const LightNode node = queue.front();
+		queue.pop();
+
+		const uint8_t intensity = get_light_intensity(node.value);
+		const uint8_t color = get_light_color(node.value);
+
+		if (intensity == 0) {
+			continue;
+		}
+		const uint8_t next_intensity = intensity - 1;
+
+		for (int n = 0; n < 6; n++) {
+			const int neighbor_idx = node.index + neighbor_offsets[n];
+			if (neighbor_idx < 0 || neighbor_idx >= volume) {
+				continue;
+			}
+
+			const uint32_t neighbor_type = static_cast<uint32_t>(type_buffer[neighbor_idx]);
+			if (neighbor_type != AIR_ID && library.has_model(neighbor_type)) {
+				// opaque blocks stop light
+				if (!library.models[neighbor_type].is_transparent) {
+					continue;
+				}
+			}
+
+			const uint8_t current_intensity = get_light_intensity(out_light[neighbor_idx]);
+			if (next_intensity > current_intensity) {
+				const uint8_t new_value = encode_light(color, next_intensity);
+				out_light[neighbor_idx] = new_value;
+				queue.push({ neighbor_idx, new_value });
+			}
+		}
+	}
+}
+
 //used by navmesh to desimate inner verts
 static void merge_navmesh_polygons(
 		const PackedVector3Array &tri_soup,
@@ -206,7 +299,9 @@ void generate_mesh(
 		const BakedLibrary &library,
 		const bool bake_occlusion,
 		const float baked_occlusion_darkness,
-		const TintSampler tint_sampler
+		const TintSampler tint_sampler,
+		const Span<const uint8_t> light_buffer,
+		const bool has_light
 ) {
 	// TODO Optimization: not sure if this mandates a template function. There is so much more happening in this
 	// function other than reading voxels, although reading is on the hottest path. It needs to be profiled. If
@@ -494,21 +589,25 @@ void generate_mesh(
 							arrays.colors.resize(arrays.colors.size() + vertex_count);
 							Color *w = arrays.colors.data() + append_index;
 
+							// compute light factor for this voxel face
+							float light_factor = 1.0f;
+							if (has_light) {
+								// Sample light from the air voxel on the other side of this face
+								const int neighbor_light_idx = voxel_index + side_neighbor_lut[side];
+								const uint8_t light_val = light_buffer[neighbor_light_idx];
+								const float raw = get_light_intensity(light_val) / 15.0f;
+								light_factor = 0.05f + raw * 0.95f;
+							}
+
 							if (bake_occlusion) {
 								for (unsigned int i = 0; i < vertex_count; ++i) {
 									const Vector3f vertex_pos = side_positions[i];
-
-									// General purpose occlusion colouring.
-									// TODO Optimize for cubes
-									// TODO Fix occlusion inconsistency caused by triangles orientation? Not sure if
-									// worth it
 									float shade = 0;
 									for (unsigned int j = 0; j < 4; ++j) {
 										unsigned int corner = Cube::g_side_corners[side][j];
 										if (shaded_corner[corner] != 0) {
 											float s = baked_occlusion_darkness *
 													static_cast<float>(shaded_corner[corner]);
-											// float k = 1.f - Cube::g_corner_position[corner].distance_to(v);
 											float k = 1.f -
 													math::distance_squared(Cube::g_corner_position[corner], vertex_pos);
 											if (k < 0.0) {
@@ -520,13 +619,13 @@ void generate_mesh(
 											}
 										}
 									}
-									const float gs = 1.0 - shade;
+									const float gs = (1.0f - shade) * light_factor;
 									w[i] = Color(gs, gs, gs) * modulate_color;
 								}
 
 							} else {
 								for (unsigned int i = 0; i < vertex_count; ++i) {
-									w[i] = modulate_color;
+									w[i] = modulate_color * light_factor;
 								}
 							}
 						}
@@ -783,6 +882,9 @@ void VoxelMesherBlocky::set_tint_mode(const VoxelMesherBlocky::TintMode new_mode
 }
 
 void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::Input &input) {
+
+	print_line(String("BUILD: light_dirty=") + (input.light_dirty ? "true" : "false"));
+
 	const VoxelBuffer::ChannelId channel = VoxelBuffer::CHANNEL_TYPE;
 	Parameters params;
 	{
@@ -862,6 +964,20 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 		navmesh_surface = &navmesh_surface_;
 	}
 
+	// light flood fill
+	const int padded_volume = block_size.x * block_size.y * block_size.z;
+	bool has_light = false;
+	if (input.light_dirty) {
+		cache.light_buffer.assign(padded_volume, 0);
+	} else {
+		// read existing light from CHANNEL_DATA5 if available
+		Span<const uint8_t> existing_light;
+		has_light = voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_DATA5, existing_light);
+		if (has_light) {
+			cache.light_buffer.assign(existing_light.data(), existing_light.data() + existing_light.size());
+		}
+	}
+
 	unsigned int material_count = 0;
 	{
 		// We can only access baked data. Only this data is made for multithreaded access.
@@ -879,6 +995,10 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 
 		switch (channel_depth) {
 			case VoxelBuffer::DEPTH_8_BIT:
+				if (input.light_dirty) {
+					blocky::flood_fill_light(raw_channel, block_size, library_baked_data, cache.light_buffer);
+					has_light = true;
+				}
 				blocky::generate_mesh(
 						arrays_per_material,
 						collision_surface,
@@ -888,7 +1008,9 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 						library_baked_data,
 						params.bake_occlusion,
 						baked_occlusion_darkness,
-						tint_sampler
+						tint_sampler,
+						to_span_const(cache.light_buffer),
+						has_light
 				);
 				if (input.lod_index > 0) {
 					blocky::append_skirts(
@@ -899,6 +1021,10 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 
 			case VoxelBuffer::DEPTH_16_BIT: {
 				Span<const uint16_t> model_ids = raw_channel.reinterpret_cast_to<const uint16_t>();
+				if (input.light_dirty) {
+					blocky::flood_fill_light(model_ids, block_size, library_baked_data, cache.light_buffer);
+					has_light = true;
+				}
 				blocky::generate_mesh(
 						arrays_per_material,
 						collision_surface,
@@ -908,7 +1034,9 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 						library_baked_data,
 						params.bake_occlusion,
 						baked_occlusion_darkness,
-						tint_sampler
+						tint_sampler,
+						to_span_const(cache.light_buffer),
+						has_light
 				);
 				if (input.lod_index > 0) {
 					blocky::append_skirts(model_ids, block_size, arrays_per_material, library_baked_data, tint_sampler);
@@ -940,6 +1068,27 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 			}
 		}
 	}
+
+	if (input.light_dirty && has_light) {
+		const int pad = VoxelMesherBlocky::PADDING;
+		const Vector3i inner = block_size - Vector3i(pad, pad, pad) * 2;
+		const int inner_volume = inner.x * inner.y * inner.z;
+		output.light_surface.data.resize(inner_volume);
+
+		for (int z = 0; z < inner.z; z++) {
+			for (int x = 0; x < inner.x; x++) {
+				for (int y = 0; y < inner.y; y++) {
+					const int pi = (y + pad) + (x + pad) * block_size.y + (z + pad) * block_size.x * block_size.y;
+					const int ii = y + x * inner.y + z * inner.x * inner.y;
+					output.light_surface.data[ii] = cache.light_buffer[pi];
+				}
+			}
+		}
+		output.light_surface.was_computed = true;
+	} else {
+		output.light_surface.was_computed = false;
+	}
+
 	if (navmesh_surface != nullptr && !navmesh_surface_.positions.empty()) {
 		const auto &positions = navmesh_surface_.positions;
 		const auto &indices = navmesh_surface_.indices;
@@ -1082,6 +1231,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 
 int VoxelMesherBlocky::get_used_channels_mask() const {
 	int mask = (1 << VoxelBuffer::CHANNEL_TYPE);
+	mask |= (1 << VoxelBuffer::CHANNEL_DATA5);
 	switch (get_tint_mode()) {
 		case TINT_NONE:
 			break;
