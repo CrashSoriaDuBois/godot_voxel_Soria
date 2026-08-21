@@ -198,7 +198,17 @@ public:
 		Vector3 grab_point_local;
 		Transform3D grab_target;
 		float grab_strength = 1.0f;
+
+		bool homing_to_disassemble = false;
+		Transform3D homing_target_t;
+		VoxelLodTerrain *homing_terrain = nullptr;
+		float homing_speed = 5.f;
+
+		uint64_t homing_start_msec = 0;
+		uint64_t homing_timeout_msec = 4000; //test diferent timeouts times
 	};
+
+	void begin_homing_disassemble(VoxelSubGrid *sg, const Transform3D &target_t, VoxelLodTerrain *terrain, float speed);
 
 private:
 	// -----------------------------------------------------------------------
@@ -414,6 +424,13 @@ private:
 	mutable RID _chunk_probe_shape;
 	mutable float _chunk_probe_shape_size = -1.f;
 
+	//__________________________________________________________
+	// disasembly
+	bool homing_to_disassemble = false;
+	Transform3D homing_target_t;
+	VoxelLodTerrain *homing_terrain = nullptr;
+	float homing_speed = 5.f;
+	void _drive_homing_disassembles(double delta);
 };
 
 } // namespace zylann::voxel

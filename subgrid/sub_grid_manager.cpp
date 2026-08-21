@@ -627,29 +627,35 @@ void SubGridManager::_process_mesh(double delta) {
 
 void SubGridManager::_process_physics(double delta) {
 	_drive_grabbed_ships(delta);
+	_drive_homing_disassembles(delta);
 	_update_rotations(delta);
 	_sync_all_transforms();
 	_process_ground_confirmations();
 }
 
 void SubGridManager::_update_rotations(double delta) {
+	static thread_local Vector<VoxelSubGrid *> pending_disassembles;
+	pending_disassembles.clear();
+
 	for (auto &[uuid, state] : _ships) {
 		if (state.load_state != LOADED || state.node == nullptr) {
 			continue;
 		}
 		if (state.node->is_root() && !state.node->get_metadata().is_terrain_anchored) {
-			continue; // only skip simulated roots, not terrain-anchored ones
+			continue;
 		}
-		// Advance sub-contraption angle and apply to AnimatableBody3D.
-		// advance_rotation() updates _target_angle_rad and returns the new transform.
 		if (state.animatable_body == nullptr) {
 			continue;
 		}
 
 		state.node->advance_rotation(delta);
+
+		if (state.node->check_auto_align_disassemble_ready()) {
+			pending_disassembles.push_back(state.node);
+		}
+
 		Transform3D local_t = state.node->compute_local_transform();
 
-		// World transform = parent's world transform * this contraption's local transform
 		Transform3D world_t;
 		if (!state.parent_uuid.is_empty()) {
 			ShipState *parent_state = _ships.getptr(state.parent_uuid);
@@ -657,31 +663,39 @@ void SubGridManager::_update_rotations(double delta) {
 				world_t = parent_state->node->get_global_transform() * local_t;
 			}
 		} else {
-			if (!state.node->_is_world_anchored) { // Not yet promoted/loaded correctly, skip
+			if (!state.node->_is_world_anchored) {
 				continue;
 			}
-			float rpm = state.node->get_angular_speed_rpm();
-			if (rpm == 0.0f) {
+			const float rpm = state.node->get_angular_speed_rpm();
+			const bool auto_aligning = state.node->is_auto_align_active();
+			if (rpm == 0.0f && !auto_aligning) {
 				state.animatable_body->set_global_transform(state.node->get_global_transform());
 				continue;
 			}
-			Vector3 facing = Vector3(state.node->get_metadata().rotation_axis).normalized();
-			Basis rotation_basis = Basis(facing, (real_t)state.node->get_target_angle_rad());
 
-			// pivot_in_child_local: same as compute_local_transform
+			Vector3 facing = Vector3(state.node->get_metadata().rotation_axis).normalized();
+			Basis rotation_basis =
+					Basis(Vector3(state.node->get_spin_axis()).normalized(),
+						  (real_t)state.node->get_target_angle_rad());
+
 			Vector3 pivot_in_child_local = Vector3(0.5f, 0.5f, 0.5f) - facing * 0.5f;
 
-			// Rotate child around the world pivot point
 			world_t.basis = rotation_basis;
-			world_t.origin = state.node->_promoted_pivot_world + facing * 0.5f // bearing face center offset
-					- rotation_basis.xform(pivot_in_child_local);
+			world_t.origin =
+					state.node->_promoted_pivot_world + facing * 0.5f - rotation_basis.xform(pivot_in_child_local);
 		}
 
-		// Drive AnimatableBody3D. this makes it push other physics objects
 		state.animatable_body->set_global_transform(world_t);
-
-		// Keep VoxelSubGrid node in sync so rendering follows
 		state.node->set_global_transform(world_t);
+	}
+
+	for (VoxelSubGrid *sg : pending_disassembles) {
+		if (sg->is_auto_align_pending_disassemble()) {
+			VoxelLodTerrain *terrain = sg->consume_auto_align_disassemble_terrain();
+			if (terrain != nullptr) {
+				sg->try_disassemble(terrain);
+			}
+		}
 	}
 }
 
@@ -1962,5 +1976,87 @@ bool SubGridManager::_generator_column_is_solid(Vector3i top_voxel, int sample_r
 	}
 	return false;
 }
+
+//________________________
+//disasembly
+void SubGridManager::begin_homing_disassemble(
+		VoxelSubGrid *sg,
+		const Transform3D &target_t,
+		VoxelLodTerrain *terrain,
+		float speed
+) {
+	String uuid = uuid_for_node(sg);
+	ShipState *state = _ships.getptr(uuid);
+	ERR_FAIL_COND_MSG(state == nullptr, "VoxelSubGrid not registered.");
+	ERR_FAIL_COND_MSG(!state->body_rid.is_valid(), "Cannot home a non-rigid subgrid.");
+
+	state->homing_to_disassemble = true;
+	state->homing_target_t = target_t;
+	state->homing_terrain = terrain;
+	state->homing_speed = MAX(speed, 0.1f);
+	state->homing_start_msec = Time::get_singleton()->get_ticks_msec();
+
+
+	//state->homing_speed = Math::max(speed, 0.1f);
+
+	// Force RIGID regardless of current suspension state, same reasoning as grab_subgrid: this sequence needs to actively drive the 
+	// body, suspension logic resumes control only if the sequence is cancelled/fails.
+	PhysicsServer3D::get_singleton()->body_set_mode(state->body_rid, PhysicsServer3D::BODY_MODE_RIGID);
+}
+
+
+void SubGridManager::_drive_homing_disassembles(double delta) {
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	const uint64_t now = Time::get_singleton()->get_ticks_msec();
+
+	for (auto &[uuid, state] : _ships) {
+		if (!state.homing_to_disassemble || !state.body_rid.is_valid()) {
+			continue;
+		}
+
+		Transform3D current = ps->body_get_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
+		Vector3 linear_error = state.homing_target_t.origin - current.origin;
+		Basis rotation_error_basis = state.homing_target_t.basis * current.basis.orthonormalized().inverse();
+		Vector3 axis; real_t angle;
+		rotation_error_basis.get_axis_angle(axis, angle);
+
+		const float linear_dist = linear_error.length();
+		const float angular_dist = Math::abs((float)angle);
+		const bool arrived = linear_dist < 0.02f && angular_dist < Math::deg_to_rad(1.0f);
+		const bool timed_out = (now - state.homing_start_msec) > state.homing_timeout_msec;
+
+		if (arrived || timed_out) {
+			// Snap is purely cosmetic here, the transform used for actual voxel placement is always homing_target_t (already verified 
+			// clear at command time), never wherever  physics actually left the body, even if it got stuck and never reached this spot.
+			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM, state.homing_target_t);
+			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, Vector3());
+			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
+
+			state.homing_to_disassemble = false;
+			VoxelLodTerrain *terrain = state.homing_terrain;
+			state.homing_terrain = nullptr;
+			Transform3D committed_t = state.homing_target_t;
+
+			if (terrain != nullptr && state.node != nullptr) {
+				state.node->try_disassemble_at(terrain, committed_t);
+			}
+			continue;
+		}
+
+		Vector3 linear_vel = linear_dist > 0.0001f ? (linear_error / linear_dist) * state.homing_speed : Vector3();
+		Vector3 angular_vel = angular_dist > 0.0001f ? axis.normalized() * (angle / MAX(delta, 0.001)) : Vector3();
+
+		// Cap angular speed to something reasonable relative to homing_speed rather than an unbounded division-by-delta value.
+		const float max_angular = Math::deg_to_rad(90.0) * state.homing_speed;
+		if (angular_vel.length() > max_angular) {
+			angular_vel = angular_vel.normalized() * max_angular;
+		}
+
+		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, linear_vel);
+		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, angular_vel);
+	}
+}
+
+
 
 } // namespace zylann::voxel

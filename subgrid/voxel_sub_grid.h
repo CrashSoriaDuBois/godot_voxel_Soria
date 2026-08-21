@@ -67,6 +67,24 @@ public:
 	void set_angular_speed_rpm(float rpm) {
 		_angular_speed_rpm = rpm;
 	}
+
+	float get_angular_speed_rpm() const {
+		return _angular_speed_rpm;
+	}
+
+	void set_rotation_axis(Vector3i axis) { //position of axis that rotates
+		_meta.rotation_axis = axis;
+	}
+	Vector3i get_rotation_axis() const {
+		return _meta.rotation_axis;
+	}
+
+	void set_spin_axis(Vector3i axis);
+
+	Vector3i get_spin_axis() const {
+		return _spin_axis;
+	}
+
 	void set_redstone_signal(bool powered);
 
 	// LOD
@@ -80,7 +98,27 @@ public:
 	void destroy();
 	void _close_stream();
 
-	void disassemble(class VoxelLodTerrain *terrain);
+	void try_disassemble(class VoxelLodTerrain *terrain);
+
+	void try_disassemble_at(VoxelLodTerrain *terrain, const Transform3D &placement_t);
+
+	void align_and_disassemble(float rpm, VoxelLodTerrain *terrain, bool upright_only, float snap_speed = 5.f);
+
+	void _paste_rotated_chunks_to_terrain(VoxelTool *tool, const Transform3D &placement_t);
+
+	bool advance_auto_align(double delta);
+
+	bool is_auto_align_pending_disassemble() const {
+		return _auto_align_pending_disassemble;
+	}
+	VoxelLodTerrain *consume_auto_align_disassemble_terrain() {
+		VoxelLodTerrain *t = _auto_align_terrain;
+		_auto_align_terrain = nullptr;
+		_auto_align_pending_disassemble = false;
+		return t;
+	}
+
+	bool _check_terrain_clear_for_transform(VoxelLodTerrain *terrain, const Transform3D &candidate_world_t);
 
 	// ACCESORIES
 	const SubGridMetadata &get_metadata() const {
@@ -113,10 +151,16 @@ public:
 
 	double get_target_angle_rad() const {return _target_angle_rad;}
 
-	float get_angular_speed_rpm() const { return _angular_speed_rpm; }
-
 	double advance_rotation(double delta);
 	Transform3D compute_local_transform() const;
+
+	//auto align
+	bool is_auto_align_active() const {
+		return _auto_align_active;
+	}
+	bool check_auto_align_disassemble_ready();
+
+	bool _check_subgrid_clear_for_transform(SubGridChunkMap &parent_chunks, const Transform3D &to_parent_t);
 
 protected:
 	// Godot virtuals. must be inside the class body
@@ -145,7 +189,22 @@ private:
 	bool _redstone_signal = false;
 	LockMode _lock_mode = LOCKED_DEFAULT;
 
-	// Typed list of child VoxelSubGrid nodes for fast iteration. (Godot child nodes are the authority - this is a cache)
+	// auto-align state
+	bool _auto_align_active = false;
+	float _auto_align_rpm = 0.f;
+	double _auto_align_target_rad = 0.0;
+	bool _auto_align_is_disassemble_root = false;
+	bool _auto_align_pending_disassemble = false;
+	VoxelLodTerrain *_auto_align_terrain = nullptr;
+
+	void _start_auto_align(float rpm, bool upright_only);
+	bool _update_auto_align(double delta); // true once THIS node's own angle has converged
+	Vector3i _spin_axis = _meta.rotation_axis; // default: same as mount face
+
+	static Basis _nearest_cardinal_basis(const Basis &b, bool upright_only);
+	bool _is_full_orientation_grid_aligned(float tolerance_degrees, bool upright_only) const;
+
+	// Typed list of child VoxelSubGrid nodes for fast iteration. (Godot child nodes are the authority, this is a cache)
 	Vector<ObjectID> _children;
 
 	// INTERNAL METHODS
@@ -154,7 +213,7 @@ private:
 
 	SubGridManager *_manager = nullptr;
 
-	void _disassemble_root_to_terrain(VoxelLodTerrain *terrain);
+	void _disassemble_root_to_terrain(VoxelLodTerrain *terrain, const Transform3D &placement_t);
 	void _disassemble_child_to_parent();
 
 };
