@@ -18,7 +18,7 @@ bool VoxelToolBuffer::is_area_editable(const Box3i &box) const {
 	return Box3i(Vector3i(), _buffer->get_buffer().get_size()).encloses(box);
 }
 
-void VoxelToolBuffer::do_sphere(Vector3 center, float radius) {
+void VoxelToolBuffer::do_sphere(Vector3 center, float radius, bool p_relevant) {
 	ERR_FAIL_COND(_buffer.is_null());
 	ZN_PROFILE_SCOPE();
 
@@ -41,7 +41,7 @@ void VoxelToolBuffer::do_sphere(Vector3 center, float radius) {
 	_post_edit(op.box);
 }
 
-void VoxelToolBuffer::do_box(Vector3i begin, Vector3i end) {
+void VoxelToolBuffer::do_box(Vector3i begin, Vector3i end, bool p_relevant) {
 	ERR_FAIL_COND(_buffer.is_null());
 	ZN_PROFILE_SCOPE();
 
@@ -106,7 +106,7 @@ void VoxelToolBuffer::_set_voxel_f(Vector3i pos, float v) {
 	return _buffer->set_voxel_f(v, pos.x, pos.y, pos.z, _channel);
 }
 
-void VoxelToolBuffer::_post_edit(const Box3i &box) {
+void VoxelToolBuffer::_post_edit(const Box3i &box, bool p_relevant) {
 	ERR_FAIL_COND(_buffer.is_null());
 	// Nothing special to do
 }
@@ -184,7 +184,7 @@ void VoxelToolBuffer::paste_masked(
 	paste_src_masked(to_span(channels), src, mask_channel, mask_value, dst, p_pos, true);
 }
 
-void VoxelToolBuffer::do_path(Span<const Vector3> positions, Span<const float> radii) {
+void VoxelToolBuffer::do_path(Span<const Vector3> positions, Span<const float> radii, bool p_relevant) {
 	ZN_PROFILE_SCOPE();
 	ZN_ASSERT_RETURN(positions.size() >= 2);
 	ZN_ASSERT_RETURN(positions.size() == radii.size());

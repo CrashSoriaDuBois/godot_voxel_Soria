@@ -782,6 +782,106 @@ void VoxelData::mark_area_modified(
 	}
 }
 
+void VoxelData::mark_block_modified(Vector3i bpos, unsigned int lod_index) {
+	Lod &lod = _lods[lod_index];
+	SpatialLock3D::Write swlock(lod.spatial_lock, BoxBounds3i::from_position(bpos));
+	RWLockRead rlock(lod.map_lock);
+	VoxelDataBlock *block = lod.map.get_block(bpos);
+	if (block != nullptr) {
+		block->set_modified(true);
+	}
+}
+
+void VoxelData::propagate_channel_upward(Vector3i lod0_bpos, unsigned int channel_index) {
+	const unsigned int lod_count = get_lod_count();
+	const int data_block_size = get_block_size();
+	const int half_bs = data_block_size >> 1;
+
+	Vector3i src_bpos = lod0_bpos;
+
+	for (unsigned int dst_lod_index = 1; dst_lod_index < lod_count; ++dst_lod_index) {
+		const unsigned int src_lod_index = dst_lod_index - 1;
+		Lod &src_data_lod = _lods[src_lod_index];
+		Lod &dst_data_lod = _lods[dst_lod_index];
+		const Vector3i dst_bpos = src_bpos >> 1;
+
+		SpatialLock3D::Read srlock(src_data_lod.spatial_lock, BoxBounds3i::from_position(src_bpos));
+		SpatialLock3D::Write dwlock(dst_data_lod.spatial_lock, BoxBounds3i::from_position(dst_bpos));
+
+		VoxelDataBlock *src_block;
+		VoxelDataBlock *dst_block;
+		{
+			RWLockRead rlock(src_data_lod.map_lock);
+			src_block = src_data_lod.map.get_block(src_bpos);
+		}
+		{
+			RWLockRead rlock(dst_data_lod.map_lock);
+			dst_block = dst_data_lod.map.get_block(dst_bpos);
+		}
+
+		if (src_block == nullptr || dst_block == nullptr || !src_block->has_voxels() || !dst_block->has_voxels()) {
+			// Nothing to propagate further up (block missing or not cached)
+			break;
+		}
+
+		const Vector3i rel = src_bpos - (dst_bpos << 1);
+
+		// Only re-downscale this one channel, so we don't disturb SDF/type data that wasn't touched by this call (downscale_to loops all channels internally,
+		// but skips channels where src/dst are both uniform with equal defval, so this is safe as long as other channels haven't diverged, which they haven't here).
+		src_block->get_voxels().downscale_to(
+				dst_block->get_voxels(), Vector3i(), src_block->get_voxels_const().get_size(), rel * half_bs
+		);
+
+		dst_block->set_modified(true);
+
+		src_bpos = dst_bpos;
+	}
+}
+
+bool VoxelData::has_computed_light(Vector3i bpos, unsigned int lod_index) const {
+	const Lod &lod = _lods[lod_index];
+
+	RWLockRead rlock(lod.map_lock);
+	const VoxelDataBlock *block = lod.map.get_block(bpos);
+	if (block == nullptr || !block->has_voxels()) {
+		return false;
+	}
+	return block->get_voxels_const().get_channel_compression(VoxelBuffer::CHANNEL_DATA5) !=
+			VoxelBuffer::COMPRESSION_UNIFORM;
+}
+
+void VoxelData::mark_area_modified_if_unedited(
+		Box3i p_voxel_box,
+		StdVector<Vector3i> *lod0_new_blocks_to_lod,
+		bool require_lod_updates
+) {
+	const Box3i bbox = p_voxel_box.downscaled(get_block_size());
+	Lod &data_lod0 = _lods[0];
+	SpatialLock3D::Write swlock(data_lod0.spatial_lock, bbox);
+	RWLockRead rlock(data_lod0.map_lock);
+
+	bbox.for_each_cell([&data_lod0, lod0_new_blocks_to_lod, require_lod_updates](Vector3i block_pos_lod0) {
+		VoxelDataBlock *block = data_lod0.map.get_block(block_pos_lod0);
+		if (block == nullptr || !block->has_voxels()) {
+			return;
+		}
+		if (block->is_edited()) {
+			// Already a real edit, skip
+			return;
+		}
+
+		block->set_modified(true);
+		block->set_edited(true);
+
+		if (!block->get_needs_lodding() && require_lod_updates) {
+			block->set_needs_lodding(true);
+			if (lod0_new_blocks_to_lod != nullptr) {
+				lod0_new_blocks_to_lod->push_back(block_pos_lod0);
+			}
+		}
+	});
+}
+
 bool VoxelData::try_set_block(Vector3i block_position, const VoxelDataBlock &block) {
 	bool inserted = true;
 	try_set_block(block_position, block, [&inserted](VoxelDataBlock &existing, const VoxelDataBlock &incoming) {

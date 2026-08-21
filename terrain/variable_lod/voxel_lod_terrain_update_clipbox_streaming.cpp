@@ -781,6 +781,10 @@ void view_mesh_box(
 			// 	// reacting to data chunks being loaded
 			// 	schedule_mesh_load(lod.mesh_blocks_pending_update, bpos, *mesh_block, require_visuals);
 			// }
+		//	const Vector3i data_bpos = bpos * mesh_to_data_factor; // this position is the mesh block's origin in data-block units
+		//	if (voxel_data.has_computed_light(data_bpos, lod_index)) {
+		//		mesh_block->light_dirty = false;
+		//	}
 
 		} else {
 			mesh_block = &mesh_block_it->second;

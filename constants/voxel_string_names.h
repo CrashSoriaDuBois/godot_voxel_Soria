@@ -49,6 +49,8 @@ public:
 	StringName u_voxel_virtual_texture_tile_size;
 	StringName u_voxel_virtual_texture_offset_scale;
 	StringName u_voxel_lod_info;
+	StringName u_block_size;
+	StringName u_texture_border;
 
 #ifdef DEBUG_ENABLED
 	StringName _voxel_debug_vt_position;

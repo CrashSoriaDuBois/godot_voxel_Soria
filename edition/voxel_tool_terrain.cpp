@@ -113,7 +113,7 @@ void VoxelToolTerrain::paste_masked_writable_list(
 	_post_edit(Box3i(pos, p_voxels->get_buffer().get_size()));
 }
 
-void VoxelToolTerrain::do_box(Vector3i begin, Vector3i end) {
+void VoxelToolTerrain::do_box(Vector3i begin, Vector3i end, bool p_relevant) {
 	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND(_terrain == nullptr);
 
@@ -155,7 +155,7 @@ void VoxelToolTerrain::do_box(Vector3i begin, Vector3i end) {
 	_post_edit(op.box);
 }
 
-void VoxelToolTerrain::do_sphere(Vector3 center, float radius) {
+void VoxelToolTerrain::do_sphere(Vector3 center, float radius, bool p_relevant) {
 	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND(_terrain == nullptr);
 
@@ -242,7 +242,7 @@ void VoxelToolTerrain::_set_voxel_f(Vector3i pos, float v) {
 	_terrain->get_storage().try_set_voxel_f(v, pos, _channel);
 }
 
-void VoxelToolTerrain::_post_edit(const Box3i &box) {
+void VoxelToolTerrain::_post_edit(const Box3i &box, bool p_relevant) {
 	ERR_FAIL_COND(_terrain == nullptr);
 	_terrain->post_edit_area(box, true);
 }
@@ -354,7 +354,7 @@ void VoxelToolTerrain::for_each_voxel_metadata_in_area(AABB voxel_area, const Ca
 	});
 }
 
-void VoxelToolTerrain::do_path(Span<const Vector3> positions, Span<const float> radii) {
+void VoxelToolTerrain::do_path(Span<const Vector3> positions, Span<const float> radii, bool p_relevant) {
 	ZN_ASSERT_RETURN(_terrain != nullptr);
 	do_path_chunked(_terrain->get_storage(), positions, radii, false);
 }

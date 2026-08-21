@@ -69,16 +69,16 @@ public:
 			VoxelLodTerrainUpdateData::MeshBlockState &block,
 			const Vector3i bpos,
 			StdVector<VoxelLodTerrainUpdateData::MeshToUpdate> &blocks_pending_update,
-			const bool require_visual
+			const bool require_visual,
+			const bool requires_geometry = true
 	) {
 		if (block.state != VoxelLodTerrainUpdateData::MESH_UPDATE_NOT_SENT) {
 			if (block.visual_active || block.collision_active) {
 				// Schedule an update
 				block.state = VoxelLodTerrainUpdateData::MESH_UPDATE_NOT_SENT;
 				block.update_list_index = blocks_pending_update.size();
-				blocks_pending_update.push_back(
-						VoxelLodTerrainUpdateData::MeshToUpdate{ bpos, TaskCancellationToken(), require_visual }
-				);
+				blocks_pending_update.push_back(VoxelLodTerrainUpdateData::MeshToUpdate{
+						bpos, TaskCancellationToken(), require_visual, requires_geometry });
 			} else {
 				// Just mark it as needing update, so the visibility system will schedule its update when needed.
 				block.state = VoxelLodTerrainUpdateData::MESH_NEED_UPDATE;

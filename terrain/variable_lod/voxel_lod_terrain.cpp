@@ -265,6 +265,14 @@ void VoxelLodTerrain::set_material(Ref<Material> p_material) {
 							encode_lod_info_for_shader_uniform(lod_index, lod_count)
 					);
 				}
+				sm->set_shader_parameter(
+						VoxelStringNames::get_singleton().u_block_size,
+						static_cast<int>(get_data_block_size() << lod_index)
+				);
+				sm->set_shader_parameter(
+						VoxelStringNames::get_singleton().u_texture_border,
+						static_cast<int>(TEXTURE_BORDER << lod_index)
+				);
 				block.set_shader_material(sm);
 			});
 		}
@@ -611,12 +619,14 @@ void VoxelLodTerrain::set_mesh_block_visual_active(
 
 // Marks intersecting blocks in the area as modified, updates LODs and schedules remeshing.
 // The provided box must be at LOD0 coordinates.
-void VoxelLodTerrain::post_edit_area(Box3i p_box, bool update_mesh) {
+void VoxelLodTerrain::post_edit_area(Box3i p_box, bool update_mesh, bool p_relevant) {
 	ZN_PROFILE_SCOPE();
 	{
 		MutexLock lock(_update_data->state.edit_notifications.mutex);
 		_data->mark_area_modified(p_box, &_update_data->state.edit_notifications.edited_blocks_lod0, update_mesh);
-		_update_data->state.edit_notifications.edited_voxel_areas_lod0.push_back(p_box);
+		_update_data->state.edit_notifications.edited_voxel_areas_lod0.push_back(
+				VoxelLodTerrainUpdateData::EditedVoxelArea{ p_box, p_relevant }
+		);
 	}
 
 #ifdef TOOLS_ENABLED
@@ -645,6 +655,29 @@ void VoxelLodTerrain::post_edit_area(Box3i p_box, bool update_mesh) {
 #endif
 }
 
+void VoxelLodTerrain::_b_post_edit_area(AABB aabb, bool update_mesh) {
+	ERR_FAIL_COND(!math::is_valid_size(aabb.size));
+	post_edit_area(Box3i(math::round_to_int(aabb.position), math::round_to_int(aabb.size)), update_mesh);
+}
+
+void VoxelLodTerrain::post_edit_area_if_unedited(Box3i p_box, bool update_mesh) {
+	ZN_PROFILE_SCOPE();
+
+	_data->pre_generate_box(p_box);
+	{
+		MutexLock lock(_update_data->state.edit_notifications.mutex);
+		_data->mark_area_modified_if_unedited(
+				p_box, &_update_data->state.edit_notifications.edited_blocks_lod0, update_mesh
+		);
+		_update_data->state.edit_notifications.edited_voxel_areas_lod0.push_back(VoxelLodTerrainUpdateData::EditedVoxelArea{ p_box, false });
+	}
+}
+
+void VoxelLodTerrain::_b_post_edit_area_if_unedited(AABB aabb, bool update_mesh) {
+	ERR_FAIL_COND(!math::is_valid_size(aabb.size));
+	post_edit_area_if_unedited(Box3i(math::round_to_int(aabb.position), math::round_to_int(aabb.size)), update_mesh);
+}
+
 void VoxelLodTerrain::post_edit_modifiers(Box3i p_voxel_box) {
 	// clear_cached_blocks_in_voxel_area(*_data, p_voxel_box);
 	_data->clear_cached_blocks_in_voxel_area(p_voxel_box);
@@ -660,7 +693,7 @@ void VoxelLodTerrain::post_edit_modifiers(Box3i p_voxel_box) {
 #endif
 }
 
-void VoxelLodTerrain::push_async_edit(IThreadedTask *task, Box3i box, std::shared_ptr<AsyncDependencyTracker> tracker) {
+void VoxelLodTerrain::push_async_edit(IThreadedTask *task, Box3i box, std::shared_ptr<AsyncDependencyTracker> tracker, bool relevant) {
 	CRASH_COND(task == nullptr);
 	CRASH_COND(tracker == nullptr);
 
@@ -668,6 +701,7 @@ void VoxelLodTerrain::push_async_edit(IThreadedTask *task, Box3i box, std::share
 	e.box = box;
 	e.task = task;
 	e.task_tracker = tracker;
+	e.relevant = relevant;
 
 	VoxelLodTerrainUpdateData::State &state = _update_data->state;
 	MutexLock lock(state.pending_async_edits_mutex);
@@ -1675,7 +1709,8 @@ void VoxelLodTerrain::apply_main_thread_update_tasks() {
 					// Won't be the case if changed only metadata, but so far there is no use case for using an async
 					// edit to change metadata. Metadata is not even used often in smooth terrains (which
 					// VoxelLodTerrain is mostly for)
-					true
+					true,
+					e.relevant
 			);
 			return true;
 
@@ -1948,6 +1983,19 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 
 	VoxelMesher::Output &mesh_data = ob.surfaces;
 
+	if (ob.light_only) {
+		if (block == nullptr) {
+			// No mesh block exists here (never meshed, or was unloaded). Nothing to light.
+			return;
+		}
+		if (ob.surfaces.light_surface.was_computed) {
+			block->update_light_texture(
+					ob.surfaces.light_surface.texture_data, get_data_block_size() + 2 * TEXTURE_BORDER
+			);
+		}
+		return;
+	}
+
 	Ref<ArrayMesh> mesh;
 	Ref<ArrayMesh> shadow_occluder_mesh;
 	if (ob.visual_was_required && visual_expected) {
@@ -2081,6 +2129,16 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 							encode_lod_info_for_shader_uniform(ob.lod, lod_count)
 					);
 				}
+				if (sm.is_valid()) {
+					sm->set_shader_parameter(
+							VoxelStringNames::get_singleton().u_block_size,
+							static_cast<int>(get_data_block_size() << ob.lod)
+					);
+					sm->set_shader_parameter(
+							VoxelStringNames::get_singleton().u_texture_border,
+							static_cast<int>(TEXTURE_BORDER << ob.lod)
+					);
+				}
 
 				// Set individual shader material, because each block can have dynamic parameters,
 				// used to smooth seams without re-uploading meshes and allow to implement LOD fading
@@ -2112,6 +2170,28 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 				shadow_occluder_mode
 #endif
 		);
+
+		if (ob.surfaces.light_surface.was_computed) {
+			block->update_light_texture(ob.surfaces.light_surface.texture_data, get_data_block_size() + 2 * TEXTURE_BORDER);
+		}
+
+		/*// ADD neighbor light updates:
+		if (ob.lod == 0) {
+			for (int i = 0; i < 26; ++i) {
+				const VoxelMesher::Output::NeighborLightSurface &neighbor = ob.surfaces.neighbor_light_surfaces[i];
+				if (!neighbor.valid) {
+					continue;
+				}
+				// Calculate neighbor block position
+				const Vector3i neighbor_bpos = ob.position + neighbor.offset;
+				VoxelMeshBlockVLT *neighbor_block = mesh_map.get_block(neighbor_bpos);
+				if (neighbor_block == nullptr) {
+					continue;
+				}
+				// Update only the texture, no remesh
+				//neighbor_block->update_light_texture(neighbor.data, get_data_block_size());
+			}
+		}*/
 
 		if (assign_material_after_mesh) {
 			// Do this after assigning the mesh when not using a ShaderMaterial.
@@ -2171,18 +2251,83 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 				block->update_navmesh(ob.surfaces.navmesh_surface_mesh, get_global_transform(), nav_map);
 			}
 			if (ob.lod == 0 && ob.surfaces.light_surface.was_computed && !ob.surfaces.light_surface.data.empty()) {
-				SpatialLock3D::Write swlock(
-						_data->get_spatial_lock(0), BoxBounds3i(ob.position, ob.position + Vector3i(1, 1, 1))
-				);
-				std::shared_ptr<VoxelBuffer> vb = _data->try_get_block_voxels(ob.position);
-				if (vb != nullptr) {
-					const size_t expected = ob.surfaces.light_surface.data.size();
-					const size_t actual = vb->get_volume();
-					if (expected == actual) {
-						vb->decompress_channel(VoxelBuffer::CHANNEL_DATA5);
-						Span<uint8_t> dst;
-						if (vb->get_channel_as_bytes(VoxelBuffer::CHANNEL_DATA5, dst)) {
-							memcpy(dst.data(), ob.surfaces.light_surface.data.data(), expected);
+				bool wrote = false;
+				{
+					SpatialLock3D::Write swlock(
+							_data->get_spatial_lock(0), BoxBounds3i(ob.position, ob.position + Vector3i(1, 1, 1))
+					);
+					std::shared_ptr<VoxelBuffer> vb = _data->try_get_block_voxels(ob.position);
+					if (vb != nullptr) {
+						const size_t expected = ob.surfaces.light_surface.data.size();
+						if (expected == vb->get_volume()) {
+							vb->decompress_channel(VoxelBuffer::CHANNEL_DATA5);
+							Span<uint8_t> dst;
+							if (vb->get_channel_as_bytes(VoxelBuffer::CHANNEL_DATA5, dst)) {
+								memcpy(dst.data(), ob.surfaces.light_surface.data.data(), expected);
+								wrote = true;
+							}
+						}
+					}
+				}
+				if (wrote) {
+					_data->mark_block_modified(ob.position, 0);
+					Vector3i single[1] = { ob.position };
+					_data->update_lods(Span<const Vector3i>(single, 1), nullptr);
+				}
+			}
+
+			if (ob.light_only) {
+				if (block == nullptr)
+					return;
+				if (ob.surfaces.light_surface.was_computed) {
+					block->update_light_texture(
+							ob.surfaces.light_surface.texture_data, get_data_block_size() + 2 * TEXTURE_BORDER
+					);
+				}
+				return;
+			}
+
+			if (ob.lod == 0 && ob.surfaces.light_surface.was_computed) {
+				for (int i = 0; i < 26; ++i) {
+					const VoxelMesher::Output::NeighborLightSurface &nl = ob.surfaces.neighbor_light_surfaces[i];
+
+					if (!nl.valid || nl.data.empty()) {
+						continue;
+					}
+
+					const Vector3i neighbor_pos = ob.position + nl.offset;
+
+					// Write light data into neighbor's CHANNEL_DATA5
+					{
+						SpatialLock3D::Write swlock(
+								_data->get_spatial_lock(0), BoxBounds3i(neighbor_pos, neighbor_pos + Vector3i(1, 1, 1))
+						);
+						std::shared_ptr<VoxelBuffer> vb = _data->try_get_block_voxels(neighbor_pos);
+						if (vb != nullptr && nl.data.size() == vb->get_volume()) {
+							vb->decompress_channel(VoxelBuffer::CHANNEL_DATA5);
+							Span<uint8_t> dst;
+							if (vb->get_channel_as_bytes(VoxelBuffer::CHANNEL_DATA5, dst)) {
+								memcpy(dst.data(), nl.data.data(), nl.data.size());
+							}
+						}
+					}
+
+					// Schedule neighbor re-mesh with light_dirty=false
+					// so it reads CHANNEL_DATA5 instead of re-flooding
+					{
+						VoxelLodTerrainUpdateData::Lod &lod = _update_data->state.lods[ob.lod];
+						RWLockRead rlock(lod.mesh_map_state.map_lock);
+						auto it = lod.mesh_map_state.map.find(neighbor_pos);
+						if (it != lod.mesh_map_state.map.end()) {
+							VoxelLodTerrainUpdateData::MeshBlockState &neighbor_state = it->second;
+							// Mark as needing visual update but NOT light recompute
+							neighbor_state.light_dirty = false;
+							VoxelLodTerrainUpdateTask::schedule_mesh_update(
+									neighbor_state,
+									neighbor_pos,
+									lod.mesh_blocks_pending_update,
+									neighbor_state.mesh_viewers.get() > 0
+							);
 						}
 					}
 				}
@@ -3980,6 +4125,9 @@ void VoxelLodTerrain::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_stream_running_in_editor"), &Self::is_stream_running_in_editor);
 
 	ClassDB::bind_method(D_METHOD("is_area_meshed", "area_in_voxels", "lod_index"), &Self::_b_is_area_meshed);
+
+	//ClassDB::bind_method(D_METHOD("post_edit_area", "area", "update_mesh"), &Self::_b_post_edit_area);
+	ClassDB::bind_method(D_METHOD("post_edit_area_if_unedited", "area", "update_mesh"), &Self::_b_post_edit_area_if_unedited);
 
 	// Normalmaps
 

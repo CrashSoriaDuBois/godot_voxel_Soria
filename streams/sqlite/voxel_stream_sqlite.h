@@ -37,6 +37,14 @@ public:
 	void load_voxel_blocks(Span<VoxelStream::VoxelQueryData> p_blocks) override;
 	void save_voxel_blocks(Span<VoxelStream::VoxelQueryData> p_blocks) override;
 
+	bool save_block_entity(Vector3i chunk_pos, int local_key, int action_type, PackedByteArray data);
+	Dictionary load_block_entity(Vector3i chunk_pos, int local_key);
+	bool delete_block_entity(Vector3i chunk_pos, int local_key);
+	int get_next_local_key(Vector3i chunk_pos);
+
+	bool save_chunk_last_modified(Vector3i chunk_pos, double timestamp);
+	double load_chunk_last_modified(Vector3i chunk_pos);
+
 #ifdef VOXEL_ENABLE_INSTANCER
 	bool supports_instance_blocks() const override;
 	void load_instance_blocks(Span<VoxelStream::InstancesQueryData> out_blocks) override;

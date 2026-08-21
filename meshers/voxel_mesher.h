@@ -79,10 +79,19 @@ public:
 		Array shadow_occluder;
 
 		struct LightSurface {
-			StdVector<uint8_t> data;
+			StdVector<uint8_t> data; // raw, unpadded (block_size^3), for CHANNEL_DATA5 persistence
+			StdVector<uint8_t> texture_data; // padded with TEXTURE_BORDER halo, for update_light_texture
 			bool was_computed = false;
 		};
 		LightSurface light_surface;
+
+		struct NeighborLightSurface {
+			StdVector<uint8_t> data;
+			Vector3i offset; // in mesh block units, e.g. (-1,0,0)
+			bool valid = false;
+		};
+		// 26 neighbors: 6 faces + 12 edges + 8 corners
+		FixedArray<NeighborLightSurface, 26> neighbor_light_surfaces;
 
 		// May be used to store extra information needed in shader to render the mesh properly
 		// (currently used only by the cubes mesher when baking colors)

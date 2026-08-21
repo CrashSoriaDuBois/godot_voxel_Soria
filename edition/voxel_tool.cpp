@@ -119,27 +119,27 @@ float VoxelTool::get_voxel_f_interpolated(const Vector3 pos) const {
 	return get_sdf_interpolated([this](Vector3i ipos) { return _get_voxel_f(ipos); }, pos);
 }
 
-void VoxelTool::set_voxel(Vector3i pos, uint64_t v) {
+void VoxelTool::set_voxel(Vector3i pos, uint64_t v, bool p_relevant) {
 	Box3i box(pos, Vector3i(1, 1, 1));
 	if (!is_area_editable(box)) {
 		ZN_PRINT_WARNING("Area not editable");
 		return;
 	}
 	_set_voxel(pos, v);
-	_post_edit(box);
+	_post_edit(box, p_relevant);
 }
 
-void VoxelTool::set_voxel_f(Vector3i pos, float v) {
+void VoxelTool::set_voxel_f(Vector3i pos, float v, bool p_relevant) {
 	Box3i box(pos, Vector3i(1, 1, 1));
 	if (!is_area_editable(box)) {
 		ZN_PRINT_WARNING("Area not editable");
 		return;
 	}
 	_set_voxel_f(pos, v);
-	_post_edit(box);
+	_post_edit(box, p_relevant);
 }
 
-void VoxelTool::do_point(Vector3i pos) {
+void VoxelTool::do_point(Vector3i pos, bool p_relevant) {
 	Box3i box(pos, Vector3i(1, 1, 1));
 	if (!is_area_editable(box)) {
 		return;
@@ -150,7 +150,7 @@ void VoxelTool::do_point(Vector3i pos) {
 	} else {
 		_set_voxel(pos, _mode == MODE_REMOVE ? _eraser_value : _value);
 	}
-	_post_edit(box);
+	_post_edit(box, p_relevant);
 }
 
 uint64_t VoxelTool::_get_voxel(Vector3i pos) const {
@@ -175,7 +175,7 @@ void VoxelTool::_set_voxel_f(Vector3i pos, float v) {
 // defined in subclasses of VoxelTool. Ideally, a function may be exposed on the base class only if it has an optimal
 // definition in all specialized classes.
 
-void VoxelTool::do_sphere(Vector3 p_center, float radius) {
+void VoxelTool::do_sphere(Vector3 p_center, float radius, bool p_relevant) {
 	ZN_PROFILE_SCOPE();
 	// Default, suboptimal implementation
 
@@ -207,7 +207,7 @@ void VoxelTool::do_sphere(Vector3 p_center, float radius) {
 		});
 	}
 
-	_post_edit(box);
+	_post_edit(box, p_relevant);
 }
 
 // Erases matter in every voxel where the provided buffer has matter.
@@ -239,7 +239,7 @@ void VoxelTool::sdf_stamp_erase(const VoxelBuffer &stamp, Vector3i pos) {
 	_post_edit(box);
 }
 
-void VoxelTool::do_box(Vector3i begin, Vector3i end) {
+void VoxelTool::do_box(Vector3i begin, Vector3i end, bool p_relevant) {
 	ZN_PROFILE_SCOPE();
 	// Default, suboptimal implementation
 
@@ -263,10 +263,10 @@ void VoxelTool::do_box(Vector3i begin, Vector3i end) {
 		box.for_each_cell([this, value](Vector3i pos) { _set_voxel(pos, value); });
 	}
 
-	_post_edit(box);
+	_post_edit(box, p_relevant);
 }
 
-void VoxelTool::do_path(Span<const Vector3> positions, Span<const float> radii) {
+void VoxelTool::do_path(Span<const Vector3> positions, Span<const float> radii, bool p_relevant) {
 	ERR_PRINT("Not implemented");
 	// Implemented in derived classes
 }
@@ -409,7 +409,7 @@ bool VoxelTool::is_area_editable(const Box3i &box) const {
 	return false;
 }
 
-void VoxelTool::_post_edit(const Box3i &box) {
+void VoxelTool::_post_edit(const Box3i &box, bool p_relevant) {
 	ERR_PRINT("Not implemented");
 }
 
@@ -431,7 +431,8 @@ void VoxelTool::do_path_chunked(
 		VoxelData &vdata,
 		Span<const Vector3> positions,
 		Span<const float> radii,
-		const bool with_pre_generate
+		const bool with_pre_generate,
+		bool p_relevant
 ) {
 	ZN_PROFILE_SCOPE();
 	ZN_ASSERT_RETURN(positions.size() >= 2);
@@ -512,7 +513,7 @@ void VoxelTool::do_path_chunked(
 		}
 	}
 
-	_post_edit(total_voxel_box);
+	_post_edit(total_voxel_box, p_relevant);
 }
 
 #ifdef VOXEL_ENABLE_MESH_SDF
@@ -615,20 +616,20 @@ Ref<VoxelRaycastResult> VoxelTool::_b_raycast(Vector3 pos, Vector3 dir, float ma
 	return raycast(pos, dir, max_distance, collision_mask);
 }
 
-void VoxelTool::_b_do_point(Vector3i pos) {
-	do_point(pos);
+void VoxelTool::_b_do_point(Vector3i pos, bool relevant) {
+    do_point(pos, relevant);
 }
 
-void VoxelTool::_b_do_sphere(Vector3 pos, float radius) {
-	do_sphere(pos, radius);
+void VoxelTool::_b_do_sphere(Vector3 pos, float radius, bool relevant) {
+    do_sphere(pos, radius, relevant);
 }
 
-void VoxelTool::_b_do_box(Vector3i begin, Vector3i end) {
-	do_box(begin, end);
+void VoxelTool::_b_do_box(Vector3i begin, Vector3i end, bool relevant) {
+    do_box(begin, end, relevant);
 }
 
-void VoxelTool::_b_do_path(PackedVector3Array positions, PackedFloat32Array radii) {
-	do_path(to_span(positions), to_span(radii));
+void VoxelTool::_b_do_path(PackedVector3Array positions, PackedFloat32Array radii, bool relevant) {
+    do_path(to_span(positions), to_span(radii), relevant);
 }
 
 #ifdef VOXEL_ENABLE_MESH_SDF
@@ -754,10 +755,10 @@ void VoxelTool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_voxel_f", "pos"), &VoxelTool::_b_get_voxel_f);
 	ClassDB::bind_method(D_METHOD("set_voxel", "pos", "v"), &VoxelTool::_b_set_voxel);
 	ClassDB::bind_method(D_METHOD("set_voxel_f", "pos", "v"), &VoxelTool::_b_set_voxel_f);
-	ClassDB::bind_method(D_METHOD("do_point", "pos"), &VoxelTool::_b_do_point);
-	ClassDB::bind_method(D_METHOD("do_sphere", "center", "radius"), &VoxelTool::_b_do_sphere);
-	ClassDB::bind_method(D_METHOD("do_box", "begin", "end"), &VoxelTool::_b_do_box);
-	ClassDB::bind_method(D_METHOD("do_path", "points", "radii"), &VoxelTool::_b_do_path);
+	ClassDB::bind_method(D_METHOD("do_point", "pos", "relevant"), &VoxelTool::_b_do_point, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("do_sphere", "center", "radius", "relevant"), &VoxelTool::_b_do_sphere, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("do_box", "begin", "end", "relevant"), &VoxelTool::_b_do_box, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("do_path", "points", "radii", "relevant"), &VoxelTool::_b_do_path, DEFVAL(false));
 #ifdef VOXEL_ENABLE_MESH_SDF
 	ClassDB::bind_method(D_METHOD("do_mesh", "mesh_sdf", "transform", "isolevel"), &VoxelTool::_b_do_mesh, DEFVAL(0.0));
 #endif

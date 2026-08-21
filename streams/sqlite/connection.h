@@ -89,6 +89,24 @@ public:
 
 	void migrate_to_latest_version();
 
+	bool save_block_entity(
+			const BlockLocation loc,
+			const int local_key,
+			const int action_type,
+			const Span<const uint8_t> data
+	);
+	bool load_block_entity(
+			const BlockLocation loc,
+			const int local_key,
+			int &out_action_type,
+			StdVector<uint8_t> &out_data
+	);
+	bool delete_block_entity(const BlockLocation loc, const int local_key);
+	int get_next_local_key(const BlockLocation loc);
+
+	bool save_chunk_last_modified(const BlockLocation loc, double timestamp);
+	double load_chunk_last_modified(const BlockLocation loc); // returns -1 if not found
+
 private:
 	int load_version();
 	Meta load_meta();
@@ -112,6 +130,14 @@ private:
 	sqlite3_stmt *_save_channel_statement = nullptr;
 	sqlite3_stmt *_load_all_blocks_statement = nullptr;
 	sqlite3_stmt *_load_all_block_keys_statement = nullptr;
+
+	sqlite3_stmt *_save_block_entity_statement = nullptr;
+	sqlite3_stmt *_load_block_entity_statement = nullptr;
+	sqlite3_stmt *_delete_block_entity_statement = nullptr;
+	sqlite3_stmt *_load_next_local_key_statement = nullptr;
+
+	sqlite3_stmt *_save_chunk_meta_statement = nullptr;
+	sqlite3_stmt *_load_chunk_meta_statement = nullptr;
 };
 
 } // namespace zylann::voxel::sqlite

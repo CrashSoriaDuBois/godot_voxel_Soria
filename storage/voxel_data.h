@@ -177,6 +177,22 @@ public:
 	// Optionally, returns a list of affected block positions which did not require LOD updates before.
 	void mark_area_modified(Box3i p_voxel_box, StdVector<Vector3i> *lod0_new_blocks_to_lod, bool require_lod_updates);
 
+	// Flags a single block as modified, so it becomes eligible for saving.
+	// Used when a block's data is changed outside the normal edit path (e.g. computed light).
+	void mark_block_modified(Vector3i bpos, unsigned int lod_index);
+
+	// Re-propagates a single channel from a block upward through all LODs (LOD0 -> LOD1 -> ...).
+	// Used when a channel is updated outside the normal edit path (e.g. computed light), after the edit-time LOD cascade already ran on stale data.
+	void propagate_channel_upward(Vector3i lod0_bpos, unsigned int channel_index);
+
+	bool has_computed_light(Vector3i bpos, unsigned int lod_index) const;
+
+	void mark_area_modified_if_unedited(
+			Box3i p_voxel_box,
+			StdVector<Vector3i> *lod0_new_blocks_to_lod,
+			bool require_lod_updates
+	);
+
 	////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Block-aware API
 

@@ -52,7 +52,7 @@ Ref<VoxelRaycastResult> VoxelToolLodTerrain::raycast(
 	);
 }
 
-void VoxelToolLodTerrain::do_box(Vector3i begin, Vector3i end) {
+void VoxelToolLodTerrain::do_box(Vector3i begin, Vector3i end, bool p_relevant) {
 	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND(_terrain == nullptr);
 
@@ -85,10 +85,10 @@ void VoxelToolLodTerrain::do_box(Vector3i begin, Vector3i end) {
 		op();
 	}
 
-	_post_edit(op.box);
+	_post_edit(op.box, p_relevant);
 }
 
-void VoxelToolLodTerrain::do_sphere(Vector3 center, float radius) {
+void VoxelToolLodTerrain::do_sphere(Vector3 center, float radius, bool p_relevant) {
 	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND(_terrain == nullptr);
 
@@ -123,10 +123,10 @@ void VoxelToolLodTerrain::do_sphere(Vector3 center, float radius) {
 
 	op();
 
-	_post_edit(world_box);
+	_post_edit(world_box, p_relevant);
 }
 
-void VoxelToolLodTerrain::do_hemisphere(Vector3 center, float radius, Vector3 flat_direction, float smoothness) {
+void VoxelToolLodTerrain::do_hemisphere(Vector3 center, float radius, Vector3 flat_direction, float smoothness, bool p_relevant) {
 	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND(_terrain == nullptr);
 
@@ -162,10 +162,10 @@ void VoxelToolLodTerrain::do_hemisphere(Vector3 center, float radius, Vector3 fl
 		op();
 	}
 
-	_post_edit(op.box);
+	_post_edit(op.box, p_relevant);
 }
 
-void VoxelToolLodTerrain::do_path(Span<const Vector3> positions, Span<const float> radii) {
+void VoxelToolLodTerrain::do_path(Span<const Vector3> positions, Span<const float> radii, bool p_relevant) {
 	ZN_ASSERT_RETURN(_terrain != nullptr);
 	do_path_chunked(_terrain->get_storage(), positions, radii, true);
 }
@@ -315,9 +315,9 @@ void VoxelToolLodTerrain::_set_voxel_f(Vector3i pos, float v) {
 	// No post_update, the parent class does it, it's a generic slow implementation.
 }
 
-void VoxelToolLodTerrain::_post_edit(const Box3i &box) {
+void VoxelToolLodTerrain::_post_edit(const Box3i &box, bool p_relevant) {
 	ERR_FAIL_COND(_terrain == nullptr);
-	_terrain->post_edit_area(box, true);
+	_terrain->post_edit_area(box, true, p_relevant);
 }
 
 int VoxelToolLodTerrain::get_raycast_binary_search_iterations() const {

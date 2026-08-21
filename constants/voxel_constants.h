@@ -4,6 +4,11 @@
 #include "../util/math/constants.h"
 #include <cstdint>
 
+namespace zylann::voxel {
+constexpr int LIGHT_PADDING = 15;
+constexpr int TEXTURE_BORDER = 2;
+} // namespace zylann::voxel
+
 namespace zylann::voxel::constants {
 
 // These constants are chosen so you don't accidentally blow up resource usage
@@ -66,6 +71,7 @@ static const uint8_t TASK_PRIORITY_SAVE_BAND2 = 9;
 static const uint8_t TASK_PRIORITY_DETAIL_TEXTURES_BAND2 = 8; // After meshes
 
 static const uint8_t TASK_PRIORITY_BAND3_DEFAULT = 10;
+
 
 } // namespace zylann::voxel::constants
 

@@ -22,7 +22,7 @@ void ShaderMaterialPoolVLT::recycle(Ref<ShaderMaterial> material) {
 
 	material->set_shader_parameter(sn.u_transition_mask, 0);
 	material->set_shader_parameter(sn.u_lod_fade, Vector2(0.0, 0.0));
-
+	material->set_shader_parameter("u_light_texture", Ref<Texture3D>());
 	zylann::godot::ShaderMaterialPool::recycle(material);
 }
 
