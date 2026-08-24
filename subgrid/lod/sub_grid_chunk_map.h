@@ -1,6 +1,7 @@
 #pragma once
 #include "../../storage/voxel_buffer.h"
 #include "../../storage/voxel_data_map.h"
+#include "../../storage/voxel_format.h"
 #include "core/object/ref_counted.h"
 #include "core/templates/hash_set.h"
 #include <functional>
@@ -14,6 +15,19 @@ static const int SUBGRID_MAX_LODS = 4;
 class SubGridChunkMap {
 public:
 	static const int CHUNK_SIZE_PO2 = 4; // 16 voxels per side at LOD0
+	static constexpr VoxelBuffer::ChannelId SUBGRID_CHANNELS[] = {
+		VoxelBuffer::CHANNEL_TYPE,
+		VoxelBuffer::CHANNEL_COLOR,
+		VoxelBuffer::CHANNEL_DATA5,
+	};
+	static constexpr int SUBGRID_CHANNEL_COUNT = 3;
+
+	void set_format(const VoxelFormat &format) {
+		_format = format;
+	}
+	const VoxelFormat &get_format() const {
+		return _format;
+	}
 
 	// -------------------------------------------------------------------------
 	// LOD0 voxel editing (these are the only voxels ever persisted)
@@ -114,6 +128,7 @@ public:
 	}
 
 private:
+	VoxelFormat _format;
 	// One VoxelDataMap per LOD level.
 	// LOD0 = actual edited voxels (16^3 chunks)
 	// LOD1 = downsampled 2x (each chunk covers 32^3 voxels)

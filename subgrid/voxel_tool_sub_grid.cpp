@@ -70,7 +70,7 @@ static String _uuid_str(const uint8_t *uuid) {
 // The box is in local voxel space. We convert it to chunk positions and
 // mark each dirty. The manager's _process() will pick them up next frame.
 
-void VoxelToolSubGrid::_post_edit(const Box3i &box) {
+void VoxelToolSubGrid::_post_edit(const Box3i &box, bool p_relevant) {
 	ERR_FAIL_COND(_grid == nullptr);
 	ERR_FAIL_COND(_manager == nullptr);
 	_mark_box_dirty(box);

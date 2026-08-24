@@ -28,21 +28,24 @@ public:
 			SubGridChunkMap &&chunks,
 			const String &saves_dir,
 			Ref<VoxelMesherBlocky> mesher,
-			Ref<VoxelBlockyLibrary> library
+			Ref<VoxelBlockyLibrary> library,
+			const VoxelFormat &format
 	);
 
 	void initialize_root_from_disk(
 			const SubGridMetadata &meta,
 			const String &saves_dir,
 			Ref<VoxelMesherBlocky> mesher,
-			Ref<VoxelBlockyLibrary> library
+			Ref<VoxelBlockyLibrary> library,
+			const VoxelFormat &format
 	);
 
 	void initialize_child(
 			const SubGridMetadata &meta,
 			SubGridChunkMap &&chunks,
 			const String &saves_dir,
-			bool async_stream = true
+			bool async_stream,  //dropped the "= true"
+			const VoxelFormat &format
 	);
 
 	SubGridMetadata &get_metadata_mut() { 

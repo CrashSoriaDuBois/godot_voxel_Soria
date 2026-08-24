@@ -71,10 +71,12 @@ void VoxelSubGrid::initialize_root(
 		SubGridChunkMap &&chunks,
 		const String &saves_dir,
 		Ref<VoxelMesherBlocky> mesher,
-		Ref<VoxelBlockyLibrary> library
+		Ref<VoxelBlockyLibrary> library,
+		const VoxelFormat &format
 ) {
 	_meta = meta;
 	_chunks = std::move(chunks);
+	_chunks.set_format(format);
 	_saves_dir = saves_dir;
 	_mesher = mesher;
 	_library = library;
@@ -96,12 +98,18 @@ void VoxelSubGrid::initialize_root_from_disk(
 		const SubGridMetadata &meta,
 		const String &saves_dir,
 		Ref<VoxelMesherBlocky> mesher,
-		Ref<VoxelBlockyLibrary> library
+		Ref<VoxelBlockyLibrary> library,
+		const VoxelFormat &format
 ) {
 	_meta = meta;
 	_saves_dir = saves_dir;
 	_mesher = mesher;
 	_library = library;
+
+	// Must happen before load_chunks_from_stream(), since rebuild_all_lods() inside it
+	// creates every LOD1-3 buffer using whatever _chunks._format holds right now.
+	_chunks.set_format(format);
+
 	_promoted_pivot_world = meta.promoted_pivot_world;
 	_is_world_anchored = meta.is_terrain_anchored;
 
@@ -133,11 +141,14 @@ void VoxelSubGrid::initialize_child(
 		const SubGridMetadata &meta,
 		SubGridChunkMap &&chunks,
 		const String &saves_dir,
-		bool async_stream
+		bool async_stream,
+		const VoxelFormat &format
 ) {
 	_meta = meta;
 	_chunks = std::move(chunks);
 	_saves_dir = saves_dir;
+
+	_chunks.set_format(format);
 
 	VoxelSubGrid *parent_sg = Object::cast_to<VoxelSubGrid>(get_parent());
 	if (parent_sg != nullptr) {
@@ -537,8 +548,8 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 		for (int z = 0; z < cs; z++)
 			for (int x = 0; x < cs; x++)
 				for (int y = 0; y < cs; y++) {
-					uint32_t v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
-					if (v == 0)
+					uint32_t type_v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
+					if (type_v == 0)
 						continue;
 					Vector3 local_center = Vector3(block_origin + Vector3i(x, y, z)) + Vector3(0.5f, 0.5f, 0.5f);
 					Vector3 parent_center = to_parent.xform(local_center);
@@ -546,7 +557,15 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 					Vector3i parent_i = Vector3i(
 							Math::floor(parent_center.x), Math::floor(parent_center.y), Math::floor(parent_center.z)
 					);
-					parent_sg->set_voxel(v, parent_i, VoxelBuffer::CHANNEL_TYPE);
+
+					// Carry every tracked channel over, not just TYPE, so color/data5 survive
+					// merging back into the parent contraption.
+					for (int c = 0; c < SubGridChunkMap::SUBGRID_CHANNEL_COUNT; c++) {
+						const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
+						const uint32_t v =
+								(channel == VoxelBuffer::CHANNEL_TYPE) ? type_v : buf->get_voxel(x, y, z, channel);
+						parent_sg->set_voxel(v, parent_i, channel);
+					}
 
 					// Track which chunk this falls in
 					Vector3i parent_chunk = Vector3i(
@@ -979,7 +998,6 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(VoxelTool *tool, const Trans
 	);
 
 
-	tool->set_channel(VoxelBuffer::CHANNEL_TYPE);
 	_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) {
 		std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
 		if (!buf)
@@ -988,8 +1006,9 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(VoxelTool *tool, const Trans
 		for (int z = 0; z < cs; z++) {
 			for (int x = 0; x < cs; x++) {
 				for (int y = 0; y < cs; y++) {
-					uint32_t v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
-					if (v == 0)
+					// Occupancy is decided by TYPE alone, same as before.
+					uint32_t type_v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
+					if (type_v == 0)
 						continue;
 
 					Vector3i local_p = block_origin + Vector3i(x, y, z); // NOT minus bbox_min
@@ -997,8 +1016,17 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(VoxelTool *tool, const Trans
 					rotated.x = M[0][0] * local_p.x + M[0][1] * local_p.y + M[0][2] * local_p.z;
 					rotated.y = M[1][0] * local_p.x + M[1][1] * local_p.y + M[1][2] * local_p.z;
 					rotated.z = M[2][0] * local_p.x + M[2][1] * local_p.y + M[2][2] * local_p.z;
+					Vector3i target_pos = origin_i + rotated;
 
-					tool->set_voxel(origin_i + rotated, v);
+					// Carry every tracked channel over, not just TYPE, so color/data5 survive
+					// the merge into terrain instead of being dropped here.
+					for (int c = 0; c < SubGridChunkMap::SUBGRID_CHANNEL_COUNT; c++) {
+						const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
+						const uint32_t v =
+								(channel == VoxelBuffer::CHANNEL_TYPE) ? type_v : buf->get_voxel(x, y, z, channel);
+						tool->set_channel(channel);
+						tool->set_voxel(target_pos, v);
+					}
 				}
 			}
 		}

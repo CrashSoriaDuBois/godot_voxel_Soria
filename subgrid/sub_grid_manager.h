@@ -21,6 +21,7 @@
 #include <thread>
 
 #include "terrain/variable_lod/voxel_lod_terrain.h" // for IMeshBlockLodListener
+#include "../storage/voxel_format.h"
 // Forward declare Godot types to avoid heavy includes in header
 class AnimatableBody3D;
 
@@ -218,6 +219,7 @@ private:
 	String _saves_dir;
 	Ref<VoxelMesherBlocky> _mesher;
 	Ref<VoxelBlockyLibrary> _library;
+	VoxelFormat _voxel_format;
 	BlockWeightTable _weight_table;
 
 	HashMap<String, ShipState> _ships;

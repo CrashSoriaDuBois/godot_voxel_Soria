@@ -45,6 +45,15 @@ SubGridAssembler::AssembledBody *SubGridAssembler::assemble(
 	Ref<VoxelTool> tool = terrain->get_voxel_tool();
 	ERR_FAIL_COND_V(!tool.is_valid(), nullptr);
 
+	// Same channel depths the terrain actually uses - this gets baked permanently into this
+	// ship's first save, so it must come from the terrain's real format, not VoxelBuffer's
+	// raw defaults.
+	VoxelFormat format;
+	Ref<godot::VoxelFormat> terrain_format = terrain->get_format();
+	if (terrain_format.is_valid()) {
+		format = terrain_format->get_internal();
+	}
+
 	// Check starting block is not air
 	uint32_t start_voxel = tool->get_voxel(start_world_pos);
 	if (start_voxel == 0) {
@@ -72,6 +81,7 @@ SubGridAssembler::AssembledBody *SubGridAssembler::assemble(
 			config,
 			visited,
 			root,
+			format,
 			out_error
 	);
 
@@ -98,9 +108,11 @@ void SubGridAssembler::flood_fill(
 		const AssemblyConfig &config,
 		HashSet<Vector3i> &visited,
 		AssembledBody *out_body,
+		const VoxelFormat &format, // ADD this
 		String &out_error
 ) {
-	// Use two indices into a growing array - O(1) dequeue without shifting
+	out_body->chunks.set_format(format);
+
 	LocalVector<Vector3i> frontier;
 	frontier.push_back(start);
 	uint32_t head = 0;
@@ -124,7 +136,7 @@ void SubGridAssembler::flood_fill(
 			continue;
 		}
 
-		uint32_t voxel = tool->get_voxel(pos);
+		uint32_t voxel = tool->get_voxel(pos); // tool channel is CHANNEL_TYPE here
 
 		// Air - skip
 		if (voxel == 0) {
@@ -145,7 +157,23 @@ void SubGridAssembler::flood_fill(
 		// Store block
 		Vector3i local_pos = pos - local_origin;
 		out_body->world_blocks[pos] = voxel;
-		out_body->chunks.set_voxel(voxel, local_pos, VoxelBuffer::CHANNEL_TYPE);
+
+		// Carry every tracked channel from terrain into the ship, not just TYPE - otherwise a
+		// painted color/data5 value never even reaches the ship's chunk map. Channel is
+		// switched on the shared `tool` and restored to CHANNEL_TYPE before continuing, since
+		// is_movable() and the next loop iteration's occupancy read both assume TYPE is active.
+		for (int c = 0; c < SubGridChunkMap::SUBGRID_CHANNEL_COUNT; c++) {
+			const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
+			uint32_t v;
+			if (channel == VoxelBuffer::CHANNEL_TYPE) {
+				v = voxel;
+			} else {
+				tool->set_channel(channel);
+				v = tool->get_voxel(pos);
+			}
+			out_body->chunks.set_voxel(v, local_pos, channel);
+		}
+		tool->set_channel(VoxelBuffer::CHANNEL_TYPE);
 
 		// Bearing block: spawn a child body, change later
 		if (is_bearing_voxel(config, voxel)) {
@@ -166,7 +194,7 @@ void SubGridAssembler::flood_fill(
 				memcpy(child->metadata.uuid, child->uuid, 16);
 				memcpy(child->metadata.parent_uuid, out_body->uuid, 16);
 
-				flood_fill(tool, attach_pos, pos, attach_pos, config, visited, child, out_error);
+				flood_fill(tool, attach_pos, pos, attach_pos, config, visited, child, format, out_error);
 
 				if (!out_error.is_empty()) {
 					memdelete(child);

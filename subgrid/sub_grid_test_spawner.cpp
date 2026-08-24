@@ -52,7 +52,8 @@ void SubGridTestSpawner::assemble_at(Node *terrain_node, Vector3i world_pos) {
 			Vector3(body->local_origin_in_world.x, body->local_origin_in_world.y, body->local_origin_in_world.z);
 	meta.world_rotation = Quaternion();
 
-	root_sg->initialize_root(meta, std::move(body->chunks), saves_dir, mesher, library);
+	const VoxelFormat root_format = body->chunks.get_format();
+	root_sg->initialize_root(meta, std::move(body->chunks), saves_dir, mesher, library, root_format);
 
 	// Spawn children recursively
 	for (SubGridAssembler::AssembledBody *child_body : body->children) {
@@ -95,7 +96,8 @@ VoxelSubGrid *SubGridTestSpawner::_spawn_body(
 	SubGridMetadata meta = body->metadata;
 	// keep uuid from metadata, already set during assembly
 
-	sg->initialize_child(meta, std::move(body->chunks), saves_dir);
+	const VoxelFormat child_format = body->chunks.get_format();
+	sg->initialize_child(meta, std::move(body->chunks), saves_dir, /*async_stream=*/true, child_format);
 
 	// Recurse
 	for (SubGridAssembler::AssembledBody *child_body : body->children) {
@@ -124,7 +126,8 @@ VoxelSubGrid *SubGridTestSpawner::_spawn_terrain_anchored(
 			Vector3(body->local_origin_in_world.x, body->local_origin_in_world.y, body->local_origin_in_world.z);
 	meta.world_rotation = Quaternion();
 
-	sg->initialize_root(meta, std::move(body->chunks), saves_dir, mesher, library);
+	const VoxelFormat anchored_format = body->chunks.get_format(); // capture before move
+	sg->initialize_root(meta, std::move(body->chunks), saves_dir, mesher, library, anchored_format);
 
 	// Recurse: children of a terrain-anchored body spawn normally
 	for (SubGridAssembler::AssembledBody *child_body : body->children) {

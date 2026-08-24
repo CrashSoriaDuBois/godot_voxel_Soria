@@ -127,6 +127,16 @@ void SubGridManager::initialize(
 	_mesher = mesher;
 	_library = library;
 
+	// Mirror the terrain's actual configured channel depths, rather than guessing - this is
+	// the single source of truth so a subgrid's color/data5 always agrees with whatever
+	// format the terrain (and its stream/generator) actually use.
+	Ref<godot::VoxelFormat> terrain_format = _terrain->get_format();
+	if (terrain_format.is_valid()) {
+		_voxel_format = terrain_format->get_internal();
+	} else {
+		_voxel_format = VoxelFormat(); // class default (see voxel_format.cpp) as a fallback
+	}
+
 	_physics_space = get_viewport()->get_world_3d()->get_space();
 
 	_lod_count = CLAMP(lod_count, 1, SUBGRID_MAX_LODS);
@@ -176,6 +186,10 @@ void SubGridManager::set_default_block_mass(float mass) {
 void SubGridManager::_register_single(VoxelSubGrid *sg, const String &parent_uuid) {
 	ERR_FAIL_COND(sg == nullptr);
 	String uuid = _uuid_to_string(sg->get_metadata().uuid);
+
+	// Must happen before anything reads/creates chunk buffers for this ship - see
+	// SubGridChunkMap::set_format's comment.
+	sg->get_chunk_map_mut().set_format(_voxel_format);
 
 	ShipState &state = _ships[uuid];
 	state.node = sg;
@@ -1274,15 +1288,21 @@ std::shared_ptr<VoxelBuffer> SubGridManager::_build_padded_buffer(VoxelSubGrid *
 	}
 
 	auto padded = std::make_shared<VoxelBuffer>(VoxelBuffer::ALLOCATOR_DEFAULT);
-	padded->create(ps, ps, ps);
-	padded->fill(0, VoxelBuffer::CHANNEL_TYPE);
+	padded->create(ps, ps, ps, &chunk_map.get_format());
+	for (int c = 0; c < SubGridChunkMap::SUBGRID_CHANNEL_COUNT; c++) {
+		padded->fill(0, SubGridChunkMap::SUBGRID_CHANNELS[c]);
+	}
 
-	// Copy center chunk
+	// Copy center chunk - every tracked channel, not just TYPE, so the mesher actually
+	// receives color/data5 alongside shape instead of it being silently dropped here.
 	for (int z = 0; z < cs; z++) {
 		for (int y = 0; y < cs; y++) {
 			for (int x = 0; x < cs; x++) {
-				uint32_t v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
-				padded->set_voxel(v, x + pad, y + pad, z + pad, VoxelBuffer::CHANNEL_TYPE);
+				for (int c = 0; c < SubGridChunkMap::SUBGRID_CHANNEL_COUNT; c++) {
+					const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
+					uint32_t v = buf->get_voxel(x, y, z, channel);
+					padded->set_voxel(v, x + pad, y + pad, z + pad, channel);
+				}
 			}
 		}
 	}
@@ -1305,8 +1325,11 @@ std::shared_ptr<VoxelBuffer> SubGridManager::_build_padded_buffer(VoxelSubGrid *
                 else if (dir.z ==  1) { nx=a;    ny=b;    nz=0; px=a+pad;  py=b+pad;  pz=cs+pad; }
                 else                  { nx=a;    ny=b; nz=cs-1; px=a+pad;  py=b+pad;  pz=0;      }
 				// clang-format on
-				uint32_t v = nbuf->get_voxel(nx, ny, nz, VoxelBuffer::CHANNEL_TYPE);
-				padded->set_voxel(v, px, py, pz, VoxelBuffer::CHANNEL_TYPE);
+				for (int c = 0; c < SubGridChunkMap::SUBGRID_CHANNEL_COUNT; c++) {
+					const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
+					uint32_t v = nbuf->get_voxel(nx, ny, nz, channel);
+					padded->set_voxel(v, px, py, pz, channel);
+				}
 			}
 		}
 	}
@@ -1413,7 +1436,7 @@ void SubGridManager::load_all() {
 
 		VoxelSubGrid *sg = memnew(VoxelSubGrid);
 		parent->add_child(sg);
-		sg->initialize_root_from_disk(meta, _saves_dir, _mesher, _library);
+		sg->initialize_root_from_disk(meta, _saves_dir, _mesher, _library, _voxel_format);
 		uuid_to_node[_uuid_to_string(meta.uuid)] = sg;
 	}
 
@@ -1431,7 +1454,7 @@ void SubGridManager::load_all() {
 
 		VoxelSubGrid *sg = memnew(VoxelSubGrid);
 		(*parent_sg)->add_child(sg);
-		sg->initialize_child(meta, SubGridChunkMap(), _saves_dir, false);
+		sg->initialize_child(meta, SubGridChunkMap(), _saves_dir, false, _voxel_format);
 		sg->load_chunks_from_stream();
 		uuid_to_node[_uuid_to_string(meta.uuid)] = sg;
 	}

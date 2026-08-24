@@ -20,7 +20,7 @@ void SubGridChunkMap::set_voxel(uint32_t value, Vector3i local_pos, int channel)
 	VoxelDataBlock *block = _lod_maps[0].get_block(chunk_pos);
 	if (block == nullptr) {
 		auto buf = std::make_shared<VoxelBuffer>(VoxelBuffer::ALLOCATOR_POOL);
-		buf->create(cs, cs, cs);
+		buf->create(cs, cs, cs, &_format);
 		block = _lod_maps[0].set_block_buffer(chunk_pos, buf, /*overwrite=*/false);
 		_all_lod0_chunk_positions.insert(chunk_pos);
 		_all_lod_chunk_positions[0].insert(chunk_pos);
@@ -89,22 +89,23 @@ void SubGridChunkMap::_downsample_lod_chunk(Vector3i lod_pos, int lod) {
 	ERR_FAIL_COND(lod <= 0 || lod >= SUBGRID_MAX_LODS);
 
 	const int cs = 1 << CHUNK_SIZE_PO2; // 16
-	// Each LOD chunk covers 'stride' chunks from lod-1 per axis
-	const int stride = 2; // always halving by 2 each level
-	// lod_pos in lod-space corresponds to lod_pos*2 .. lod_pos*2+1 in (lod-1)-space
+	const int stride = 2;
 
-	// Allocate or reuse the output buffer
 	VoxelDataBlock *dst_block = _lod_maps[lod].get_block(lod_pos);
 	if (dst_block == nullptr) {
 		auto buf = std::make_shared<VoxelBuffer>(VoxelBuffer::ALLOCATOR_POOL);
-		buf->create(cs, cs, cs);
-		buf->fill(0, VoxelBuffer::CHANNEL_TYPE);
+		buf->create(cs, cs, cs, &_format);
+		for (int c = 0; c < SUBGRID_CHANNEL_COUNT; c++) {
+			buf->fill(0, SUBGRID_CHANNELS[c]);
+		}
 		_lod_maps[lod].set_block_buffer(lod_pos, buf, /*overwrite=*/false);
 		dst_block = _lod_maps[lod].get_block(lod_pos);
 	}
 
 	VoxelBuffer &dst = dst_block->get_voxels();
-	dst.fill(0, VoxelBuffer::CHANNEL_TYPE);
+	for (int c = 0; c < SUBGRID_CHANNEL_COUNT; c++) {
+		dst.fill(0, SUBGRID_CHANNELS[c]);
+	}
 
 	// The 2x2x2 source chunks in (lod-1)-space
 	const Vector3i src_base = lod_pos * stride;
@@ -130,8 +131,14 @@ void SubGridChunkMap::_downsample_lod_chunk(Vector3i lod_pos, int lod) {
 				for (int z = 0; z < half_cs; z++) {
 					for (int y = 0; y < half_cs; y++) {
 						for (int x = 0; x < half_cs; x++) {
-							uint32_t v = src.get_voxel(x * 2, y * 2, z * 2, VoxelBuffer::CHANNEL_TYPE);
-							dst.set_voxel(v, ox + x, oy + y, oz + z, VoxelBuffer::CHANNEL_TYPE);
+							// Sample the same source voxel for every channel - nearest-neighbor
+							// downsampling must stay in sync between TYPE and its paired data,
+							// or a block's color/data5 could end up offset from its own shape.
+							for (int c = 0; c < SUBGRID_CHANNEL_COUNT; c++) {
+								const VoxelBuffer::ChannelId channel = SUBGRID_CHANNELS[c];
+								uint32_t v = src.get_voxel(x * 2, y * 2, z * 2, channel);
+								dst.set_voxel(v, ox + x, oy + y, oz + z, channel);
+							}
 						}
 					}
 				}

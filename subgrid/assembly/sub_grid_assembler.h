@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../lod/sub_grid_chunk_map.h"
+#include "../storage/voxel_format.h" 
 #include "../sub_grid_metadata.h"
 #include "core/templates/hash_set.h"
 #include "edition/voxel_tool.h"
@@ -8,8 +9,8 @@
 // Forward declarations
 namespace zylann::voxel {
 class VoxelToolTerrain;
-class VoxelLodTerrain; // add this
-}
+class VoxelLodTerrain;
+} // namespace zylann::voxel
 
 namespace zylann::voxel {
 
@@ -54,6 +55,7 @@ private:
 			const AssemblyConfig &config,
 			HashSet<Vector3i> &visited,
 			AssembledBody *out_body,
+			const VoxelFormat &format,
 			String &out_error);
 
 	static void _erase_from_terrain(VoxelTool *tool, AssembledBody *body);
