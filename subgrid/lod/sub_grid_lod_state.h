@@ -23,6 +23,8 @@ struct ChunkMeshBlockState {
 	bool visual_loaded = false;
 	int update_list_index = -1;
 	int mesh_viewers = 0;
+	bool light_dirty = true;
+	bool requires_geometry = true;
 };
 
 struct ShipLod {

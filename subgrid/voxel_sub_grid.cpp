@@ -998,6 +998,9 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(VoxelTool *tool, const Trans
 	);
 
 
+	Ref<VoxelMesherBlocky> blocky_mesher = _mesher;
+	Ref<VoxelBlockyLibraryBase> lib = blocky_mesher.is_valid() ? blocky_mesher->get_library() : Ref<VoxelBlockyLibraryBase>();
+
 	_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) {
 		std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
 		if (!buf)
@@ -1006,27 +1009,31 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(VoxelTool *tool, const Trans
 		for (int z = 0; z < cs; z++) {
 			for (int x = 0; x < cs; x++) {
 				for (int y = 0; y < cs; y++) {
-					// Occupancy is decided by TYPE alone, same as before.
-					uint32_t type_v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
-					if (type_v == 0)
+					uint32_t v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
+					if (v == 0)
 						continue;
 
-					Vector3i local_p = block_origin + Vector3i(x, y, z); // NOT minus bbox_min
+					bool relevant = false;
+					if (lib.is_valid()) {
+						RWLockRead lock(lib->get_baked_data_rw_lock());
+						const blocky::BakedLibrary &baked = lib->get_baked_data();
+						relevant = baked.has_model(v) && baked.models[v].light_emission > 0;
+					}
+
+					Vector3i local_p = block_origin + Vector3i(x, y, z);
 					Vector3i rotated;
 					rotated.x = M[0][0] * local_p.x + M[0][1] * local_p.y + M[0][2] * local_p.z;
 					rotated.y = M[1][0] * local_p.x + M[1][1] * local_p.y + M[1][2] * local_p.z;
 					rotated.z = M[2][0] * local_p.x + M[2][1] * local_p.y + M[2][2] * local_p.z;
 					Vector3i target_pos = origin_i + rotated;
 
-					// Carry every tracked channel over, not just TYPE, so color/data5 survive
-					// the merge into terrain instead of being dropped here.
 					for (int c = 0; c < SubGridChunkMap::SUBGRID_CHANNEL_COUNT; c++) {
 						const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
-						const uint32_t v =
-								(channel == VoxelBuffer::CHANNEL_TYPE) ? type_v : buf->get_voxel(x, y, z, channel);
+						const uint32_t cv = (channel == VoxelBuffer::CHANNEL_TYPE) ? v : buf->get_voxel(x, y, z, channel);
 						tool->set_channel(channel);
-						tool->set_voxel(target_pos, v);
+						tool->set_voxel(target_pos, cv, relevant);
 					}
+					tool->set_channel(VoxelBuffer::CHANNEL_TYPE); // restore for next iteration's read
 				}
 			}
 		}

@@ -22,6 +22,7 @@
 
 #include "terrain/variable_lod/voxel_lod_terrain.h" // for IMeshBlockLodListener
 #include "../storage/voxel_format.h"
+#include "../util/godot/classes/image_texture_3d.h"
 // Forward declare Godot types to avoid heavy includes in header
 class AnimatableBody3D;
 
@@ -116,6 +117,8 @@ private:
 	struct ChunkRenderData {
 		RID instance_rid;
 		Ref<ArrayMesh> mesh;
+		Ref<ShaderMaterial> chunk_material;
+		Ref<ImageTexture3D> light_texture;
 	};
 
 	// -----------------------------------------------------------------------
@@ -244,8 +247,10 @@ private:
 
 	void _submit_one_task(const String &uuid, ShipState &state, Vector3i chunk_pos, int lod);
 	void _apply_mesh_result(const SubGridMeshTaskResult &result);
+	void _update_chunk_light_texture(ChunkRenderData &render_data, const StdVector<uint8_t> &light_data, int lod);
 
 	std::shared_ptr<VoxelBuffer> _build_padded_buffer(VoxelSubGrid *node, Vector3i chunk_pos, int lod) const;
+	std::shared_ptr<VoxelBuffer> _build_light_padded_buffer(VoxelSubGrid *node, Vector3i chunk_pos, int lod) const;
 
 	// -----------------------------------------------------------------------
 	// _physics_process(). rotation, transform sync

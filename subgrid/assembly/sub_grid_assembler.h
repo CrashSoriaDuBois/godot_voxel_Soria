@@ -58,7 +58,7 @@ private:
 			const VoxelFormat &format,
 			String &out_error);
 
-	static void _erase_from_terrain(VoxelTool *tool, AssembledBody *body);
+	static void _erase_from_terrain(VoxelTool *tool, AssembledBody *body, Ref<VoxelBlockyLibraryBase> lib);
 	static bool is_movable(VoxelTool *tool, Vector3i pos);
 	static Vector3i _facing_from_index(uint32_t idx);
 };

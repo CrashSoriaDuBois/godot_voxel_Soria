@@ -702,7 +702,7 @@ void VoxelLodTerrainUpdateTask::flush_pending_lod_edits(
 			mesh_block_box.for_each_cell([&lod, relevant_to_light](Vector3i mesh_block_pos) {
 				auto mesh_block_it = lod.mesh_map_state.map.find(mesh_block_pos);
 				if (mesh_block_it != lod.mesh_map_state.map.end()) {
-					mesh_block_it->second.light_dirty = relevant_to_light;
+					mesh_block_it->second.light_dirty = mesh_block_it->second.light_dirty || relevant_to_light;
 					schedule_mesh_update(
 							mesh_block_it->second,
 							mesh_block_pos,

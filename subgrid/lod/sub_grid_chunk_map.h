@@ -15,12 +15,20 @@ static const int SUBGRID_MAX_LODS = 4;
 class SubGridChunkMap {
 public:
 	static const int CHUNK_SIZE_PO2 = 4; // 16 voxels per side at LOD0
+
+	static const int LIGHT_PADDING = 15;
+
 	static constexpr VoxelBuffer::ChannelId SUBGRID_CHANNELS[] = {
 		VoxelBuffer::CHANNEL_TYPE,
 		VoxelBuffer::CHANNEL_COLOR,
 		VoxelBuffer::CHANNEL_DATA5,
 	};
 	static constexpr int SUBGRID_CHANNEL_COUNT = 3;
+
+	static void apply_subgrid_channel_depths(VoxelBuffer &buf) {
+		buf.set_channel_depth(VoxelBuffer::CHANNEL_COLOR, VoxelBuffer::DEPTH_16_BIT);
+		buf.set_channel_depth(VoxelBuffer::CHANNEL_DATA5, VoxelBuffer::DEPTH_8_BIT);
+	}
 
 	void set_format(const VoxelFormat &format) {
 		_format = format;

@@ -280,14 +280,43 @@ void SubGridManager::mark_chunk_dirty(const String &uuid_str, Vector3i lod0_chun
 	FixedArray<HashSet<Vector3i>, SUBGRID_MAX_LODS> affected;
 	state->node->get_chunk_map_mut().update_lods_for_chunk(lod0_chunk_pos, affected);
 
-	//re-trigger meshing for every affected position that is currently being viewed (has a ChunkMeshBlockState already). Positions nobody is
-	// viewing right now are skipped - schedule_chunk_remesh() is a no-op for them, and view_mesh_box() will read fresh voxel data automatically once a viewer's box reaches
-	// them, so there's nothing lost by not tracking them here.
+	ShipLod &lod0 = state->lods[0];
 
-	// LOD0
+	// Inner box (mesh padding = 1): full remesh, own light_dirty.
+	{
+		ChunkMeshBlockState *block = lod0.mesh_state.getptr(lod0_chunk_pos);
+		if (block != nullptr) {
+			block->light_dirty = true;
+			block->requires_geometry = true;
+		}
+	}
 	notify_chunk_edited(*state, lod0_chunk_pos, 0);
 
-	// LOD1+: affected[lod] are LOD-space positions
+	// Outer box (LIGHT_PADDING radius, in whole chunks): flood-only for anything outside the
+	// inner box. LIGHT_PADDING (15) < chunk size (16), so radius 1 in chunk units always covers it.
+	for (int dz = -1; dz <= 1; dz++) {
+		for (int dy = -1; dy <= 1; dy++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				if (dx == 0 && dy == 0 && dz == 0) {
+					continue; // inner box, already handled above
+				}
+				const Vector3i npos = lod0_chunk_pos + Vector3i(dx, dy, dz);
+				ChunkMeshBlockState *nblock = lod0.mesh_state.getptr(npos);
+				if (nblock == nullptr)
+					continue;
+				nblock->light_dirty = true;
+				// Only downgrade to flood-only if nothing else already needs (or is currently mid-flight
+				// for) a real geometry rebuild on this chunk. Blindly overwriting requires_geometry=false
+				// here was clobbering genuinely-pending full rebuilds scheduled moments earlier but not yet
+				// submitted/completed - exactly what caused rapidly-edited new chunks to lose their mesh.
+				if (nblock->update_list_index == -1 && nblock->state != MESH_UPDATE_SENT) {
+					nblock->requires_geometry = false;
+				}
+				schedule_chunk_remesh(lod0, npos);
+			}
+		}
+	}
+
 	for (int lod = 1; lod < _lod_count; lod++) {
 		for (const Vector3i &lod_pos : affected[lod]) {
 			notify_chunk_edited(*state, lod_pos, lod);
@@ -1150,24 +1179,42 @@ void SubGridManager::_submit_pending_tasks(const String &uuid, ShipState &state)
 }
 
 void SubGridManager::_submit_one_task(const String &uuid, ShipState &state, Vector3i lod_pos, int lod) {
-	std::shared_ptr<VoxelBuffer> padded = _build_padded_buffer(state.node, lod_pos, lod);
+	ChunkMeshBlockState *block = state.lods[lod].mesh_state.getptr(lod_pos);
+	const bool requires_geometry = (block == nullptr) ? true : block->requires_geometry; // see scheduling below
+	bool light_dirty = false;
+	if (block != nullptr) {
+		light_dirty = block->light_dirty;
+		block->light_dirty = false;
+	}
 
-	if (!padded) {
+	std::shared_ptr<VoxelBuffer> padded;
+	if (requires_geometry) {
+		padded = _build_padded_buffer(state.node, lod_pos, lod);
+		if (!padded) {
 		// Caller (_submit_pending_tasks) already set state/update_list_index for this chunk;
 		// it'll simply have no task in flight and stay MESH_UPDATE_SENT with nothing to
 		// deliver. Acceptable: the next box re-entry or edit will re-schedule it.
-		return;
+			return;
+		}
+	}
+
+	std::shared_ptr<VoxelBuffer> light_padded;
+	if (lod == 0 && (light_dirty || !requires_geometry)) {
+		// Flood-only tasks always flood (that's their whole purpose); normal tasks flood
+		// only if light_dirty.
+		light_padded = _build_light_padded_buffer(state.node, lod_pos, lod);
 	}
 
 	SubGridMeshTaskInput input;
 	input.ship_uuid = uuid;
-	input.chunk_pos = lod_pos; // LOD-space
+	input.chunk_pos = lod_pos;
 	input.lod = lod;
 	input.padded_buffer = std::move(padded);
+	input.light_padded_buffer = std::move(light_padded);
+	input.light_dirty = light_dirty;
+	input.requires_geometry = requires_geometry;
 	input.mesher = _mesher;
-	// Collision only at LOD0, only if not yet built
-	// chunk_pos at lod0 == lod_pos when lod==0
-	input.build_collision = (lod == 0) && !state.collision_built_chunks.has(lod_pos);
+	input.build_collision = requires_geometry && (lod == 0) && !state.collision_built_chunks.has(lod_pos);
 	input.weight_table = _weight_table;
 
 	_pending_futures.push_back(std::async(std::launch::async, run_mesh_task, std::move(input)));
@@ -1194,7 +1241,19 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 	}
 
 	const int lod = result.lod;
-	const Vector3i lod_pos = result.chunk_pos; // LOD-space
+	const Vector3i lod_pos = result.chunk_pos;
+	uint64_t key = _chunk_mesh_key(lod_pos, lod);
+
+	// -------- Flood-only: update just the light texture, touch nothing else. --------
+	if (result.light_only) {
+		ChunkRenderData *render = state->chunk_renders.getptr(key);
+		if (render != nullptr && render->chunk_material.is_valid() && result.output.light_surface.was_computed) {
+			_update_chunk_light_texture(*render, result.output.light_surface.texture_data, lod);
+		}
+		return;
+	}
+
+	// -------- Normal path (unchanged from before, plus texture assignment at creation) --------
 	ShipLod &ship_lod = state->lods[lod];
 
 	// MIRROR of the staleness check in apply_mesh_update(): the chunk may have been unviewed
@@ -1204,8 +1263,6 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 		return;
 	}
 	block->state = MESH_UP_TO_DATE;
-
-	uint64_t key = _chunk_mesh_key(lod_pos, lod);
 
 	// Remove existing render for this key (re-mesh of an already-loaded chunk, e.g. after an edit, voxels changed so the old geometry is stale).
 	ChunkRenderData *existing = state->chunk_renders.getptr(key);
@@ -1253,6 +1310,29 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 			ChunkRenderData render_data;
 			render_data.instance_rid = instance;
 			render_data.mesh = mesh;
+
+			// Per-chunk material override: the base material is shared with terrain, so we
+			// duplicate it per chunk purely to give each chunk its own u_light_texture without
+			// stomping every other chunk's (terrain's included) shared material instance.
+			const int surface_count = mesh->get_surface_count();
+			for (int i = 0; i < surface_count; i++) {
+				Ref<Material> base_mat = mesh->surface_get_material(i);
+				Ref<ShaderMaterial> base_shader_mat = base_mat;
+				if (base_shader_mat.is_valid()) {
+					Ref<ShaderMaterial> override_mat = base_shader_mat->duplicate();
+					const int chunk_size = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+					override_mat->set_shader_parameter("u_block_size", chunk_size << lod);
+					// u_texture_border is fixed regardless of LOD - do not scale it (per shader comment)
+					mesh->surface_set_material(i, override_mat);
+					render_data.chunk_material = override_mat; // last surface wins if >1; fine since
+															   // u_light_texture is the same for all
+				}
+			}
+
+			if (render_data.chunk_material.is_valid() && result.output.light_surface.was_computed) {
+				_update_chunk_light_texture(render_data, result.output.light_surface.texture_data, lod);
+			}
+
 			state->chunk_renders[key] = std::move(render_data);
 		}
 	}
@@ -1272,6 +1352,63 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 	}
 }
 
+
+void SubGridManager::_update_chunk_light_texture(
+		ChunkRenderData &render_data,
+		const StdVector<uint8_t> &light_data,
+		int lod
+) {
+	const int chunk_size = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+	const int block_size = (chunk_size << lod) + 2 * TEXTURE_BORDER; // texture_data is already
+																	 // built at this padded size
+	const int voxel_count = block_size * block_size * block_size;
+	if (static_cast<int>(light_data.size()) != voxel_count) {
+		return;
+	}
+
+	PackedByteArray image_data;
+	image_data.resize(voxel_count * 4);
+	uint8_t *w = image_data.ptrw();
+	for (int i = 0; i < voxel_count; ++i) {
+		const uint8_t packed = light_data[i];
+		const uint8_t intensity = packed & 0xF;
+		const uint8_t color_idx = (packed >> 4) & 0xF;
+		w[i * 4 + 0] = uint8_t(intensity * 17);
+		w[i * 4 + 1] = uint8_t(color_idx * 17);
+		w[i * 4 + 2] = 0;
+		w[i * 4 + 3] = 255;
+	}
+
+	Vector<Ref<Image>> layers;
+	layers.resize(block_size);
+	for (int z = 0; z < block_size; ++z) {
+		PackedByteArray layer_data;
+		layer_data.resize(block_size * block_size * 4);
+		uint8_t *lw = layer_data.ptrw();
+		for (int x = 0; x < block_size; ++x) {
+			for (int y = 0; y < block_size; ++y) {
+				const int src = (y + x * block_size + z * block_size * block_size) * 4;
+				const int dst = (x + y * block_size) * 4;
+				lw[dst + 0] = w[src + 0];
+				lw[dst + 1] = w[src + 1];
+				lw[dst + 2] = w[src + 2];
+				lw[dst + 3] = w[src + 3];
+			}
+		}
+		layers.write[z] = Image::create_from_data(block_size, block_size, false, Image::FORMAT_RGBA8, layer_data);
+	}
+
+	if (render_data.light_texture.is_null()) {
+		render_data.light_texture.instantiate();
+		render_data.light_texture->create(Image::FORMAT_RGBA8, block_size, block_size, block_size, false, layers);
+	} else {
+		render_data.light_texture->update(layers);
+	}
+
+	if (render_data.chunk_material.is_valid()) {
+		render_data.chunk_material->set_shader_parameter("u_light_texture", Variant(render_data.light_texture));
+	}
+}
 // ____________________________________________________________________________
 // Padded buffer
 
@@ -2078,6 +2215,57 @@ void SubGridManager::_drive_homing_disassembles(double delta) {
 		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, linear_vel);
 		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, angular_vel);
 	}
+}
+std::shared_ptr<VoxelBuffer> SubGridManager::_build_light_padded_buffer(VoxelSubGrid *node, Vector3i lod_pos, int lod)
+		const {
+	const SubGridChunkMap &chunk_map = node->get_chunk_map();
+	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2; // 16
+	const int pad = SubGridChunkMap::LIGHT_PADDING; // 15
+	const int bs = cs + pad * 2; // 46
+
+	auto big = std::make_shared<VoxelBuffer>(VoxelBuffer::ALLOCATOR_DEFAULT);
+	big->create(bs, bs, bs);
+	big->fill(0, VoxelBuffer::CHANNEL_TYPE); // treated as air outside the ship's own chunks
+
+	// LIGHT_PADDING (15) is smaller than chunk size (16), so a single layer of the 26 surrounding chunks (27 including center) always fully covers the padded region, light from this chunk can never need to reach two chunks out.
+	for (int dz = -1; dz <= 1; dz++) {
+		for (int dy = -1; dy <= 1; dy++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				const Vector3i offset(dx, dy, dz);
+				std::shared_ptr<VoxelBuffer> src = chunk_map.get_lod_chunk_buffer(lod_pos + offset, lod);
+				if (!src) {
+					continue; // sparse: leave as air
+				}
+
+				// This neighbor chunk's voxel range [0,cs) maps into the big buffer at offset*cs + pad. Clip to the big buffer's own bounds.
+				const Vector3i chunk_origin_in_big = offset * cs + Vector3i(pad, pad, pad);
+
+				const int x0 = MAX(0, -chunk_origin_in_big.x);
+				const int y0 = MAX(0, -chunk_origin_in_big.y);
+				const int z0 = MAX(0, -chunk_origin_in_big.z);
+				const int x1 = MIN(cs, bs - chunk_origin_in_big.x);
+				const int y1 = MIN(cs, bs - chunk_origin_in_big.y);
+				const int z1 = MIN(cs, bs - chunk_origin_in_big.z);
+
+				for (int z = z0; z < z1; z++) {
+					for (int x = x0; x < x1; x++) {
+						for (int y = y0; y < y1; y++) {
+							const uint32_t v = src->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
+							big->set_voxel(
+									v,
+									chunk_origin_in_big.x + x,
+									chunk_origin_in_big.y + y,
+									chunk_origin_in_big.z + z,
+									VoxelBuffer::CHANNEL_TYPE
+							);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return big;
 }
 
 

@@ -7,12 +7,15 @@
 #include <memory>
 
 namespace zylann::voxel {
-
+	
 struct SubGridMeshTaskInput {
 	String ship_uuid;
 	Vector3i chunk_pos;
 	int lod = 0;
 	std::shared_ptr<VoxelBuffer> padded_buffer;
+	std::shared_ptr<VoxelBuffer> light_padded_buffer;
+	bool light_dirty = false;
+	bool requires_geometry = true;
 	Ref<VoxelMesherBlocky> mesher;
 
 	// Collision is only built at lod == 0.
@@ -25,6 +28,7 @@ struct SubGridMeshTaskResult {
 	String ship_uuid;
 	Vector3i chunk_pos;
 	int lod = 0;
+	bool light_only = false;
 	VoxelMesher::Output output;
 
 	// Only populated when input.build_collision == true && lod == 0.

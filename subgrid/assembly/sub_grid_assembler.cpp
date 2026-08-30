@@ -4,6 +4,10 @@
 #include "terrain/variable_lod/voxel_lod_terrain.h"
 #include "core/math/random_number_generator.h"
 
+#include "../../meshers/blocky/voxel_blocky_library_base.h"
+#include "../../meshers/blocky/blocky_baked_library.h"
+#include "../../meshers/blocky/voxel_mesher_blocky.h"
+
 namespace zylann::voxel {
 
 // Matches SimAssemblyContraption::DIRECTION_OFFSETS exactly:
@@ -44,6 +48,9 @@ SubGridAssembler::AssembledBody *SubGridAssembler::assemble(
 
 	Ref<VoxelTool> tool = terrain->get_voxel_tool();
 	ERR_FAIL_COND_V(!tool.is_valid(), nullptr);
+
+	Ref<VoxelMesherBlocky> blocky_mesher = terrain->get_mesher();
+	Ref<VoxelBlockyLibraryBase> lib = blocky_mesher.is_valid() ? blocky_mesher->get_library() : Ref<VoxelBlockyLibraryBase>();
 
 	// Same channel depths the terrain actually uses - this gets baked permanently into this
 	// ship's first save, so it must come from the terrain's real format, not VoxelBuffer's
@@ -92,7 +99,7 @@ SubGridAssembler::AssembledBody *SubGridAssembler::assemble(
 	}
 
 	// We do this AFTER the full flood-fill (including children) so a failed assembly leaves the terrain untouched.
-	_erase_from_terrain(tool.ptr(), root);
+	_erase_from_terrain(tool.ptr(), root, lib);
 
 	return root;
 }
@@ -222,13 +229,19 @@ void SubGridAssembler::flood_fill(
 // Erase assembled blocks from terrain (called only on success)
 
 
-void SubGridAssembler::_erase_from_terrain(VoxelTool *tool, AssembledBody *body) {
+void SubGridAssembler::_erase_from_terrain(VoxelTool *tool, AssembledBody *body, Ref<VoxelBlockyLibraryBase> lib) {
 	tool->set_channel(VoxelBuffer::CHANNEL_TYPE);
 	for (const KeyValue<Vector3i, uint32_t> &kv : body->world_blocks) {
-		tool->set_voxel(kv.key, 0); // position first, value second
+		bool relevant = false;
+		if (lib.is_valid()) {
+			RWLockRead lock(lib->get_baked_data_rw_lock());
+			const blocky::BakedLibrary &baked = lib->get_baked_data();
+			relevant = baked.has_model(kv.value) && baked.models[kv.value].light_emission > 0;
+		}
+		tool->set_voxel(kv.key, 0, relevant); // position, value, p_relevant
 	}
 	for (AssembledBody *child : body->children) {
-		_erase_from_terrain(tool, child);
+		_erase_from_terrain(tool, child, lib);
 	}
 }
 
