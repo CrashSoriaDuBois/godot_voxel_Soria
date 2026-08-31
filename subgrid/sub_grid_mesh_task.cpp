@@ -7,7 +7,7 @@ namespace zylann::voxel {
 
 namespace {
 
-// Mirrors mesh_block_task.cpp's extract_light_slices exactly: raw block_size^3 for persistence, and a TEXTURE_BORDER-padded slice for the shader's sampler3D.
+// Mirrors mesh_block_task.cpp's extract_light_slices: raw block_size^3 for persistence, TEXTURE_BORDER-padded slice for the shader's sampler3D.
 void extract_light_slices(
 		const StdVector<uint8_t> &big_buffer,
 		const Vector3i big_size,
@@ -41,7 +41,7 @@ void extract_light_slices(
 	output.light_surface.was_computed = true;
 }
 
-// Runs the flood over a CHANNEL_TYPE-only buffer of the given size, writing into `output`.
+// Runs a real flood over a CHANNEL_TYPE-only, LIGHT_PADDING-sized buffer.
 void run_flood(
 		const VoxelBuffer &light_buf,
 		Ref<VoxelMesherBlocky> mesher,
@@ -73,6 +73,19 @@ void run_flood(
 	extract_light_slices(big_buf, light_size, SubGridChunkMap::LIGHT_PADDING, chunk_size, output);
 }
 
+// LOD1+ normal rebuilds: no flood, just re-slice the already-downsampled, already-persisted
+// CHANNEL_DATA5 with a TEXTURE_BORDER halo - mirrors terrain's "else" branch exactly.
+void extract_light_slices_from_data5(const VoxelBuffer &data5_buf, int chunk_size, VoxelMesher::Output &output) {
+	Span<const uint8_t> stored;
+	if (!data5_buf.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_DATA5, stored)) {
+		return;
+	}
+	StdVector<uint8_t> big_buf;
+	big_buf.resize(stored.size());
+	memcpy(big_buf.data(), stored.data(), stored.size());
+	extract_light_slices(big_buf, data5_buf.get_size(), TEXTURE_BORDER, chunk_size, output);
+}
+
 } // namespace
 
 SubGridMeshTaskResult run_mesh_task(SubGridMeshTaskInput input) {
@@ -82,47 +95,81 @@ SubGridMeshTaskResult run_mesh_task(SubGridMeshTaskInput input) {
 	result.lod = input.lod;
 
 	const int chunk_size = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
+	const int pad = 1;
 
 	// -------- Flood-only path: no geometry, no collision, just light. --------
 	if (!input.requires_geometry) {
 		result.light_only = true;
+		print_line(
+				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) + " FLOOD_ONLY branch"
+		);
 		if (input.light_padded_buffer) {
 			run_flood(*input.light_padded_buffer, input.mesher, chunk_size, result.output);
+			print_line(
+					String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
+					" flood_only result: was_computed=" +
+					(result.output.light_surface.was_computed ? "true" : "false") +
+					" data.size=" + itos(result.output.light_surface.data.size()) +
+					" texture_data.size=" + itos(result.output.light_surface.texture_data.size())
+			);
+		} else {
+			print_line(
+					String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
+					" FLOOD_ONLY but light_padded_buffer is NULL!"
+			);
 		}
 		return result;
 	}
 
-	// -------- Normal path: mesh + (own flood if light_dirty) --------
-	const int pad = 1;
-
-	if (input.light_dirty && input.light_padded_buffer) {
-		VoxelMesher::Output light_output;
-		run_flood(*input.light_padded_buffer, input.mesher, chunk_size, light_output);
-
-		// Persist the raw slice into this chunk's own CHANNEL_DATA5, exactly like
-		// MeshBlockTask does for terrain (own block only - no neighbor cross-writes).
-		if (!light_output.light_surface.data.empty()) {
-			input.padded_buffer->decompress_channel(VoxelBuffer::CHANNEL_DATA5);
-			Span<uint8_t> dst;
-			if (input.padded_buffer->get_channel_as_bytes(VoxelBuffer::CHANNEL_DATA5, dst)) {
-				// input.padded_buffer is (chunk_size+2*pad)^3 with pad=1; the raw light slice
-				// is chunk_size^3 and must land at the buffer's own [pad, pad+chunk_size) interior,
-				// not its [0,0,0) origin.
-				const int padded_size = chunk_size + 2 * pad;
-				const StdVector<uint8_t> &raw = light_output.light_surface.data;
-				for (int z = 0; z < chunk_size; z++) {
-					for (int x = 0; x < chunk_size; x++) {
-						for (int y = 0; y < chunk_size; y++) {
-							const int src_idx = y + x * chunk_size + z * chunk_size * chunk_size;
-							const int dx = x + pad, dy = y + pad, dz = z + pad;
-							const int dst_idx = dy + dx * padded_size + dz * padded_size * padded_size;
-							dst[dst_idx] = raw[src_idx];
-						}
-					}
-				}
+	if (input.should_flood && input.light_padded_buffer) {
+		print_line(
+				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) + " REAL_FLOOD branch"
+		);
+		run_flood(*input.light_padded_buffer, input.mesher, chunk_size, result.output);
+		print_line(
+				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
+				" real_flood result: was_computed=" + (result.output.light_surface.was_computed ? "true" : "false") +
+				" data.size=" + itos(result.output.light_surface.data.size()) +
+				" texture_data.size=" + itos(result.output.light_surface.texture_data.size())
+		);
+	} else if (input.lod > 0 && input.data5_extract_buffer) {
+		print_line(
+				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
+				" EXTRACT_FROM_DATA5 branch"
+		);
+		// Print whether the source buffer actually has any non-zero data5 before extracting
+		{
+			Span<const uint8_t> raw_check;
+			if (input.data5_extract_buffer->get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_DATA5, raw_check)) {
+				int non_zero = 0;
+				for (uint8_t v : raw_check)
+					if (v != 0)
+						++non_zero;
+				print_line(
+						String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
+						" data5_extract_buffer non_zero=" + itos(non_zero) + " / " + itos(raw_check.size())
+				);
+			} else {
+				print_line(
+						String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
+						" data5_extract_buffer channel is COMPRESSED/UNIFORM (never decompressed - likely all-zero "
+						"default)"
+				);
 			}
 		}
-		result.output.light_surface = std::move(light_output.light_surface);
+		extract_light_slices_from_data5(*input.data5_extract_buffer, chunk_size, result.output);
+		print_line(
+				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
+				" extract result: was_computed=" + (result.output.light_surface.was_computed ? "true" : "false") +
+				" data.size=" + itos(result.output.light_surface.data.size())
+		);
+	} else {
+		print_line(
+				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
+				" NO LIGHT WORK DONE (should_flood=" + (input.should_flood ? "true" : "false") + " light_padded=" +
+				(input.light_padded_buffer ? "set" : "null") + " lod>0=" + (input.lod > 0 ? "true" : "false") +
+				" data5_extract=" + (input.data5_extract_buffer ? "set" : "null") + ")"
+		);
 	}
 
 	VoxelMesher::Input mesher_input{ *input.padded_buffer,
@@ -133,9 +180,13 @@ SubGridMeshTaskResult run_mesh_task(SubGridMeshTaskInput input) {
 									 false,
 									 false,
 									 false };
-	input.mesher->build(result.output, mesher_input); // build() overwrites result.output.surfaces
-													  // but leaves light_surface untouched since
-													  // VoxelMesher::build() has no concept of it.
+	input.mesher->build(result.output, mesher_input);
+
+	print_line(
+			String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
+			" AFTER mesher->build(): light_surface.was_computed=" +
+			(result.output.light_surface.was_computed ? "true" : "false")
+	);
 
 	if (input.build_collision && input.lod == 0) {
 		Vector3i chunk_voxel_origin = input.chunk_pos << SubGridChunkMap::CHUNK_SIZE_PO2;

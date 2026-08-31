@@ -23,8 +23,9 @@ struct ChunkMeshBlockState {
 	bool visual_loaded = false;
 	int update_list_index = -1;
 	int mesh_viewers = 0;
-	bool light_dirty = true;
-	bool requires_geometry = true;
+	bool light_dirty = true; // needs its light (re)computed at next build
+	bool requires_geometry = true; // false = flood-only task, no mesh/collision rebuild
+	bool pending_light_retry = false;
 };
 
 struct ShipLod {

@@ -14,10 +14,12 @@ static const int SUBGRID_MAX_LODS = 4;
 
 class SubGridChunkMap {
 public:
-	static const int CHUNK_SIZE_PO2 = 4; // 16 voxels per side at LOD0
-
+	static const int CHUNK_SIZE_PO2 = 4;
 	static const int LIGHT_PADDING = 15;
+	static const int TEXTURE_BORDER = 2;
 
+	// Channels carried through LOD downsampling and disassembly merges. CHANNEL_DATA5 IS included here: LOD1+ never floods on its own (mirrors terrain's
+	// "LOD1+ never independently floods, just extracts from stored CHANNEL_DATA5"), so it must inherit an already-correct value via downsampling instead.
 	static constexpr VoxelBuffer::ChannelId SUBGRID_CHANNELS[] = {
 		VoxelBuffer::CHANNEL_TYPE,
 		VoxelBuffer::CHANNEL_COLOR,

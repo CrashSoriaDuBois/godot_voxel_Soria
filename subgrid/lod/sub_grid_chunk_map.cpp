@@ -88,13 +88,14 @@ void SubGridChunkMap::mark_chunk_clean(Vector3i lod0_chunk_pos) {
 void SubGridChunkMap::_downsample_lod_chunk(Vector3i lod_pos, int lod) {
 	ERR_FAIL_COND(lod <= 0 || lod >= SUBGRID_MAX_LODS);
 
-	const int cs = 1 << CHUNK_SIZE_PO2; // 16
+	const int cs = 1 << CHUNK_SIZE_PO2;
 	const int stride = 2;
 
 	VoxelDataBlock *dst_block = _lod_maps[lod].get_block(lod_pos);
 	if (dst_block == nullptr) {
 		auto buf = std::make_shared<VoxelBuffer>(VoxelBuffer::ALLOCATOR_POOL);
-		buf->create(cs, cs, cs, &_format);
+		buf->create(cs, cs, cs);
+		apply_subgrid_channel_depths(*buf);
 		for (int c = 0; c < SUBGRID_CHANNEL_COUNT; c++) {
 			buf->fill(0, SUBGRID_CHANNELS[c]);
 		}

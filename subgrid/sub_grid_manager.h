@@ -233,7 +233,7 @@ private:
 	// -----------------------------------------------------------------------
 	// Threading
 
-	static constexpr int MAX_CONCURRENT_TASKS = 8;
+	static constexpr int MAX_CONCURRENT_TASKS = 8; //can be 32 if problems arrives
 	std::vector<std::future<SubGridMeshTaskResult>> _pending_futures;
 
 	// -----------------------------------------------------------------------
@@ -251,6 +251,8 @@ private:
 
 	std::shared_ptr<VoxelBuffer> _build_padded_buffer(VoxelSubGrid *node, Vector3i chunk_pos, int lod) const;
 	std::shared_ptr<VoxelBuffer> _build_light_padded_buffer(VoxelSubGrid *node, Vector3i chunk_pos, int lod) const;
+
+	std::shared_ptr<VoxelBuffer> _build_data5_extract_buffer(VoxelSubGrid *node, Vector3i chunk_pos, int lod) const;
 
 	// -----------------------------------------------------------------------
 	// _physics_process(). rotation, transform sync
