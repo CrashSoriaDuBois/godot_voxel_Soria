@@ -233,7 +233,7 @@ private:
 	// -----------------------------------------------------------------------
 	// Threading
 
-	static constexpr int MAX_CONCURRENT_TASKS = 8; //can be 32 if problems arrives
+	static constexpr int MAX_CONCURRENT_TASKS = 32; //can be 32 if problems arrives
 	std::vector<std::future<SubGridMeshTaskResult>> _pending_futures;
 
 	// -----------------------------------------------------------------------

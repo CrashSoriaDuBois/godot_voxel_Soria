@@ -1210,19 +1210,19 @@ void SubGridManager::_submit_one_task(const String &uuid, ShipState &state, Vect
 	if (requires_geometry) {
 		padded = _build_padded_buffer(state.node, lod_pos, lod);
 		if (!padded) {
-			print_line(String("SUBMIT lod=") + itos(lod) + " pos=" + String(lod_pos) + " ABORTED: no padded buffer");
+			/*print_line(String("SUBMIT lod=") + itos(lod) + " pos=" + String(lod_pos) + " ABORTED: no padded buffer");*/
 			return;
 		}
 	}
 
 	const bool should_flood = !requires_geometry || (lod == 0 && light_dirty);
 
-	print_line(
+	/*print_line(
 			String("SUBMIT lod=") + itos(lod) + " pos=" + String(lod_pos) + " requires_geometry=" +
 			(requires_geometry ? "true" : "false") + " light_dirty=" + (light_dirty ? "true" : "false") +
 			" should_flood=" + (should_flood ? "true" : "false") + " -> " +
 			(should_flood ? "REAL_FLOOD" : (requires_geometry && lod > 0 ? "EXTRACT_FROM_DATA5" : "NO_LIGHT_WORK"))
-	);
+	);*/
 
 	std::shared_ptr<VoxelBuffer> light_padded;
 	std::shared_ptr<VoxelBuffer> data5_extract;
@@ -1230,10 +1230,10 @@ void SubGridManager::_submit_one_task(const String &uuid, ShipState &state, Vect
 		light_padded = _build_light_padded_buffer(state.node, lod_pos, lod);
 	} else if (requires_geometry && lod > 0) {
 		data5_extract = _build_data5_extract_buffer(state.node, lod_pos, lod);
-		print_line(
+		/*print_line(
 				String("SUBMIT lod=") + itos(lod) + " pos=" + String(lod_pos) +
 				" data5_extract_buffer=" + (data5_extract ? "built" : "NULL (neighbor chunk missing?)")
-		);
+		);*/
 	}
 
 	SubGridMeshTaskInput input;
@@ -1357,19 +1357,19 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 			}
 
 			if (render_data.chunk_material.is_valid() && result.output.light_surface.was_computed) {
-				print_line(
+				/*print_line(
 						String("APPLY lod=") + itos(lod) + " pos=" + String(lod_pos) +
 						" UPLOADING texture, texture_data.size=" + itos(result.output.light_surface.texture_data.size())
-				);
+				);*/
 				_update_chunk_light_texture(render_data, result.output.light_surface.texture_data, lod);
-			} else {
+			} /*else {
 				print_line(
 						String("APPLY lod=") + itos(lod) + " pos=" + String(lod_pos) +
 						" SKIPPED texture upload: chunk_material_valid=" +
 						(render_data.chunk_material.is_valid() ? "true" : "false") +
 						" was_computed=" + (result.output.light_surface.was_computed ? "true" : "false")
 				);
-			}
+			}*/
 
 			state->chunk_renders[key] = std::move(render_data);
 		}
@@ -1385,14 +1385,14 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 	// Persist the LOD0 flood result into the real chunk buffer, then re-downsample, so LOD1+
 	// (which never floods on its own) has correct CHANNEL_DATA5 to extract from next time it rebuilds.
 	if (lod == 0 && result.output.light_surface.was_computed && !result.output.light_surface.data.empty()) {
-		print_line(String("APPLY lod=0 pos=") + String(lod_pos) + " entering CHANNEL_DATA5 persist+repropagate");
+		/*print_line(String("APPLY lod=0 pos=") + String(lod_pos) + " entering CHANNEL_DATA5 persist+repropagate")*/;
 		std::shared_ptr<VoxelBuffer> real_buf = state->node->get_chunk_map_mut().get_chunk_buffer(lod_pos);
 		if (real_buf) {
 			const StdVector<uint8_t> &raw = result.output.light_surface.data;
-			print_line(
+			/*print_line(
 					String("APPLY lod=0 pos=") + String(lod_pos) + " raw.size=" + itos(raw.size()) +
 					" real_buf->get_volume()=" + itos(real_buf->get_volume())
-			);
+			);*/
 			if (raw.size() == real_buf->get_volume()) {
 				real_buf->decompress_channel(VoxelBuffer::CHANNEL_DATA5);
 				Span<uint8_t> dst;
@@ -1421,20 +1421,20 @@ void SubGridManager::_apply_mesh_result(const SubGridMeshTaskResult &result) {
 							}
 						}
 					}
-				} else {
+				} /*else {
 					print_line(
 							String("APPLY lod=0 pos=") + String(lod_pos) +
 							" FAILED to get_channel_as_bytes for CHANNEL_DATA5!"
 					);
-				}
-			} else {
+				}*/
+			} /*else {
 				print_line(String("APPLY lod=0 pos=") + String(lod_pos) + " SIZE MISMATCH, skipping persist entirely");
-			}
-		} else {
+			}*/
+		} /*else {
 			print_line(
 					String("APPLY lod=0 pos=") + String(lod_pos) + " real_buf is NULL (chunk not found in chunk map)!"
 			);
-		}
+		}*/
 	}
 
 	if (result.has_collision && !state->collision_built_chunks.has(lod_pos)) {

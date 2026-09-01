@@ -100,43 +100,43 @@ SubGridMeshTaskResult run_mesh_task(SubGridMeshTaskInput input) {
 	// -------- Flood-only path: no geometry, no collision, just light. --------
 	if (!input.requires_geometry) {
 		result.light_only = true;
-		print_line(
+		/*print_line(
 				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) + " FLOOD_ONLY branch"
-		);
+		);*/
 		if (input.light_padded_buffer) {
 			run_flood(*input.light_padded_buffer, input.mesher, chunk_size, result.output);
-			print_line(
+			/*print_line(
 					String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
 					" flood_only result: was_computed=" +
 					(result.output.light_surface.was_computed ? "true" : "false") +
 					" data.size=" + itos(result.output.light_surface.data.size()) +
 					" texture_data.size=" + itos(result.output.light_surface.texture_data.size())
-			);
-		} else {
+			);*/
+		} /*else {
 			print_line(
 					String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
 					" FLOOD_ONLY but light_padded_buffer is NULL!"
 			);
-		}
+		}*/
 		return result;
 	}
 
 	if (input.should_flood && input.light_padded_buffer) {
-		print_line(
+		/*print_line(
 				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) + " REAL_FLOOD branch"
-		);
+		);*/
 		run_flood(*input.light_padded_buffer, input.mesher, chunk_size, result.output);
-		print_line(
+		/*print_line(
 				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
 				" real_flood result: was_computed=" + (result.output.light_surface.was_computed ? "true" : "false") +
 				" data.size=" + itos(result.output.light_surface.data.size()) +
 				" texture_data.size=" + itos(result.output.light_surface.texture_data.size())
-		);
+		);*/
 	} else if (input.lod > 0 && input.data5_extract_buffer) {
-		print_line(
+		/*print_line(
 				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
 				" EXTRACT_FROM_DATA5 branch"
-		);
+		);*/
 		// Print whether the source buffer actually has any non-zero data5 before extracting
 		{
 			Span<const uint8_t> raw_check;
@@ -145,32 +145,32 @@ SubGridMeshTaskResult run_mesh_task(SubGridMeshTaskInput input) {
 				for (uint8_t v : raw_check)
 					if (v != 0)
 						++non_zero;
-				print_line(
+				/*print_line(
 						String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
 						" data5_extract_buffer non_zero=" + itos(non_zero) + " / " + itos(raw_check.size())
-				);
-			} else {
+				);*/
+			}/* else {
 				print_line(
 						String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
 						" data5_extract_buffer channel is COMPRESSED/UNIFORM (never decompressed - likely all-zero "
 						"default)"
 				);
-			}
+			}*/
 		}
 		extract_light_slices_from_data5(*input.data5_extract_buffer, chunk_size, result.output);
-		print_line(
+		/*print_line(
 				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
 				" extract result: was_computed=" + (result.output.light_surface.was_computed ? "true" : "false") +
 				" data.size=" + itos(result.output.light_surface.data.size())
-		);
-	} else {
+		);*/
+	} /*else {
 		print_line(
 				String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
 				" NO LIGHT WORK DONE (should_flood=" + (input.should_flood ? "true" : "false") + " light_padded=" +
 				(input.light_padded_buffer ? "set" : "null") + " lod>0=" + (input.lod > 0 ? "true" : "false") +
 				" data5_extract=" + (input.data5_extract_buffer ? "set" : "null") + ")"
 		);
-	}
+	}*/
 
 	VoxelMesher::Input mesher_input{ *input.padded_buffer,
 									 nullptr,
@@ -182,11 +182,11 @@ SubGridMeshTaskResult run_mesh_task(SubGridMeshTaskInput input) {
 									 false };
 	input.mesher->build(result.output, mesher_input);
 
-	print_line(
+	/*print_line(
 			String("RUN_TASK lod=") + itos(input.lod) + " pos=" + String(input.chunk_pos) +
 			" AFTER mesher->build(): light_surface.was_computed=" +
 			(result.output.light_surface.was_computed ? "true" : "false")
-	);
+	);*/
 
 	if (input.build_collision && input.lod == 0) {
 		Vector3i chunk_voxel_origin = input.chunk_pos << SubGridChunkMap::CHUNK_SIZE_PO2;

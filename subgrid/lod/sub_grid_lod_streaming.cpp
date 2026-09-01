@@ -199,8 +199,10 @@ void update_mesh_block_load(
 	ShipLod &parent_lod = ship.lods[parent_lod_index];
 	ChunkMeshBlockState *parent_block = parent_lod.mesh_state.getptr(parent_bpos);
 
-	if (parent_block == nullptr) {
-		// DEPARTURE from upstream - see function comment.
+	if (parent_block == nullptr || !parent_block->visual_active) {
+		//Also covers a parent that exists but is already inactive: that means children already control visibility at this LOD level
+		// (a prior sibling group triggered the handoff), so  a chunk arriving later (e.g. a new voxel edit creating this chunk for the first time)
+		// must activate directly here too, not wait for a parent->child handoff that already happened without it.
 		if (!block->visual_active) {
 			block->visual_active = true;
 			lod.to_activate_visuals.push_back(bpos);
@@ -211,11 +213,6 @@ void update_mesh_block_load(
 				update_mesh_block_load(ship, chunk_map, get_child_position(bpos, c), lod_index - 1, lod_count);
 			}
 		}
-		return;
-	}
-
-	if (!parent_block->visual_active) {
-		// Children already won this spot.
 		return;
 	}
 
@@ -439,23 +436,30 @@ void notify_chunk_edited(SubGridManager::ShipState &state, Vector3i bpos, int lo
 	ShipLod &lod = state.lods[lod_index];
 
 	if (lod.mesh_state.getptr(bpos) == nullptr) {
-		// Not tracked yet - check whether any currently-paired viewer's box already covers
-		// this position (true for essentially every real edit, since editing requires being
-		// near the chunk in the first place) and, if so, view it exactly as if the box-diff
-		// had discovered it normally - including the proper per-viewer refcounting, so a
-		// later unview from any one of them doesn't erase it while another still needs it.
+		bool any_contained = false;
 		for (int i = 0; i < state.paired_viewers.size(); ++i) {
 			const PairedShipViewer &pv = state.paired_viewers[i];
-			if (pv.state.mesh_box_per_lod[lod_index].contains(bpos)) {
+			bool contained = pv.state.mesh_box_per_lod[lod_index].contains(bpos);
+			/*print_line(
+					String("notify_chunk_edited: NEW chunk bpos=") + String(bpos) + " lod=" + itos(lod_index) +
+					" viewer#" + itos(i) + " box=" + String(pv.state.mesh_box_per_lod[lod_index].position) + "-" +
+					String(pv.state.mesh_box_per_lod[lod_index].position + pv.state.mesh_box_per_lod[lod_index].size) +
+					" contained=" + (contained ? "true" : "false")
+			);*/
+			if (contained) {
+				any_contained = true;
 				view_one_chunk(bpos, lod);
 			}
 		}
+		/* if (!any_contained) {
+			print_line(
+					String("notify_chunk_edited: NEW chunk bpos=") + String(bpos) + " lod=" + itos(lod_index) +
+					" -- NOT CONTAINED by any of " + itos(state.paired_viewers.size()) +
+					" paired viewers -- WILL NOT RENDER"
+			);
+		}*/
 	}
 
-	// Either this just got tracked above (view_one_chunk already scheduled it on first view),
-	// or it was already tracked from before (e.g. re-editing an existing chunk) and needs an
-	// explicit remesh trigger here. schedule_chunk_remesh's update_list_index guard makes
-	// calling it after view_one_chunk in the first case a harmless no-op, not a double-queue.
 	schedule_chunk_remesh(lod, bpos);
 }
 
