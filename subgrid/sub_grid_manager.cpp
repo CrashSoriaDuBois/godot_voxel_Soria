@@ -2267,7 +2267,8 @@ void SubGridManager::_drive_homing_disassembles(double delta) {
 		Transform3D current = ps->body_get_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
 		Vector3 linear_error = state.homing_target_t.origin - current.origin;
 		Basis rotation_error_basis = state.homing_target_t.basis * current.basis.orthonormalized().inverse();
-		Vector3 axis; real_t angle;
+		Vector3 axis;
+		real_t angle;
 		rotation_error_basis.get_axis_angle(axis, angle);
 
 		const float linear_dist = linear_error.length();
@@ -2276,16 +2277,27 @@ void SubGridManager::_drive_homing_disassembles(double delta) {
 		const bool timed_out = (now - state.homing_start_msec) > state.homing_timeout_msec;
 
 		if (arrived || timed_out) {
-			// Snap is purely cosmetic here, the transform used for actual voxel placement is always homing_target_t (already verified 
-			// clear at command time), never wherever  physics actually left the body, even if it got stuck and never reached this spot.
-			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM, state.homing_target_t);
-			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, Vector3());
-			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
-
 			state.homing_to_disassemble = false;
 			VoxelLodTerrain *terrain = state.homing_terrain;
 			state.homing_terrain = nullptr;
 			Transform3D committed_t = state.homing_target_t;
+
+			// Re-verify right before committing, the transform was only checked once, at command time, up to homing_timeout_msec ago
+			bool still_clear = (terrain == nullptr || state.node == nullptr)
+					? true
+					: state.node->_check_terrain_clear_for_transform(terrain, committed_t);
+
+			if (!still_clear) {
+				WARN_PRINT("Homing disassemble aborted: target transform no longer clear at commit "
+						   "time. Cancelling sequence, ship remains under normal physics.");
+				// Don't force the transform/velocities, leave the body wherever physics actually left it, and don't paste anything. homing_to_disassemble is already false, so suspension/normal control resumes on the next tick.
+				continue;
+			}
+
+			// Snap is purely cosmetic here, the transform used for actual voxel placement is always committed_t, now re-confirmed clear, never wherever physics actually left the body, even if it got stuck and never reached this spot.
+			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM, committed_t);
+			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, Vector3());
+			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
 
 			if (terrain != nullptr && state.node != nullptr) {
 				state.node->try_disassemble_at(terrain, committed_t);
@@ -2296,7 +2308,6 @@ void SubGridManager::_drive_homing_disassembles(double delta) {
 		Vector3 linear_vel = linear_dist > 0.0001f ? (linear_error / linear_dist) * state.homing_speed : Vector3();
 		Vector3 angular_vel = angular_dist > 0.0001f ? axis.normalized() * (angle / MAX(delta, 0.001)) : Vector3();
 
-		// Cap angular speed to something reasonable relative to homing_speed rather than an unbounded division-by-delta value.
 		const float max_angular = Math::deg_to_rad(90.0) * state.homing_speed;
 		if (angular_vel.length() > max_angular) {
 			angular_vel = angular_vel.normalized() * max_angular;

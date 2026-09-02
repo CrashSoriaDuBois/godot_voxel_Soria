@@ -929,19 +929,30 @@ bool VoxelSubGrid::_check_terrain_clear_for_transform(VoxelLodTerrain *terrain, 
 		}
 	});
 
-	for (const Entry &e : entries) {
-		Vector2i col(e.terrain_voxel.x, e.terrain_voxel.z);
-		if (e.terrain_voxel.y <= column_min_y[col]) {
-			continue;
-		}
-		Vector3i probe_local = e.terrain_voxel - probe_box.position;
+	// is the terrain solid at a given world-voxel coord, using the already-fetched probe buffer? Out-of-probe-range is treated as "not solid"
+	auto terrain_solid_at = [&](Vector3i world_voxel) -> bool {
+		Vector3i probe_local = world_voxel - probe_box.position;
 		if (probe_local.x < 0 || probe_local.y < 0 || probe_local.z < 0 || probe_local.x >= probe_box.size.x ||
 			probe_local.y >= probe_box.size.y || probe_local.z >= probe_box.size.z) {
-			continue;
+			return false;
 		}
-		uint32_t terrain_v =
-				terrain_probe.get_voxel(probe_local.x, probe_local.y, probe_local.z, VoxelBuffer::CHANNEL_TYPE);
-		if (terrain_v != 0) {
+		return terrain_probe.get_voxel(probe_local.x, probe_local.y, probe_local.z, VoxelBuffer::CHANNEL_TYPE) != 0;
+	};
+
+	for (const Entry &e : entries) {
+		Vector2i col(e.terrain_voxel.x, e.terrain_voxel.z);
+
+		if (e.terrain_voxel.y <= column_min_y[col]) {
+			// This is the hull's own lowest voxel in this column. On flat ground the hull is meant to rest flush, coinciding with the terrain surface, so exactly one layer
+			// of overlap here is expected and fine. On a step/slope the hull's flat bottom can end up several voxels *under* the real surface in some columns while still being
+			// "the lowest hull voxel" in that column, that's a genuine embed, not a flush rest. Distinguish the two: if solid terrain continues for a second voxel directly
+			// below this cell, the embed is more than one block deep, so don't exempt it, fall through to the normal check, which will correctly reject it.
+			if (!terrain_solid_at(e.terrain_voxel - Vector3i(0, 1, 0))) {
+				continue;
+			}
+		}
+
+		if (terrain_solid_at(e.terrain_voxel)) {
 			return false;
 		}
 	}
