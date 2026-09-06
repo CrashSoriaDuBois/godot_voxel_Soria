@@ -89,7 +89,7 @@ public:
 
 	void migrate_to_latest_version();
 
-	bool save_block_entity(
+bool save_block_entity(
 			const BlockLocation loc,
 			const int local_key,
 			const int action_type,
@@ -104,8 +104,16 @@ public:
 	bool delete_block_entity(const BlockLocation loc, const int local_key);
 	int get_next_local_key(const BlockLocation loc);
 
+	bool save_new_block_entity( // atomically assigns the next local key and inserts the entity in one transaction.
+			const BlockLocation loc,
+			const int action_type,
+			const Span<const uint8_t> data,
+			int &out_local_key
+	);
 	bool save_chunk_last_modified(const BlockLocation loc, double timestamp);
 	double load_chunk_last_modified(const BlockLocation loc); // returns -1 if not found
+
+	bool save_chunk_last_modified_batch(Span<const BlockLocation> locs, double timestamp);
 
 private:
 	int load_version();

@@ -13,6 +13,7 @@
 #include "shader_material_pool_vlt.h"
 #include "voxel_lod_terrain_update_data.h"
 #include "voxel_mesh_block_vlt.h"
+#include "../../util/godot/core/gdvirtual.h"
 
 #ifdef TOOLS_ENABLED
 #include "../../util/godot/debug_renderer.h"
@@ -159,6 +160,9 @@ public:
 
 	void post_edit_area_if_unedited(Box3i p_box, bool update_mesh);
 	void _b_post_edit_area_if_unedited(AABB aabb, bool update_mesh);
+
+	void set_area_edit_notification_enabled(bool enable);
+	bool is_area_edit_notification_enabled() const;
 
 	// TODO This still sucks atm cuz the edit will still run on the main thread
 	void push_async_edit(IThreadedTask *task, Box3i box, std::shared_ptr<AsyncDependencyTracker> tracker,  bool relevant = true);
@@ -389,6 +393,8 @@ private:
 
 	Dictionary _b_get_statistics() const;
 
+	GDVIRTUAL2(_on_area_edited, Vector3i, Vector3i);
+
 	static void _bind_methods();
 
 private:
@@ -455,7 +461,9 @@ private:
 	Ref<VoxelMesher> _mesher;
 
 	// Data stored with a shared pointer so it can be sent to asynchronous tasks
-	bool _threaded_update_enabled = false;
+	bool _threaded_update_enabled = true;
+	bool _area_edit_notification_enabled = false;
+
 	std::shared_ptr<VoxelData> _data;
 	std::shared_ptr<VoxelLodTerrainUpdateData> _update_data;
 	std::shared_ptr<StreamingDependency> _streaming_dependency;

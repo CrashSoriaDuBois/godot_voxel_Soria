@@ -1051,6 +1051,29 @@ bool Connection::load_block_entity(
 	return false; // not found
 }
 
+bool Connection::save_new_block_entity(
+		const BlockLocation loc,
+		const int action_type,
+		const Span<const uint8_t> data,
+		int &out_local_key
+) {
+	ZN_PROFILE_SCOPE();
+
+	TransactionScope transaction(*this);
+
+	const int local_key = get_next_local_key(loc);
+	if (local_key < 0) {
+		return false;
+	}
+
+	if (!save_block_entity(loc, local_key, action_type, data)) {
+		return false;
+	}
+
+	out_local_key = local_key;
+	return true;
+}
+
 bool Connection::delete_block_entity(const BlockLocation loc, const int local_key) {
 	sqlite3 *db = _db;
 	sqlite3_stmt *stmt = _delete_block_entity_statement;
@@ -1121,6 +1144,41 @@ bool Connection::save_chunk_last_modified(const BlockLocation loc, double timest
 
 	rc = sqlite3_step(stmt);
 	return rc == SQLITE_DONE;
+}
+
+bool Connection::save_chunk_last_modified_batch(Span<const BlockLocation> locs, double timestamp) {
+	ZN_PROFILE_SCOPE();
+
+	sqlite3_stmt *stmt = _save_chunk_meta_statement;
+
+	TransactionScope transaction(*this);
+
+	for (const BlockLocation &loc : locs) {
+		int rc = sqlite3_reset(stmt);
+		if (rc != SQLITE_OK) {
+			ERR_PRINT(sqlite3_errmsg(_db));
+			return false;
+		}
+
+		BindBlockCoordinates coord;
+		if (!coord.bind(_db, stmt, 1, _meta.coordinate_format, loc)) {
+			return false;
+		}
+
+		rc = sqlite3_bind_double(stmt, 2, timestamp);
+		if (rc != SQLITE_OK) {
+			ERR_PRINT(sqlite3_errmsg(_db));
+			return false;
+		}
+
+		rc = sqlite3_step(stmt);
+		if (rc != SQLITE_DONE) {
+			ERR_PRINT(sqlite3_errmsg(_db));
+			return false;
+		}
+	}
+
+	return true;
 }
 
 double Connection::load_chunk_last_modified(const BlockLocation loc) {

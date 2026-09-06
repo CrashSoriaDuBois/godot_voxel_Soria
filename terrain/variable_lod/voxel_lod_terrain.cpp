@@ -552,6 +552,14 @@ bool VoxelLodTerrain::is_threaded_update_enabled() const {
 	return _threaded_update_enabled;
 }
 
+void VoxelLodTerrain::set_area_edit_notification_enabled(bool enable) {
+	_area_edit_notification_enabled = enable;
+}
+
+bool VoxelLodTerrain::is_area_edit_notification_enabled() const {
+	return _area_edit_notification_enabled;
+}
+
 void VoxelLodTerrain::set_mesh_block_visual_active(
 		VoxelMeshBlockVLT &block,
 		bool active,
@@ -629,6 +637,10 @@ void VoxelLodTerrain::post_edit_area(Box3i p_box, bool update_mesh, bool p_relev
 		);
 	}
 
+	if (_area_edit_notification_enabled) {
+		GDVIRTUAL_CALL(_on_area_edited, p_box.position, p_box.size);
+	}
+
 #ifdef TOOLS_ENABLED
 	if (debug_is_draw_enabled() && debug_get_draw_flag(DEBUG_DRAW_EDIT_BOXES)) {
 		_debug_edit_items.push_back({ p_box, DebugEditItem::LINGER_FRAMES });
@@ -669,7 +681,13 @@ void VoxelLodTerrain::post_edit_area_if_unedited(Box3i p_box, bool update_mesh) 
 		_data->mark_area_modified_if_unedited(
 				p_box, &_update_data->state.edit_notifications.edited_blocks_lod0, update_mesh
 		);
-		_update_data->state.edit_notifications.edited_voxel_areas_lod0.push_back(VoxelLodTerrainUpdateData::EditedVoxelArea{ p_box, false });
+		_update_data->state.edit_notifications.edited_voxel_areas_lod0.push_back(
+				VoxelLodTerrainUpdateData::EditedVoxelArea{ p_box, false }
+		);
+	}
+
+	if (_area_edit_notification_enabled) {
+		GDVIRTUAL_CALL(_on_area_edited, p_box.position, p_box.size);
 	}
 }
 
@@ -4204,6 +4222,8 @@ void VoxelLodTerrain::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_cache_generated_blocks", "enabled"), &Self::set_cache_generated_blocks);
 	ClassDB::bind_method(D_METHOD("get_cache_generated_blocks"), &Self::get_cache_generated_blocks);
 
+	ClassDB::bind_method(D_METHOD("set_area_edit_notification_enabled", "enabled"), &Self::set_area_edit_notification_enabled);
+	ClassDB::bind_method(D_METHOD("is_area_edit_notification_enabled"), &Self::is_area_edit_notification_enabled);
 	// Debug
 
 	ClassDB::bind_method(D_METHOD("get_statistics"), &Self::_b_get_statistics);
@@ -4370,6 +4390,12 @@ void VoxelLodTerrain::_bind_methods() {
 
 	ADD_GROUP("Debug Drawing", "debug_");
 
+	ADD_PROPERTY(
+			PropertyInfo(Variant::BOOL, "area_edit_notification_enabled"),
+			"set_area_edit_notification_enabled",
+			"is_area_edit_notification_enabled"
+	);
+
 	// Debug drawing is not persistent
 
 	ADD_PROPERTY(
@@ -4404,6 +4430,9 @@ void VoxelLodTerrain::_bind_methods() {
 			"debug_set_draw_shadow_occluders",
 			"debug_get_draw_shadow_occluders"
 	);
+#ifdef ZN_GODOT
+	GDVIRTUAL_BIND(_on_area_edited, "area_origin", "area_size");
+#endif
 }
 
 } // namespace zylann::voxel

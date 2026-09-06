@@ -37,13 +37,23 @@ public:
 	void load_voxel_blocks(Span<VoxelStream::VoxelQueryData> p_blocks) override;
 	void save_voxel_blocks(Span<VoxelStream::VoxelQueryData> p_blocks) override;
 
-	bool save_block_entity(Vector3i chunk_pos, int local_key, int action_type, PackedByteArray data);
+bool save_block_entity(Vector3i chunk_pos, int local_key, int action_type, PackedByteArray data);
 	Dictionary load_block_entity(Vector3i chunk_pos, int local_key);
 	bool delete_block_entity(Vector3i chunk_pos, int local_key);
 	int get_next_local_key(Vector3i chunk_pos);
 
+	bool save_new_block_entity_internal( // not exposed to GDScript. Called from SaveBlockEntityTask on the IO thread.
+			Vector3i chunk_pos,
+			int action_type,
+			Span<const uint8_t> data,
+			int &out_local_key
+	);
+
 	bool save_chunk_last_modified(Vector3i chunk_pos, double timestamp);
 	double load_chunk_last_modified(Vector3i chunk_pos);
+
+	void save_chunk_last_modified_batch_async(PackedVector3Array chunk_positions, double timestamp); //Called from GDScript
+	bool save_chunk_last_modified_batch_internal(Span<const Vector3i> chunk_positions, double timestamp);
 
 #ifdef VOXEL_ENABLE_INSTANCER
 	bool supports_instance_blocks() const override;
@@ -82,6 +92,8 @@ public:
 	CoordinateFormat get_current_coordinate_format();
 
 	bool copy_blocks_to_other_sqlite_stream(Ref<VoxelStreamSQLite> dst_stream);
+
+	void save_block_entity_async(int64_t request_id, Vector3i chunk_pos, int action_type, PackedByteArray data);
 
 private:
 	void rebuild_key_cache();

@@ -6,6 +6,9 @@
 #include "../../util/string/std_string.h"
 #include "../compressed_data.h"
 #include "connection.h"
+#include "save_block_entity_task.h"
+#include "save_chunk_timestamps_task.h"
+#include "../../engine/buffered_task_scheduler.h"
 
 #include <string_view>
 #include <unordered_set>
@@ -815,6 +818,24 @@ void VoxelStreamSQLite::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("load_chunk_last_modified", "chunk_pos"), &VoxelStreamSQLite::load_chunk_last_modified
 	);
 
+	ClassDB::bind_method(
+			D_METHOD("save_chunk_last_modified_batch_async", "chunk_positions", "timestamp"),
+			&VoxelStreamSQLite::save_chunk_last_modified_batch_async
+	);
+
+	ClassDB::bind_method(
+			D_METHOD("save_block_entity_async", "request_id", "chunk_pos", "action_type", "data"),
+			&VoxelStreamSQLite::save_block_entity_async
+	);
+
+	ADD_SIGNAL(MethodInfo(
+			"block_entity_saved",
+			PropertyInfo(Variant::INT, "request_id"),
+			PropertyInfo(Variant::VECTOR3I, "chunk_pos"),
+			PropertyInfo(Variant::INT, "local_key"),
+			PropertyInfo(Variant::BOOL, "success")
+	));
+
 	BIND_ENUM_CONSTANT(COORDINATE_FORMAT_INT64_X16_Y16_Z16_L16);
 	BIND_ENUM_CONSTANT(COORDINATE_FORMAT_INT64_X19_Y19_Z19_L7);
 	BIND_ENUM_CONSTANT(COORDINATE_FORMAT_STRING_CSD);
@@ -837,4 +858,82 @@ void VoxelStreamSQLite::_bind_methods() {
 	);
 }
 
+void VoxelStreamSQLite::save_block_entity_async(
+		int64_t request_id,
+		Vector3i chunk_pos,
+		int action_type,
+		PackedByteArray data
+) {
+	StdVector<uint8_t> raw(data.ptr(), data.ptr() + data.size());
+	BufferedTaskScheduler &scheduler = BufferedTaskScheduler::get_for_current_thread();
+	SaveBlockEntityTask *task = ZN_NEW(SaveBlockEntityTask(Ref<VoxelStreamSQLite>(this), request_id, chunk_pos, action_type, std::move(raw)));
+	scheduler.push_io_task(task);
+	scheduler.flush();
+}
+
+bool VoxelStreamSQLite::save_chunk_last_modified_batch_internal(
+		Span<const Vector3i> chunk_positions,
+		double timestamp
+) {
+	const ConnectionResult con_res = get_connection();
+	if (con_res.code != ConnectionResult::SUCCESS) {
+		return false;
+	}
+	sqlite::Connection *con = con_res.connection;
+	const ScopeRecycle con_scope(this, con);
+
+	// Build BlockLocation list. Chunk timestamps are stored at lod 0, same as block entities.
+	StdVector<sqlite::BlockLocation> locs;
+	locs.resize(chunk_positions.size());
+	for (unsigned int i = 0; i < chunk_positions.size(); ++i) {
+		sqlite::BlockLocation loc;
+		loc.position = chunk_positions[i];
+		loc.lod = 0;
+		locs[i] = loc;
+	}
+
+	return con->save_chunk_last_modified_batch(to_span(locs), timestamp);
+}
+
+void VoxelStreamSQLite::save_chunk_last_modified_batch_async(PackedVector3Array chunk_positions, double timestamp) {
+	if (chunk_positions.size() == 0) {
+		return;
+	}
+
+	StdVector<Vector3i> positions;
+	positions.resize(chunk_positions.size());
+	for (int i = 0; i < chunk_positions.size(); ++i) {
+		positions[i] = Vector3i(
+				static_cast<int>(chunk_positions[i].x),
+				static_cast<int>(chunk_positions[i].y),
+				static_cast<int>(chunk_positions[i].z)
+		);
+	}
+
+	BufferedTaskScheduler &scheduler = BufferedTaskScheduler::get_for_current_thread();
+	SaveChunkTimestampsTask *task =
+			ZN_NEW(SaveChunkTimestampsTask(Ref<VoxelStreamSQLite>(this), std::move(positions), timestamp));
+	scheduler.push_io_task(task);
+	scheduler.flush();
+}
+
+bool VoxelStreamSQLite::save_new_block_entity_internal(
+		Vector3i chunk_pos,
+		int action_type,
+		Span<const uint8_t> data,
+		int &out_local_key
+) {
+	const ConnectionResult con_res = get_connection();
+	if (con_res.code != ConnectionResult::SUCCESS) {
+		return false;
+	}
+	sqlite::Connection *con = con_res.connection;
+	const ScopeRecycle con_scope(this, con);
+
+	BlockLocation loc;
+	loc.position = chunk_pos;
+	loc.lod = 0;
+
+	return con->save_new_block_entity(loc, action_type, data, out_local_key);
+}
 } // namespace zylann::voxel
