@@ -40,7 +40,11 @@ public:
 bool save_block_entity(Vector3i chunk_pos, int local_key, int action_type, PackedByteArray data);
 	Dictionary load_block_entity(Vector3i chunk_pos, int local_key);
 	bool delete_block_entity(Vector3i chunk_pos, int local_key);
+	void delete_block_entity_async(int64_t request_id, Vector3i chunk_pos, int local_key);
+	bool delete_block_entity_internal(Vector3i chunk_pos, int local_key); // called from task
+
 	int get_next_local_key(Vector3i chunk_pos);
+	PackedInt32Array get_block_entity_keys(Vector3i chunk_pos);
 
 	bool save_new_block_entity_internal( // not exposed to GDScript. Called from SaveBlockEntityTask on the IO thread.
 			Vector3i chunk_pos,

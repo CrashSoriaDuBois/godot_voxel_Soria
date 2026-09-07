@@ -8,6 +8,7 @@
 #include "connection.h"
 #include "save_block_entity_task.h"
 #include "save_chunk_timestamps_task.h"
+#include "delete_block_entity_task.h"
 #include "../../engine/buffered_task_scheduler.h"
 
 #include <string_view>
@@ -786,6 +787,30 @@ double VoxelStreamSQLite::load_chunk_last_modified(Vector3i chunk_pos) {
 	return con->load_chunk_last_modified(loc);
 }
 
+PackedInt32Array VoxelStreamSQLite::get_block_entity_keys(Vector3i chunk_pos) {
+	PackedInt32Array result;
+	const ConnectionResult con_res = get_connection();
+	if (con_res.code != ConnectionResult::SUCCESS) {
+		return result;
+	}
+	sqlite::Connection *con = con_res.connection;
+	const ScopeRecycle con_scope(this, con);
+
+	BlockLocation loc;
+	loc.position = chunk_pos;
+	loc.lod = 0;
+
+	StdVector<int> keys;
+	if (!con->load_block_entity_keys(loc, keys)) {
+		return result;
+	}
+	result.resize(keys.size());
+	for (size_t i = 0; i < keys.size(); ++i) {
+		result.set(i, keys[i]);
+	}
+	return result;
+}
+
 void VoxelStreamSQLite::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_database_path", "path"), &VoxelStreamSQLite::set_database_path);
 	ClassDB::bind_method(D_METHOD("get_database_path"), &VoxelStreamSQLite::get_database_path);
@@ -835,6 +860,20 @@ void VoxelStreamSQLite::_bind_methods() {
 			PropertyInfo(Variant::INT, "local_key"),
 			PropertyInfo(Variant::BOOL, "success")
 	));
+
+	ClassDB::bind_method(
+			D_METHOD("delete_block_entity_async", "request_id", "chunk_pos", "local_key"),
+			&VoxelStreamSQLite::delete_block_entity_async
+	);
+	ADD_SIGNAL(MethodInfo(
+			"block_entity_deleted",
+			PropertyInfo(Variant::INT, "request_id"),
+			PropertyInfo(Variant::VECTOR3I, "chunk_pos"),
+			PropertyInfo(Variant::INT, "local_key"),
+			PropertyInfo(Variant::BOOL, "success")
+	));
+
+	ClassDB::bind_method(D_METHOD("get_block_entity_keys", "chunk_pos"), &VoxelStreamSQLite::get_block_entity_keys);
 
 	BIND_ENUM_CONSTANT(COORDINATE_FORMAT_INT64_X16_Y16_Z16_L16);
 	BIND_ENUM_CONSTANT(COORDINATE_FORMAT_INT64_X19_Y19_Z19_L7);
@@ -935,5 +974,31 @@ bool VoxelStreamSQLite::save_new_block_entity_internal(
 	loc.lod = 0;
 
 	return con->save_new_block_entity(loc, action_type, data, out_local_key);
+}
+
+bool VoxelStreamSQLite::delete_block_entity_internal(Vector3i chunk_pos, int local_key) {
+	const ConnectionResult con_res = get_connection();
+	if (con_res.code != ConnectionResult::SUCCESS) {
+		return false;
+	}
+	sqlite::Connection *con = con_res.connection;
+	const ScopeRecycle con_scope(this, con);
+
+	BlockLocation loc;
+	loc.position = chunk_pos;
+	loc.lod = 0;
+
+	ERR_FAIL_COND_V(con->begin_transaction() == false, false);
+	const bool ok = con->delete_block_entity(loc, local_key);
+	ERR_FAIL_COND_V(con->end_transaction() == false, false);
+	return ok;
+}
+
+void VoxelStreamSQLite::delete_block_entity_async(int64_t request_id, Vector3i chunk_pos, int local_key) {
+	BufferedTaskScheduler &scheduler = BufferedTaskScheduler::get_for_current_thread();
+	DeleteBlockEntityTask *task =
+			ZN_NEW(DeleteBlockEntityTask(Ref<VoxelStreamSQLite>(this), request_id, chunk_pos, local_key));
+	scheduler.push_io_task(task);
+	scheduler.flush();
 }
 } // namespace zylann::voxel

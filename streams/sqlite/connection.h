@@ -103,6 +103,7 @@ bool save_block_entity(
 	);
 	bool delete_block_entity(const BlockLocation loc, const int local_key);
 	int get_next_local_key(const BlockLocation loc);
+	bool load_block_entity_keys(const BlockLocation loc, StdVector<int> &out_keys);
 
 	bool save_new_block_entity( // atomically assigns the next local key and inserts the entity in one transaction.
 			const BlockLocation loc,
@@ -143,6 +144,7 @@ private:
 	sqlite3_stmt *_load_block_entity_statement = nullptr;
 	sqlite3_stmt *_delete_block_entity_statement = nullptr;
 	sqlite3_stmt *_load_next_local_key_statement = nullptr;
+	sqlite3_stmt *_load_chunk_entity_keys_statement = nullptr;
 
 	sqlite3_stmt *_save_chunk_meta_statement = nullptr;
 	sqlite3_stmt *_load_chunk_meta_statement = nullptr;

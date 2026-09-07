@@ -366,6 +366,13 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 	if (!prepare(db, &_load_chunk_meta_statement, "SELECT last_modified FROM chunk_meta WHERE loc=:loc")) {
 		return false;
 	}
+	if (!prepare(
+				db,
+				&_load_chunk_entity_keys_statement,
+				"SELECT local_key FROM block_entities WHERE loc=:loc ORDER BY local_key"
+		)) {
+		return false;
+	}
 
 	// Is the database setup?
 	Meta meta = load_meta();
@@ -430,6 +437,7 @@ void Connection::close() {
 	finalize(_load_block_entity_statement);
 	finalize(_delete_block_entity_statement);
 	finalize(_load_next_local_key_statement);
+	finalize(_load_chunk_entity_keys_statement);
 	sqlite3_close(_db);
 	_db = nullptr;
 	_opened_path.clear();
@@ -1121,6 +1129,36 @@ int Connection::get_next_local_key(const BlockLocation loc) {
 		return next_key;
 	}
 	return -1;
+}
+
+bool Connection::load_block_entity_keys(const BlockLocation loc, StdVector<int> &out_keys) {
+	sqlite3 *db = _db;
+	sqlite3_stmt *stmt = _load_chunk_entity_keys_statement;
+
+	int rc = sqlite3_reset(stmt);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(db));
+		return false;
+	}
+
+	BindBlockCoordinates coord;
+	if (!coord.bind(db, stmt, 1, _meta.coordinate_format, loc)) {
+		return false;
+	}
+
+	out_keys.clear();
+	while (true) {
+		rc = sqlite3_step(stmt);
+		if (rc == SQLITE_ROW) {
+			out_keys.push_back(sqlite3_column_int(stmt, 0));
+		} else if (rc == SQLITE_DONE) {
+			break;
+		} else {
+			ERR_PRINT(sqlite3_errmsg(db));
+			return false;
+		}
+	}
+	return true;
 }
 
 bool Connection::save_chunk_last_modified(const BlockLocation loc, double timestamp) {
