@@ -107,7 +107,7 @@ public:
 
 	void align_and_disassemble(float rpm, VoxelLodTerrain *terrain, bool upright_only, float snap_speed = 5.f);
 
-	void _paste_rotated_chunks_to_terrain(VoxelTool *tool, const Transform3D &placement_t);
+	void _paste_rotated_chunks_to_terrain(VoxelTool *tool, VoxelLodTerrain *terrain, const Transform3D &placement_t);
 
 	bool advance_auto_align(double delta);
 

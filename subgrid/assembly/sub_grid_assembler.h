@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../lod/sub_grid_chunk_map.h"
-#include "../storage/voxel_format.h" 
+#include "../storage/voxel_format.h"
 #include "../sub_grid_metadata.h"
 #include "core/templates/hash_set.h"
 #include "edition/voxel_tool.h"
@@ -10,6 +10,8 @@
 namespace zylann::voxel {
 class VoxelToolTerrain;
 class VoxelLodTerrain;
+class SubGridManager;
+class VoxelStreamSQLite;
 } // namespace zylann::voxel
 
 namespace zylann::voxel {
@@ -35,6 +37,8 @@ public:
 
 	static AssembledBody *assemble(
 			VoxelLodTerrain *terrain,
+			SubGridManager *manager,
+			const String &saves_dir,
 			Vector3i start_world_pos,
 			const AssemblyConfig &config,
 			String &out_error);
@@ -49,6 +53,10 @@ public:
 private:
 	static void flood_fill(
 			VoxelTool *tool,
+			Ref<VoxelStreamSQLite> terrain_stream,
+			SubGridManager *manager,
+			const String &saves_dir,
+			const String &dst_ship_uuid,
 			Vector3i start,
 			Vector3i anchor,
 			Vector3i local_origin,

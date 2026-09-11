@@ -2,6 +2,7 @@
 #include "../util/godot/classes/physics_server_3d.h"
 #include "core/config/project_settings.h"
 #include "core/io/file_access.h"
+#include "core/io/dir_access.h"
 #include "engine/voxel_engine.h"
 #include "scene/3d/physics/animatable_body_3d.h"
 #include "terrain/variable_lod/voxel_lod_terrain.h"
@@ -377,19 +378,122 @@ void SubGridManager::mark_all_dirty(const String &uuid) {
 
 // ____________________________________________________________________________
 // Ship lifecycle Threaded
+namespace {
+// Must only be called FROM the save thread.
+Ref<VoxelStreamSQLite> resolve_ship_stream_on_save_thread(
+		SubGridManager::SaveThreadData &d,
+		const String &uuid,
+		const String &saves_dir_abs
+) {
+	if (!d.streams.has(uuid)) {
+		String ships_dir = saves_dir_abs.path_join("ships");
+		print_line(
+				String("[resolve_stream] creating new stream for uuid='") + uuid + "' saves_dir_abs='" + saves_dir_abs +
+				"' ships_dir='" + ships_dir + "'"
+		);
+		if (!DirAccess::dir_exists_absolute(ships_dir)) {
+			print_line("[resolve_stream] ships_dir did not exist, creating it now");
+			Error err = DirAccess::make_dir_recursive_absolute(ships_dir);
+			print_line(String("[resolve_stream] make_dir_recursive_absolute error code=") + itos(err));
+		}
+		Ref<VoxelStreamSQLite> stream;
+		stream.instantiate();
+		String db_path = ships_dir.path_join(uuid + ".sqlite");
+		print_line(String("[resolve_stream] setting database_path='") + db_path + "'");
+		stream->set_database_path(db_path);
+		d.streams[uuid] = stream;
+	} else {
+		print_line(String("[resolve_stream] reusing existing stream for uuid='") + uuid + "'");
+	}
+	return d.streams[uuid];
+}
+
+void process_entity_migration(SubGridManager::SaveThreadData &d, SubGridManager::EntityMigrationRequest &req) {
+	print_line(
+			String("[migrate] START src_uuid='") + String(req.src_uuid.c_str()) +
+			"' src_chunk=" + String(req.src_chunk_pos) + " src_key=" + itos(req.src_local_key) + " dst_uuid='" +
+			String(req.dst_uuid.c_str()) + "' dst_chunk=" + String(req.dst_chunk_pos) +
+			" src_override_valid=" + (req.src_stream_override.is_valid() ? "true" : "false") +
+			" dst_override_valid=" + (req.dst_stream_override.is_valid() ? "true" : "false")
+	);
+
+	Ref<VoxelStreamSQLite> src = req.src_stream_override.is_valid()
+			? req.src_stream_override
+			: resolve_ship_stream_on_save_thread(d, String(req.src_uuid.c_str()), String(req.src_saves_dir.c_str()));
+
+	Ref<VoxelStreamSQLite> dst = req.dst_stream_override.is_valid()
+			? req.dst_stream_override
+			: resolve_ship_stream_on_save_thread(d, String(req.dst_uuid.c_str()), String(req.dst_saves_dir.c_str()));
+
+	print_line(
+			String("[migrate] src_valid=") + (src.is_valid() ? "true" : "false") + " src_db_path='" +
+			(src.is_valid() ? src->get_database_path() : "N/A") + "'" +
+			" dst_valid=" + (dst.is_valid() ? "true" : "false") + " dst_db_path='" +
+			(dst.is_valid() ? dst->get_database_path() : "N/A") + "'"
+	);
+
+	*req.out_success = false;
+	*req.out_channel_value = 0;
+
+	if (!src.is_valid() || !dst.is_valid()) {
+		print_line("[migrate] ABORT: src or dst stream not valid");
+		req.done->store(true);
+		return;
+	}
+
+	Dictionary entity = src->load_block_entity(req.src_chunk_pos, req.src_local_key);
+	print_line(String("[migrate] load_block_entity result: empty=") + (entity.is_empty() ? "true" : "false"));
+	if (entity.is_empty()) {
+		print_line("[migrate] ABORT: entity not found at source (nothing to migrate)");
+		req.done->store(true);
+		return;
+	}
+
+	const int action_type = entity["action_type"];
+	PackedByteArray data = entity["data"];
+	print_line(String("[migrate] loaded entity: action_type=") + itos(action_type) + " data_size=" + itos(data.size()));
+
+	const int new_key = dst->get_next_local_key(req.dst_chunk_pos);
+	print_line(String("[migrate] new_key=") + itos(new_key));
+	if (new_key < 0) {
+		print_line("[migrate] ABORT: get_next_local_key failed (dst connection likely broken)");
+		req.done->store(true);
+		return;
+	}
+
+	const bool write_ok = dst->save_block_entity(req.dst_chunk_pos, new_key, action_type, data);
+	print_line(String("[migrate] save_block_entity write_ok=") + (write_ok ? "true" : "false"));
+	if (!write_ok) {
+		print_line("[migrate] ABORT: destination write failed, source left intact");
+		req.done->store(true);
+		return;
+	}
+
+	const bool delete_ok = src->delete_block_entity(req.src_chunk_pos, req.src_local_key);
+	print_line(String("[migrate] delete_block_entity from source ok=") + (delete_ok ? "true" : "false"));
+
+	*req.out_success = true;
+	*req.out_channel_value = (uint32_t)((action_type << 12) | (new_key & 0xFFF));
+	print_line(String("[migrate] SUCCESS new_channel_value=") + itos(*req.out_channel_value));
+	req.done->store(true);
+}
+} // namespace
 
 void SubGridManager::_save_thread_func() {
 	auto &d = _save_thread_data;
 
 	while (true) {
-		std::vector<SubGridManager::SaveRequest> batch;
+		std::vector<SaveRequest> batch;
+		std::vector<EntityMigrationRequest> migration_batch;
 		{
 			std::unique_lock<std::mutex> lock(d.mutex);
-			d.cv.wait(lock, [&d] { return !d.queue.empty() || !d.running; });
-			if (!d.running && d.queue.empty())
+			d.cv.wait(lock, [&d] { return !d.queue.empty() || !d.migration_queue.empty() || !d.running; });
+			if (!d.running && d.queue.empty() && d.migration_queue.empty())
 				break;
 			batch = std::move(d.queue);
 			d.queue.clear();
+			migration_batch = std::move(d.migration_queue);
+			d.migration_queue.clear();
 		}
 
 		for (auto &req : batch) {
@@ -401,40 +505,29 @@ void SubGridManager::_save_thread_func() {
 						--counter;
 				}
 			};
-			Decrement dec{ d.items_in_flight,
-						   req.close_stream }; // don't decrement for close_stream (wasn't incremented)
+			Decrement dec{ d.items_in_flight, req.close_stream };
 
 			String uuid = String(req.uuid.c_str());
 			if (req.close_stream) {
 				auto it = d.streams.find(uuid);
 				if (it != d.streams.end()) {
-					it->value->set_database_path(""); // closes SQLite
+					it->value->set_database_path("");
 					d.streams.erase(uuid);
 				}
 				continue;
 			}
 
-			// Open stream lazily on save thread if not yet open
-			if (!d.streams.has(uuid)) {
-				String saves_dir = String(req.saves_dir.c_str());
-				// Parse uuid bytes from hex string for SubGridStreamHelper
-				// We store the path directly instead
-				Ref<VoxelStreamSQLite> stream;
-				stream.instantiate();
-				// Build path same way SubGridStreamHelper does
-				String saves_dir_abs = String(req.saves_dir.c_str()); // already absolute
-				String db_path = saves_dir_abs.path_join("ships").path_join(uuid + ".sqlite");
-				stream->set_database_path(db_path);
-				d.streams[uuid] = stream;
-			}
-
-			Ref<VoxelStreamSQLite> &stream = d.streams[uuid];
+			Ref<VoxelStreamSQLite> stream = resolve_ship_stream_on_save_thread(d, uuid, String(req.saves_dir.c_str()));
 			if (!stream.is_valid())
 				continue;
 
 			VoxelStream::VoxelQueryData q{ *req.buffer, req.chunk_pos, 0, VoxelStream::RESULT_BLOCK_NOT_FOUND };
 			stream->save_voxel_block(q);
-			_save_thread_data.items_in_flight--;
+		}
+
+		for (auto &req : migration_batch) {
+			process_entity_migration(d, req);
+			--d.items_in_flight;
 		}
 	}
 
@@ -463,6 +556,51 @@ void SubGridManager::wait_save_queue() {
 			break;
 		}
 	}
+}
+
+uint32_t SubGridManager::migrate_block_entity_blocking(
+		Ref<VoxelStreamSQLite> src_stream_override,
+		const String &src_uuid,
+		const String &src_saves_dir,
+		Vector3i src_chunk_pos,
+		int src_local_key,
+		Ref<VoxelStreamSQLite> dst_stream_override,
+		const String &dst_uuid,
+		const String &dst_saves_dir,
+		Vector3i dst_chunk_pos
+) {
+	EntityMigrationRequest req;
+	req.src_stream_override = src_stream_override;
+	req.src_uuid = src_uuid.utf8().get_data();
+	req.src_saves_dir = src_saves_dir.utf8().get_data();
+	req.src_chunk_pos = src_chunk_pos;
+	req.src_local_key = src_local_key;
+	req.dst_stream_override = dst_stream_override;
+	req.dst_uuid = dst_uuid.utf8().get_data();
+	req.dst_saves_dir = dst_saves_dir.utf8().get_data();
+	req.dst_chunk_pos = dst_chunk_pos;
+	req.done = std::make_shared<std::atomic<bool>>(false);
+	req.out_channel_value = std::make_shared<uint32_t>(0);
+	req.out_success = std::make_shared<bool>(false);
+
+	{
+		std::unique_lock<std::mutex> lock(_save_thread_data.mutex);
+		_save_thread_data.items_in_flight++;
+		_save_thread_data.migration_queue.push_back(req);
+		_save_thread_data.cv.notify_one();
+	}
+
+	const int max_wait_ms = 5000;
+	int waited = 0;
+	while (!req.done->load()) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		if (++waited > max_wait_ms) {
+			ERR_PRINT("migrate_block_entity_blocking timed out!");
+			return 0;
+		}
+	}
+
+	return *req.out_channel_value;
 }
 // ____________________________________________________________________________
 // Physics body management

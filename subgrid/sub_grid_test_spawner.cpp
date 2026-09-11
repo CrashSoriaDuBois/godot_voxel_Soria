@@ -16,6 +16,12 @@ void SubGridTestSpawner::assemble_at(Node *terrain_node, Vector3i world_pos) {
 	VoxelLodTerrain *terrain = Object::cast_to<VoxelLodTerrain>(terrain_node);
 	ERR_FAIL_COND_MSG(terrain == nullptr, "terrain_node must be VoxelLodTerrain");
 
+	SubGridManager *mgr = Object::cast_to<SubGridManager>(get_parent()->get_node_or_null(String("SubGridManager")));
+	ERR_FAIL_COND_MSG(mgr == nullptr, "SubGridManager not found - cannot assemble (needed for entity migration)");
+
+	String saves_dir = mgr->get_saves_dir();
+	ERR_FAIL_COND_MSG(saves_dir.is_empty(), "SubGridManager has no saves_dir configured - was initialize() called?");
+
 	SubGridAssembler::AssemblyConfig config;
 	config.max_blocks = 4096;
 	config.diagonal_stick = true;
@@ -23,7 +29,7 @@ void SubGridTestSpawner::assemble_at(Node *terrain_node, Vector3i world_pos) {
 	config.bearing_voxel_id_max = 7;
 
 	String error;
-	SubGridAssembler::AssembledBody *body = SubGridAssembler::assemble(terrain, world_pos, config, error);
+	SubGridAssembler::AssembledBody *body = SubGridAssembler::assemble(terrain, mgr, saves_dir, world_pos, config, error);
 
 	if (body == nullptr) {
 		print_line(String("Assembly failed: ") + error);
@@ -38,15 +44,11 @@ void SubGridTestSpawner::assemble_at(Node *terrain_node, Vector3i world_pos) {
 	Ref<VoxelBlockyLibrary> library = mesher->get_library();
 	ERR_FAIL_COND_MSG(!library.is_valid(), "Mesher must have a VoxelBlockyLibrary");
 
-	String saves_dir = "user://subgrid_saves";
-
 	// Spawn recursively
 	VoxelSubGrid *root_sg = memnew(VoxelSubGrid);
-	get_parent()->add_child(root_sg); // add to tree FIRST
+	get_parent()->add_child(root_sg);
 
-	// Now initialize
-	SubGridMetadata meta;
-	SubGridAssembler::generate_uuid_v4(meta.uuid);
+	SubGridMetadata meta = body->metadata;
 	meta.is_root = true;
 	meta.world_position =
 			Vector3(body->local_origin_in_world.x, body->local_origin_in_world.y, body->local_origin_in_world.z);
@@ -70,14 +72,8 @@ void SubGridTestSpawner::assemble_at(Node *terrain_node, Vector3i world_pos) {
 		root_sg->set_viewer(cam);
 	}
 
-	// Register full tree with SubGridManager now that all children exist.
-	SubGridManager *mgr = Object::cast_to<SubGridManager>(get_parent()->get_node_or_null(String("SubGridManager")));
-	if (mgr != nullptr) {
-		mgr->register_ship_tree(root_sg);
-		print_line("Registered ship tree with SubGridManager");
-	} else {
-		print_line("WARNING: SubGridManager not found - mesh will not generate");
-	}
+	mgr->register_ship_tree(root_sg);
+	print_line("Registered ship tree with SubGridManager");
 
 	SubGridAssembler::_free_tree(body);
 	print_line("VoxelSubGrid tree spawned successfully");

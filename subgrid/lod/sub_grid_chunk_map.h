@@ -24,8 +24,9 @@ public:
 		VoxelBuffer::CHANNEL_TYPE,
 		VoxelBuffer::CHANNEL_COLOR,
 		VoxelBuffer::CHANNEL_DATA5,
+		VoxelBuffer::CHANNEL_DATA6,
 	};
-	static constexpr int SUBGRID_CHANNEL_COUNT = 3;
+	static constexpr int SUBGRID_CHANNEL_COUNT = 4;
 
 	static void apply_subgrid_channel_depths(VoxelBuffer &buf) {
 		buf.set_channel_depth(VoxelBuffer::CHANNEL_COLOR, VoxelBuffer::DEPTH_16_BIT);

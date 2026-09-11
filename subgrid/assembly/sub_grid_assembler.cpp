@@ -1,14 +1,30 @@
 #include "sub_grid_assembler.h"
+#include "core/math/random_number_generator.h"
 #include "edition/voxel_tool.h"
 #include "storage/voxel_buffer.h"
 #include "terrain/variable_lod/voxel_lod_terrain.h"
-#include "core/math/random_number_generator.h"
 
-#include "../../meshers/blocky/voxel_blocky_library_base.h"
 #include "../../meshers/blocky/blocky_baked_library.h"
+#include "../../meshers/blocky/voxel_blocky_library_base.h"
 #include "../../meshers/blocky/voxel_mesher_blocky.h"
+#include "../../streams/sqlite/voxel_stream_sqlite.h" // full definition needed for Object::cast_to<>
+#include "../sub_grid_manager.h" // full definition needed to call manager->migrate_...
+#include "core/io/dir_access.h" // add to includes
 
 namespace zylann::voxel {
+
+namespace {
+// Shared with the lambda-based versions elsewhere in the module (voxel_sub_grid.cpp,
+// sub_grid_manager.cpp) — same hex-pairs-of-bytes scheme.
+String uuid_to_string_bytes(const uint8_t *uuid) {
+	String s;
+	for (int i = 0; i < 16; i++) {
+		s += String::num_int64(uuid[i] >> 4, 16);
+		s += String::num_int64(uuid[i] & 0xF, 16);
+	}
+	return s;
+}
+} // namespace
 
 // Matches SimAssemblyContraption::DIRECTION_OFFSETS exactly:
 // 6 cardinal faces + 12 edge diagonals (no face-corners or body-diagonals)
@@ -38,19 +54,35 @@ const Vector3i SubGridAssembler::OFFSETS_CARDINAL_AND_EDGE[18] = {
 // ________________________________________________________________
 // Public entry point
 
+// sub_grid_assembler.cpp
 SubGridAssembler::AssembledBody *SubGridAssembler::assemble(
 		VoxelLodTerrain *terrain,
+		SubGridManager *manager,
+		const String &saves_dir,
 		Vector3i start_world_pos,
 		const AssemblyConfig &config,
 		String &out_error
 ) {
 	ERR_FAIL_COND_V(terrain == nullptr, nullptr);
+	ERR_FAIL_COND_V(manager == nullptr, nullptr);
 
 	Ref<VoxelTool> tool = terrain->get_voxel_tool();
 	ERR_FAIL_COND_V(!tool.is_valid(), nullptr);
 
+	const String saves_dir_abs = ProjectSettings::get_singleton()->globalize_path(saves_dir);
+
+	// terrain->get_stream() returns Ref<VoxelStream> (base class) — downcast explicitly.
+	// Null if the terrain isn't using VoxelStreamSQLite, which migrate_block_entity_blocking
+	// handles gracefully (nothing to migrate found).
+	Ref<VoxelStreamSQLite> terrain_stream = Object::cast_to<VoxelStreamSQLite>(terrain->get_stream().ptr());
+	print_line(
+			String("[assemble] terrain_stream valid=") + (terrain_stream.is_valid() ? "true" : "false") +
+			(terrain_stream.is_valid() ? (" db_path=" + terrain_stream->get_database_path()) : "")
+	);
+
 	Ref<VoxelMesherBlocky> blocky_mesher = terrain->get_mesher();
-	Ref<VoxelBlockyLibraryBase> lib = blocky_mesher.is_valid() ? blocky_mesher->get_library() : Ref<VoxelBlockyLibraryBase>();
+	Ref<VoxelBlockyLibraryBase> lib =
+			blocky_mesher.is_valid() ? blocky_mesher->get_library() : Ref<VoxelBlockyLibraryBase>();
 
 	// Same channel depths the terrain actually uses - this gets baked permanently into this
 	// ship's first save, so it must come from the terrain's real format, not VoxelBuffer's
@@ -76,15 +108,27 @@ SubGridAssembler::AssembledBody *SubGridAssembler::assemble(
 
 	root->local_origin_in_world = start_world_pos;
 
-	// visited is shared across ALL recursive flood-fills so no block
-	// gets claimed by both parent and child bodies
+	const String root_uuid_str = uuid_to_string_bytes(root->uuid);
+
 	HashSet<Vector3i> visited;
+
+	{
+		String saves_dir_abs = ProjectSettings::get_singleton()->globalize_path(saves_dir);
+		String ships_dir = saves_dir_abs.path_join("ships");
+		if (!DirAccess::dir_exists_absolute(ships_dir)) {
+			DirAccess::make_dir_recursive_absolute(ships_dir);
+		}
+	}
 
 	flood_fill(
 			tool.ptr(),
+			terrain_stream,
+			manager,
+			saves_dir_abs,
+			root_uuid_str,
 			start_world_pos,
-			Vector3i(INT32_MIN, INT32_MIN, INT32_MIN), // no anchor for root
-			start_world_pos, // local origin = start pos
+			Vector3i(INT32_MIN, INT32_MIN, INT32_MIN),
+			start_world_pos,
 			config,
 			visited,
 			root,
@@ -109,13 +153,17 @@ SubGridAssembler::AssembledBody *SubGridAssembler::assemble(
 
 void SubGridAssembler::flood_fill(
 		VoxelTool *tool,
+		Ref<VoxelStreamSQLite> terrain_stream,
+		SubGridManager *manager,
+		const String &saves_dir,
+		const String &dst_ship_uuid,
 		Vector3i start,
 		Vector3i anchor,
 		Vector3i local_origin,
 		const AssemblyConfig &config,
 		HashSet<Vector3i> &visited,
 		AssembledBody *out_body,
-		const VoxelFormat &format, // ADD this
+		const VoxelFormat &format,
 		String &out_error
 ) {
 	out_body->chunks.set_format(format);
@@ -174,6 +222,34 @@ void SubGridAssembler::flood_fill(
 			uint32_t v;
 			if (channel == VoxelBuffer::CHANNEL_TYPE) {
 				v = voxel;
+			} else if (channel == VoxelBuffer::CHANNEL_DATA6) {
+				tool->set_channel(channel);
+				const uint32_t raw = tool->get_voxel(pos);
+				print_line(String("[flood_fill] pos=") + String(pos) + " CHANNEL_DATA6 raw=" + itos(raw));
+				if (raw != 0) {
+					const int src_local_key = raw & 0xFFF;
+					const Vector3i src_chunk_pos = pos >> 4;
+					const Vector3i dst_chunk_pos = local_pos >> SubGridChunkMap::CHUNK_SIZE_PO2;
+					print_line(
+							String("[flood_fill] migrating entity: src_chunk=") + String(src_chunk_pos) +
+							" src_key=" + itos(src_local_key) + " -> dst_ship='" + dst_ship_uuid +
+							"' dst_chunk=" + String(dst_chunk_pos) + " saves_dir='" + saves_dir + "'"
+					);
+					v = manager->migrate_block_entity_blocking(
+							terrain_stream,
+							"",
+							"",
+							src_chunk_pos,
+							src_local_key,
+							Ref<VoxelStreamSQLite>(),
+							dst_ship_uuid,
+							saves_dir,
+							dst_chunk_pos
+					);
+					print_line(String("[flood_fill] migration returned channel_value=") + itos(v));
+				} else {
+					v = 0;
+				}
 			} else {
 				tool->set_channel(channel);
 				v = tool->get_voxel(pos);
@@ -201,7 +277,23 @@ void SubGridAssembler::flood_fill(
 				memcpy(child->metadata.uuid, child->uuid, 16);
 				memcpy(child->metadata.parent_uuid, out_body->uuid, 16);
 
-				flood_fill(tool, attach_pos, pos, attach_pos, config, visited, child, format, out_error);
+				const String child_uuid_str = uuid_to_string_bytes(child->uuid);
+
+				flood_fill(
+						tool,
+						terrain_stream,
+						manager,
+						saves_dir,
+						child_uuid_str,
+						attach_pos,
+						pos,
+						attach_pos,
+						config,
+						visited,
+						child,
+						format,
+						out_error
+				);
 
 				if (!out_error.is_empty()) {
 					memdelete(child);
@@ -230,7 +322,7 @@ void SubGridAssembler::flood_fill(
 
 
 void SubGridAssembler::_erase_from_terrain(VoxelTool *tool, AssembledBody *body, Ref<VoxelBlockyLibraryBase> lib) {
-	tool->set_channel(VoxelBuffer::CHANNEL_TYPE);
+
 	for (const KeyValue<Vector3i, uint32_t> &kv : body->world_blocks) {
 		bool relevant = false;
 		if (lib.is_valid()) {
@@ -238,7 +330,11 @@ void SubGridAssembler::_erase_from_terrain(VoxelTool *tool, AssembledBody *body,
 			const blocky::BakedLibrary &baked = lib->get_baked_data();
 			relevant = baked.has_model(kv.value) && baked.models[kv.value].light_emission > 0;
 		}
-		tool->set_voxel(kv.key, 0, relevant); // position, value, p_relevant
+		tool->set_channel(VoxelBuffer::CHANNEL_TYPE);
+		tool->set_voxel(kv.key, 0, relevant);
+
+		tool->set_channel(VoxelBuffer::CHANNEL_DATA6);
+		tool->set_voxel(kv.key, 0, false); // clear stale entity marker too
 	}
 	for (AssembledBody *child : body->children) {
 		_erase_from_terrain(tool, child, lib);

@@ -62,6 +62,9 @@ public:
 	void mark_chunk_dirty(const String &uuid_str, Vector3i chunk_pos);
 
 	String uuid_for_node(VoxelSubGrid *node) const;
+	String get_saves_dir() const {
+		return _saves_dir;
+	}
 	void mark_all_dirty(const String &uuid);
 
 	// -----------------------------------------------------------------------
@@ -74,6 +77,24 @@ public:
 		bool close_stream = false;
 	};
 
+	// must be declared before SaveThreadData, which holds a queue of these.
+	struct EntityMigrationRequest {
+		Ref<VoxelStreamSQLite> src_stream_override;
+		std::string src_uuid;
+		std::string src_saves_dir;
+		Vector3i src_chunk_pos;
+		int src_local_key = -1;
+
+		Ref<VoxelStreamSQLite> dst_stream_override;
+		std::string dst_uuid;
+		std::string dst_saves_dir;
+		Vector3i dst_chunk_pos;
+
+		std::shared_ptr<std::atomic<bool>> done;
+		std::shared_ptr<uint32_t> out_channel_value;
+		std::shared_ptr<bool> out_success;
+	};
+
 	// Save thread owns all streams, never accessed from main thread
 	struct SaveThreadData {
 		std::mutex mutex;
@@ -81,6 +102,7 @@ public:
 		std::atomic<bool> running{ false };
 		std::atomic<int> items_in_flight{ 0 };
 		std::vector<SaveRequest> queue;
+		std::vector<EntityMigrationRequest> migration_queue;
 		HashMap<String, Ref<VoxelStreamSQLite>> streams;
 	} _save_thread_data;
 
@@ -90,6 +112,18 @@ public:
 
 	void wait_save_queue();
 	void _save_thread_func();
+
+	uint32_t migrate_block_entity_blocking(
+			Ref<VoxelStreamSQLite> src_stream_override,
+			const String &src_uuid,
+			const String &src_saves_dir,
+			Vector3i src_chunk_pos,
+			int src_local_key,
+			Ref<VoxelStreamSQLite> dst_stream_override,
+			const String &dst_uuid,
+			const String &dst_saves_dir,
+			Vector3i dst_chunk_pos
+	);
 
 	// -----------------------------------------------------------------------
 	// Persistence

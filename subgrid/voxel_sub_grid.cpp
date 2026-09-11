@@ -317,7 +317,7 @@ void VoxelSubGrid::_close_stream() {
 		return;
 	SubGridManager::SaveRequest req;
 	req.uuid = uuid_to_string(_meta.uuid).utf8().get_data();
-	req.saves_dir = _saves_dir.utf8().get_data();
+	req.saves_dir = ProjectSettings::get_singleton()->globalize_path(_saves_dir).utf8().get_data();
 	req.close_stream = true;
 	_manager->push_save(req);
 }
@@ -512,7 +512,7 @@ void VoxelSubGrid::_disassemble_root_to_terrain(VoxelLodTerrain *terrain, const 
 
 	Ref<VoxelTool> tool = terrain->get_voxel_tool();
 	tool->set_mode(VoxelTool::MODE_SET);
-	_paste_rotated_chunks_to_terrain(tool.ptr(), placement_t);
+	_paste_rotated_chunks_to_terrain(tool.ptr(), terrain, placement_t);
 
 	if (_manager != nullptr) {
 		_manager->unregister_ship(uuid_to_string(_meta.uuid));
@@ -558,21 +558,55 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 							Math::floor(parent_center.x), Math::floor(parent_center.y), Math::floor(parent_center.z)
 					);
 
-					// Carry every tracked channel over, not just TYPE, so color/data5 survive
-					// merging back into the parent contraption.
-					for (int c = 0; c < SubGridChunkMap::SUBGRID_CHANNEL_COUNT; c++) {
-						const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
-						const uint32_t v =
-								(channel == VoxelBuffer::CHANNEL_TYPE) ? type_v : buf->get_voxel(x, y, z, channel);
-						parent_sg->set_voxel(v, parent_i, channel);
-					}
-
-					// Track which chunk this falls in
+					// Moved up from below the channel loop, needed as dst_chunk_pos for migration.
 					Vector3i parent_chunk = Vector3i(
 							Math::floor((float)parent_i.x / parent_cs),
 							Math::floor((float)parent_i.y / parent_cs),
 							Math::floor((float)parent_i.z / parent_cs)
 					);
+
+					for (int c = 0; c < SubGridChunkMap::SUBGRID_CHANNEL_COUNT; c++) {
+						const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
+						uint32_t v;
+						if (channel == VoxelBuffer::CHANNEL_TYPE) {
+							v = type_v;
+						} else if (channel == VoxelBuffer::CHANNEL_DATA6) {
+							const uint32_t raw = buf->get_voxel(x, y, z, channel);
+							print_line(
+									String("[child_to_parent] chunk_pos=") + String(chunk_pos) +
+									" local=" + String(Vector3i(x, y, z)) + " raw=" + itos(raw)
+							);
+							if (raw != 0 && _manager != nullptr) {
+								const int src_local_key = raw & 0xFFF;
+								const String saves_dir_abs =
+										ProjectSettings::get_singleton()->globalize_path(_saves_dir);
+								print_line(
+										String("[child_to_parent] migrating: src_ship='") + uuid_to_string(_meta.uuid) +
+										"' src_chunk=" + String(chunk_pos) + " src_key=" + itos(src_local_key) +
+										" -> dst_ship='" + uuid_to_string(parent_sg->get_metadata().uuid) +
+										"' dst_chunk=" + String(parent_chunk) + " saves_dir_abs='" + saves_dir_abs + "'"
+								);
+								v = _manager->migrate_block_entity_blocking(
+										Ref<VoxelStreamSQLite>(),
+										uuid_to_string(_meta.uuid),
+										saves_dir_abs,
+										chunk_pos,
+										src_local_key,
+										Ref<VoxelStreamSQLite>(),
+										uuid_to_string(parent_sg->get_metadata().uuid),
+										saves_dir_abs,
+										parent_chunk
+								);
+								print_line(String("[child_to_parent] migration returned channel_value=") + itos(v));
+							} else {
+								v = 0;
+							}
+						} else {
+							v = buf->get_voxel(x, y, z, channel);
+						}
+						parent_sg->set_voxel(v, parent_i, channel);
+					}
+
 					dirty_parent_chunks.insert(parent_chunk);
 				}
 	});
@@ -960,7 +994,11 @@ bool VoxelSubGrid::_check_terrain_clear_for_transform(VoxelLodTerrain *terrain, 
 	return true;
 }
 
-void VoxelSubGrid::_paste_rotated_chunks_to_terrain(VoxelTool *tool, const Transform3D &placement_t) {
+void VoxelSubGrid::_paste_rotated_chunks_to_terrain(
+		VoxelTool *tool,
+		VoxelLodTerrain *terrain,
+		const Transform3D &placement_t
+) {
 	Basis b = placement_t.basis.orthonormalized();
 	const Vector3i ix = _snap_column_to_int(b.get_column(0));
 	const Vector3i iy = _snap_column_to_int(b.get_column(1));
@@ -1010,7 +1048,12 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(VoxelTool *tool, const Trans
 
 
 	Ref<VoxelMesherBlocky> blocky_mesher = _mesher;
-	Ref<VoxelBlockyLibraryBase> lib = blocky_mesher.is_valid() ? blocky_mesher->get_library() : Ref<VoxelBlockyLibraryBase>();
+	Ref<VoxelBlockyLibraryBase> lib =
+			blocky_mesher.is_valid() ? blocky_mesher->get_library() : Ref<VoxelBlockyLibraryBase>();
+
+	// Resolved ONCE, before the loop — not per voxel.
+	Ref<VoxelStreamSQLite> terrain_stream = Object::cast_to<VoxelStreamSQLite>(terrain->get_stream().ptr());
+	const int terrain_block_size_po2 = terrain->get_data_block_size_pow2();
 
 	_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) {
 		std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
@@ -1040,11 +1083,34 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(VoxelTool *tool, const Trans
 
 					for (int c = 0; c < SubGridChunkMap::SUBGRID_CHANNEL_COUNT; c++) {
 						const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
-						const uint32_t cv = (channel == VoxelBuffer::CHANNEL_TYPE) ? v : buf->get_voxel(x, y, z, channel);
+						uint32_t cv;
+						if (channel == VoxelBuffer::CHANNEL_TYPE) {
+							cv = v;
+						} else if (channel == VoxelBuffer::CHANNEL_DATA6) {
+							const uint32_t raw = buf->get_voxel(x, y, z, channel);
+							if (raw != 0 && _manager != nullptr) {
+								const int src_local_key = raw & 0xFFF;
+								const Vector3i dst_chunk_pos = target_pos >> terrain_block_size_po2;
+								cv = _manager->migrate_block_entity_blocking(
+										Ref<VoxelStreamSQLite>(),
+										uuid_to_string(_meta.uuid),
+										ProjectSettings::get_singleton()->globalize_path(_saves_dir),
+										chunk_pos,
+										src_local_key,
+										terrain_stream,
+										"",
+										"",
+										dst_chunk_pos
+								);
+							} else {
+								cv = 0;
+							}
+						} else {
+							cv = buf->get_voxel(x, y, z, channel);
+						}
 						tool->set_channel(channel);
 						tool->set_voxel(target_pos, cv, relevant);
 					}
-					tool->set_channel(VoxelBuffer::CHANNEL_TYPE); // restore for next iteration's read
 				}
 			}
 		}
