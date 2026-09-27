@@ -95,6 +95,45 @@ public:
 		std::shared_ptr<bool> out_success;
 	};
 
+	struct ShipEntitySaveRequest {
+		std::string ship_uuid;
+		std::string saves_dir;
+		int64_t request_id;
+		Vector3i chunk_pos;
+		int action_type;
+		PackedByteArray data;
+	};
+
+	struct ShipEntityDeleteRequest {
+		std::string ship_uuid;
+		std::string saves_dir;
+		int64_t request_id;
+		Vector3i chunk_pos;
+		int local_key;
+	};
+
+	struct ShipChunkTimestampRequest {
+		std::string ship_uuid;
+		std::string saves_dir;
+		Vector<Vector3i> chunk_positions;
+		double timestamp;
+	};
+
+	struct ShipChunkTimestampQuery {
+		std::string ship_uuid;
+		std::string saves_dir;
+		Vector3i chunk_pos;
+		std::shared_ptr<std::atomic<bool>> done;
+		std::shared_ptr<double> out_timestamp;
+	};
+
+	struct ShipChunkTimestampBatchRequest {
+		std::string ship_uuid;
+		std::string saves_dir;
+		int64_t request_id;
+		Vector<Vector3i> chunk_positions;
+	};
+
 	// Save thread owns all streams, never accessed from main thread
 	struct SaveThreadData {
 		std::mutex mutex;
@@ -103,6 +142,11 @@ public:
 		std::atomic<int> items_in_flight{ 0 };
 		std::vector<SaveRequest> queue;
 		std::vector<EntityMigrationRequest> migration_queue;
+		std::vector<ShipEntitySaveRequest> entity_save_queue;
+		std::vector<ShipEntityDeleteRequest> entity_delete_queue;
+		std::vector<ShipChunkTimestampRequest> chunk_timestamp_queue;
+		std::vector<ShipChunkTimestampQuery> timestamp_query_queue;
+		std::vector<ShipChunkTimestampBatchRequest> timestamp_batch_queue;
 		HashMap<String, Ref<VoxelStreamSQLite>> streams;
 	} _save_thread_data;
 
@@ -125,11 +169,34 @@ public:
 			Vector3i dst_chunk_pos
 	);
 
+
+
+	double get_ship_chunk_modified_time(const String &ship_uuid, Vector3i chunk_pos);
+	void query_ship_chunk_timestamps_async(
+			const String &ship_uuid,
+			int64_t request_id,
+			PackedVector3Array chunk_positions
+	);
+
 	// -----------------------------------------------------------------------
 	// Persistence
 
 	void save_all();
 	void load_all();
+
+	void save_block_entity_async(
+			const String &ship_uuid,
+			int64_t request_id,
+			Vector3i chunk_pos,
+			int action_type,
+			PackedByteArray entity_data
+	);
+	void delete_block_entity_async(const String &ship_uuid, int64_t request_id, Vector3i chunk_pos, int local_key);
+	void save_chunk_last_modified_batch_async(
+			const String &ship_uuid,
+			PackedVector3Array chunk_positions,
+			double timestamp
+	);
 
 	// -----------------------------------------------------------------------
 	// Physics body interaction
@@ -474,6 +541,9 @@ private:
 	VoxelLodTerrain *homing_terrain = nullptr;
 	float homing_speed = 5.f;
 	void _drive_homing_disassembles(double delta);
+
+	PackedByteArray serialize_ship_for_network(const String &ship_uuid) const;
+	void spawn_ship_from_network(const String &ship_uuid, const SubGridMetadata &meta, PackedByteArray chunk_data);
 };
 
 } // namespace zylann::voxel

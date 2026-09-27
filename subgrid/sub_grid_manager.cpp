@@ -16,6 +16,7 @@
 #include "../util/godot/classes/world_3d.h"
 #include "lod/sub_grid_lod_streaming.h"
 #include "../util/godot/classes/time.h"
+#include "../streams/voxel_block_serializer.h"
 
 namespace zylann::voxel {
 
@@ -46,6 +47,45 @@ void SubGridManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("register_ship_tree", "root"), &SubGridManager::register_ship_tree);
 	ClassDB::bind_method(D_METHOD("set_block_mass", "voxel_id", "mass"), &SubGridManager::set_block_mass);
 	ClassDB::bind_method(D_METHOD("set_default_block_mass", "mass"), &SubGridManager::set_default_block_mass);
+	ClassDB::bind_method(D_METHOD("save_block_entity_async", "ship_uuid", "request_id", "chunk_pos", "action_type", "entity_data"),&SubGridManager::save_block_entity_async);
+	ClassDB::bind_method(D_METHOD("delete_block_entity_async", "ship_uuid", "request_id", "chunk_pos", "local_key"),&SubGridManager::delete_block_entity_async);
+	ClassDB::bind_method(D_METHOD("save_chunk_last_modified_batch_async", "ship_uuid", "chunk_positions", "timestamp"),&SubGridManager::save_chunk_last_modified_batch_async);
+	ClassDB::bind_method(
+			D_METHOD("get_ship_chunk_modified_time", "ship_uuid", "chunk_pos"),
+			&SubGridManager::get_ship_chunk_modified_time
+	);
+	ClassDB::bind_method(
+			D_METHOD("query_ship_chunk_timestamps_async", "ship_uuid", "request_id", "chunk_positions"),
+			&SubGridManager::query_ship_chunk_timestamps_async
+	);
+
+	ADD_SIGNAL(MethodInfo("ship_block_entity_saved",
+			PropertyInfo(Variant::STRING, "ship_uuid"),
+			PropertyInfo(Variant::INT, "request_id"),
+			PropertyInfo(Variant::VECTOR3I, "chunk_pos"),
+			PropertyInfo(Variant::INT, "local_key"),
+			PropertyInfo(Variant::BOOL, "success")
+	));
+
+	ADD_SIGNAL(MethodInfo("ship_block_entity_deleted",
+			PropertyInfo(Variant::STRING, "ship_uuid"),
+			PropertyInfo(Variant::INT, "request_id"),
+			PropertyInfo(Variant::VECTOR3I, "chunk_pos"),
+			PropertyInfo(Variant::INT, "local_key"),
+			PropertyInfo(Variant::BOOL, "success")
+	));
+
+	ADD_SIGNAL(MethodInfo("ship_chunk_edited",
+			PropertyInfo(Variant::STRING, "ship_uuid"),
+			PropertyInfo(Variant::VECTOR3I, "chunk_pos")
+	));
+
+	ADD_SIGNAL(MethodInfo("ship_chunk_timestamps_result",
+			PropertyInfo(Variant::STRING, "ship_uuid"),
+			PropertyInfo(Variant::INT, "request_id"),
+			PropertyInfo(Variant::ARRAY, "chunk_positions"),
+			PropertyInfo(Variant::PACKED_FLOAT64_ARRAY, "timestamps")
+	));
 }
 
 void SubGridManager::_notification(int p_what) {
@@ -273,6 +313,8 @@ void SubGridManager::mark_chunk_dirty(const String &uuid_str, Vector3i lod0_chun
 		return;
 	}
 
+	emit_signal("ship_chunk_edited", uuid_str, lod0_chunk_pos);
+
 	// Invalidate collision for this LOD0 chunk
 	state->collision_built_chunks.erase(lod0_chunk_pos);
 
@@ -479,54 +521,127 @@ void process_entity_migration(SubGridManager::SaveThreadData &d, SubGridManager:
 }
 } // namespace
 
+// Drain the three new queues alongside existing batch/migration_batch:
 void SubGridManager::_save_thread_func() {
 	auto &d = _save_thread_data;
-
 	while (true) {
 		std::vector<SaveRequest> batch;
 		std::vector<EntityMigrationRequest> migration_batch;
+		std::vector<ShipEntitySaveRequest> entity_save_batch;
+		std::vector<ShipEntityDeleteRequest> entity_delete_batch;
+		std::vector<ShipChunkTimestampRequest> save_timestamp_batch;
+		std::vector<ShipChunkTimestampQuery> timestamp_query_batch;
+		std::vector<ShipChunkTimestampBatchRequest> timestamp_batch_batch;
 		{
 			std::unique_lock<std::mutex> lock(d.mutex);
-			d.cv.wait(lock, [&d] { return !d.queue.empty() || !d.migration_queue.empty() || !d.running; });
-			if (!d.running && d.queue.empty() && d.migration_queue.empty())
+			d.cv.wait(lock, [&d] {
+				return !d.queue.empty() || !d.migration_queue.empty() || !d.entity_save_queue.empty() ||
+						!d.entity_delete_queue.empty() || !d.chunk_timestamp_queue.empty() ||
+						!d.timestamp_query_queue.empty() || !d.timestamp_batch_queue.empty() || !d.running;
+			});
+			if (!d.running && d.queue.empty() && d.migration_queue.empty() && d.entity_save_queue.empty() &&
+				d.entity_delete_queue.empty() && d.chunk_timestamp_queue.empty() &&
+				d.timestamp_query_queue.empty() && d.timestamp_batch_queue.empty())
 				break;
 			batch = std::move(d.queue);
 			d.queue.clear();
 			migration_batch = std::move(d.migration_queue);
 			d.migration_queue.clear();
+			entity_save_batch = std::move(d.entity_save_queue);
+			d.entity_save_queue.clear();
+			entity_delete_batch = std::move(d.entity_delete_queue);
+			d.entity_delete_queue.clear();
+			save_timestamp_batch = std::move(d.chunk_timestamp_queue);
+			d.chunk_timestamp_queue.clear();
+			timestamp_query_batch = std::move(d.timestamp_query_queue);
+			d.timestamp_query_queue.clear();
+			timestamp_batch_batch = std::move(d.timestamp_batch_queue);
+			d.timestamp_batch_queue.clear();
 		}
 
 		for (auto &req : batch) {
-			struct Decrement {
-				std::atomic<int> &counter;
-				bool skip;
-				~Decrement() {
-					if (!skip)
-						--counter;
-				}
-			};
-			Decrement dec{ d.items_in_flight, req.close_stream };
-
-			String uuid = String(req.uuid.c_str());
-			if (req.close_stream) {
-				auto it = d.streams.find(uuid);
-				if (it != d.streams.end()) {
-					it->value->set_database_path("");
-					d.streams.erase(uuid);
-				}
-				continue;
-			}
-
-			Ref<VoxelStreamSQLite> stream = resolve_ship_stream_on_save_thread(d, uuid, String(req.saves_dir.c_str()));
-			if (!stream.is_valid())
-				continue;
-
-			VoxelStream::VoxelQueryData q{ *req.buffer, req.chunk_pos, 0, VoxelStream::RESULT_BLOCK_NOT_FOUND };
-			stream->save_voxel_block(q);
 		}
 
 		for (auto &req : migration_batch) {
 			process_entity_migration(d, req);
+			--d.items_in_flight;
+		}
+
+		for (auto &req : entity_save_batch) {
+			Ref<VoxelStreamSQLite> stream =
+					resolve_ship_stream_on_save_thread(d, String(req.ship_uuid.c_str()), String(req.saves_dir.c_str()));
+			int local_key = -1;
+			bool ok = false;
+			if (stream.is_valid()) {
+				local_key = stream->get_next_local_key(req.chunk_pos);
+				if (local_key >= 0) {
+					ok = stream->save_block_entity(req.chunk_pos, local_key, req.action_type, req.data);
+				}
+			}
+			// Signals must be emitted on the main thread, defer via call_deferred.
+			call_deferred(
+					"emit_signal",
+					"ship_block_entity_saved",
+					String(req.ship_uuid.c_str()),
+					req.request_id,
+					req.chunk_pos,
+					local_key,
+					ok
+			);
+			--d.items_in_flight;
+		}
+
+		for (auto &req : entity_delete_batch) {
+			Ref<VoxelStreamSQLite> stream =
+					resolve_ship_stream_on_save_thread(d, String(req.ship_uuid.c_str()), String(req.saves_dir.c_str()));
+			bool ok = stream.is_valid() && stream->delete_block_entity(req.chunk_pos, req.local_key);
+			call_deferred(
+					"emit_signal",
+					"ship_block_entity_deleted",
+					String(req.ship_uuid.c_str()),
+					req.request_id,
+					req.chunk_pos,
+					req.local_key,
+					ok
+			);
+			--d.items_in_flight;
+		}
+
+		for (auto &req : save_timestamp_batch) {
+			Ref<VoxelStreamSQLite> stream =
+					resolve_ship_stream_on_save_thread(d, String(req.ship_uuid.c_str()), String(req.saves_dir.c_str()));
+			if (stream.is_valid()) {
+				for (const Vector3i &pos : req.chunk_positions) {
+					stream->save_chunk_last_modified(pos, req.timestamp);
+				}
+			}
+		}
+
+		for (auto &req : timestamp_query_batch) {
+			Ref<VoxelStreamSQLite> stream =
+					resolve_ship_stream_on_save_thread(d, String(req.ship_uuid.c_str()), String(req.saves_dir.c_str()));
+			*req.out_timestamp = stream.is_valid() ? stream->load_chunk_last_modified(req.chunk_pos) : -1.0;
+			req.done->store(true);
+			--d.items_in_flight;
+		}
+
+		for (auto &req : timestamp_batch_batch) {
+			Ref<VoxelStreamSQLite> stream =
+					resolve_ship_stream_on_save_thread(d, String(req.ship_uuid.c_str()), String(req.saves_dir.c_str()));
+			Array positions_out;
+			PackedFloat64Array timestamps_out;
+			for (const Vector3i &pos : req.chunk_positions) {
+				positions_out.push_back(pos);
+				timestamps_out.push_back(stream.is_valid() ? stream->load_chunk_last_modified(pos) : -1.0);
+			}
+			call_deferred(
+					"emit_signal",
+					"ship_chunk_timestamps_result",
+					String(req.ship_uuid.c_str()),
+					req.request_id,
+					positions_out,
+					timestamps_out
+			);
 			--d.items_in_flight;
 		}
 	}
@@ -536,6 +651,111 @@ void SubGridManager::_save_thread_func() {
 		kv.value->set_database_path("");
 	}
 	d.streams.clear();
+}
+
+void SubGridManager::save_block_entity_async(
+		const String &ship_uuid,
+		int64_t request_id,
+		Vector3i chunk_pos,
+		int action_type,
+		PackedByteArray entity_data
+) {
+	ShipEntitySaveRequest req;
+	req.ship_uuid = ship_uuid.utf8().get_data();
+	req.saves_dir = ProjectSettings::get_singleton()->globalize_path(_saves_dir).utf8().get_data();
+	req.request_id = request_id;
+	req.chunk_pos = chunk_pos;
+	req.action_type = action_type;
+	req.data = entity_data; // struct field name "data" is fine, only the local parameter needed renaming
+	std::unique_lock<std::mutex> lock(_save_thread_data.mutex);
+	_save_thread_data.items_in_flight++;
+	_save_thread_data.entity_save_queue.push_back(req);
+	_save_thread_data.cv.notify_one();
+}
+
+void SubGridManager::delete_block_entity_async(
+		const String &ship_uuid,
+		int64_t request_id,
+		Vector3i chunk_pos,
+		int local_key
+) {
+	ShipEntityDeleteRequest req;
+	req.ship_uuid = ship_uuid.utf8().get_data();
+	req.saves_dir = ProjectSettings::get_singleton()->globalize_path(_saves_dir).utf8().get_data();
+	req.request_id = request_id;
+	req.chunk_pos = chunk_pos;
+	req.local_key = local_key;
+	std::unique_lock<std::mutex> lock(_save_thread_data.mutex);
+	_save_thread_data.items_in_flight++;
+	_save_thread_data.entity_delete_queue.push_back(req);
+	_save_thread_data.cv.notify_one();
+}
+
+void SubGridManager::save_chunk_last_modified_batch_async(
+		const String &ship_uuid,
+		PackedVector3Array chunk_positions,
+		double timestamp
+) {
+	if (chunk_positions.size() == 0)
+		return;
+	ShipChunkTimestampRequest req;
+	req.ship_uuid = ship_uuid.utf8().get_data();
+	req.saves_dir = ProjectSettings::get_singleton()->globalize_path(_saves_dir).utf8().get_data();
+	req.timestamp = timestamp;
+	for (int i = 0; i < chunk_positions.size(); i++) {
+		req.chunk_positions.push_back(Vector3i(chunk_positions[i]));
+	}
+	std::unique_lock<std::mutex> lock(_save_thread_data.mutex);
+	_save_thread_data.items_in_flight++;
+	_save_thread_data.chunk_timestamp_queue.push_back(req);
+	_save_thread_data.cv.notify_one();
+}
+
+double SubGridManager::get_ship_chunk_modified_time(const String &ship_uuid, Vector3i chunk_pos) {
+	ShipChunkTimestampQuery req;
+	req.ship_uuid = ship_uuid.utf8().get_data();
+	req.saves_dir = ProjectSettings::get_singleton()->globalize_path(_saves_dir).utf8().get_data();
+	req.chunk_pos = chunk_pos;
+	req.done = std::make_shared<std::atomic<bool>>(false);
+	req.out_timestamp = std::make_shared<double>(-1.0);
+
+	{
+		std::unique_lock<std::mutex> lock(_save_thread_data.mutex);
+		_save_thread_data.items_in_flight++;
+		_save_thread_data.timestamp_query_queue.push_back(req);
+		_save_thread_data.cv.notify_one();
+	}
+
+	const int max_wait_ms = 5000;
+	int waited = 0;
+	while (!req.done->load()) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		if (++waited > max_wait_ms) {
+			ERR_PRINT("get_ship_chunk_modified_time timed out!");
+			return -1.0;
+		}
+	}
+	return *req.out_timestamp;
+}
+
+void SubGridManager::query_ship_chunk_timestamps_async(
+		const String &ship_uuid, int64_t request_id, PackedVector3Array chunk_positions
+) {
+	if (chunk_positions.size() == 0)
+		return;
+
+	ShipChunkTimestampBatchRequest req;
+	req.ship_uuid = ship_uuid.utf8().get_data();
+	req.saves_dir = ProjectSettings::get_singleton()->globalize_path(_saves_dir).utf8().get_data();
+	req.request_id = request_id;
+	for (int i = 0; i < chunk_positions.size(); i++) {
+		req.chunk_positions.push_back(Vector3i(chunk_positions[i]));
+	}
+
+	std::unique_lock<std::mutex> lock(_save_thread_data.mutex);
+	_save_thread_data.items_in_flight++;
+	_save_thread_data.timestamp_batch_queue.push_back(req);
+	_save_thread_data.cv.notify_one();
 }
 
 void SubGridManager::push_save(const SaveRequest &req) {
@@ -2552,6 +2772,87 @@ std::shared_ptr<VoxelBuffer> SubGridManager::_build_data5_extract_buffer(VoxelSu
 		}
 	}
 	return padded;
+}
+
+PackedByteArray SubGridManager::serialize_ship_for_network(const String &ship_uuid) const {
+	PackedByteArray out;
+	const ShipState *state = _ships.getptr(ship_uuid);
+	ERR_FAIL_COND_V(state == nullptr || state->node == nullptr, out);
+
+	const SubGridChunkMap &chunks = state->node->get_chunk_map();
+	const HashSet<Vector3i> &positions = chunks.get_all_chunk_positions();
+
+	StdVector<uint8_t> buf;
+	auto write_i32 = [&](int32_t v) {
+		uint8_t tmp[4];
+		memcpy(tmp, &v, 4);
+		buf.insert(buf.end(), tmp, tmp + 4);
+	};
+	write_i32((int32_t)positions.size());
+
+	for (const Vector3i &pos : positions) {
+		std::shared_ptr<VoxelBuffer> voxels = chunks.get_chunk_buffer(pos);
+		if (!voxels)
+			continue;
+		write_i32(pos.x);
+		write_i32(pos.y);
+		write_i32(pos.z);
+
+		BlockSerializer::SerializeResult res =
+				BlockSerializer::serialize_and_compress(*voxels, CompressedData::COMPRESSION_LZ4);
+		ERR_CONTINUE(!res.success);
+		write_i32((int32_t)res.data.size());
+		buf.insert(buf.end(), res.data.begin(), res.data.end());
+	}
+
+	out.resize(buf.size());
+	memcpy(out.ptrw(), buf.data(), buf.size());
+	return out;
+}
+
+void SubGridManager::spawn_ship_from_network(
+		const String &ship_uuid,
+		const SubGridMetadata &meta,
+		PackedByteArray chunk_data
+) {
+	VoxelSubGrid *sg = memnew(VoxelSubGrid);
+	get_parent()->add_child(sg);
+
+	SubGridChunkMap chunks;
+	chunks.set_format(_voxel_format);
+
+	const uint8_t *p = chunk_data.ptr();
+	int64_t n = chunk_data.size();
+	int64_t offset = 0;
+	auto read_i32 = [&]() -> int32_t {
+		int32_t v;
+		memcpy(&v, p + offset, 4);
+		offset += 4;
+		return v;
+	};
+
+	int32_t count = read_i32();
+	for (int i = 0; i < count && offset < n; i++) {
+		Vector3i pos(read_i32(), read_i32(), read_i32());
+		int32_t comp_size = read_i32();
+		Span<const uint8_t> comp_span(p + offset, comp_size);
+		offset += comp_size;
+
+		auto voxels = std::make_shared<VoxelBuffer>(VoxelBuffer::ALLOCATOR_POOL);
+		if (BlockSerializer::decompress_and_deserialize(comp_span, *voxels)) {
+			chunks.set_block_buffer(pos, voxels);
+		}
+	}
+	chunks.rebuild_all_lods();
+
+	SubGridMetadata meta_copy = meta;
+	if (meta_copy.is_root && !meta_copy.is_terrain_anchored) {
+		sg->initialize_root(meta_copy, std::move(chunks), _saves_dir, _mesher, _library, _voxel_format);
+	} else {
+		sg->initialize_child(meta_copy, std::move(chunks), _saves_dir, /*async_stream=*/false, _voxel_format);
+	}
+
+	register_ship_tree(sg);
 }
 
 } // namespace zylann::voxel

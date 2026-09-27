@@ -51,6 +51,7 @@ public:
 	SubGridMetadata &get_metadata_mut() { 
 		return _meta; 
 	}
+	String get_uuid_string() const;
 
 	// EDITING
 	uint32_t get_voxel(Vector3i local_pos, int channel) const;

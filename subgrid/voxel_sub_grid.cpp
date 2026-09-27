@@ -48,6 +48,7 @@ void VoxelSubGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_grab_target", "target"), &VoxelSubGrid::set_grab_target);
 	ClassDB::bind_method(D_METHOD("apply_impulse", "impulse", "world_point"), &VoxelSubGrid::apply_impulse);
 	ClassDB::bind_method(D_METHOD("apply_central_impulse", "impulse"), &VoxelSubGrid::apply_central_impulse);
+	ClassDB::bind_method(D_METHOD("get_uuid_string"), &VoxelSubGrid::get_uuid_string);
 }
 
 void VoxelSubGrid::_notification(int p_what) {
@@ -1149,5 +1150,7 @@ bool VoxelSubGrid::_check_subgrid_clear_for_transform(SubGridChunkMap &parent_ch
 	});
 	return clear;
 }
-
+String VoxelSubGrid::get_uuid_string() const {
+	return uuid_to_string(_meta.uuid);
+}
 } // namespace zylann::voxel
