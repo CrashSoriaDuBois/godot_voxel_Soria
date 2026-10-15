@@ -99,6 +99,7 @@ private:
 
 	void gather_light_only();
 	void build_light_only();
+	void persist_light();
 
 	bool _has_run = false;
 	bool _too_far = false;

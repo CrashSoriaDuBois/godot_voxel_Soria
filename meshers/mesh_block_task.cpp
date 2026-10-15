@@ -975,6 +975,7 @@ void MeshBlockTask::build_light_only() {
 					}
 
 					extract_light_slices(big_buf, light_block_size, padding, block_size, _surfaces_output);
+					persist_light(); //this makes neighbouring chunks persist if they never where edited before, since unedited chunks are not marked to be stored
 				}
 			}
 		}
@@ -998,6 +999,19 @@ void MeshBlockTask::build_light_only() {
 	}
 
 	_has_mesh_resource = false;
+}
+
+void MeshBlockTask::persist_light() {
+	// Only LOD0 owns light. Assumes mesh block size == data block size; the size check in
+	// try_store_block_channel_bytes rejects mismatches (for 32-size mesh blocks, split into data blocks).
+	if (lod_index != 0 || !_surfaces_output.light_surface.was_computed) {
+		return;
+	}
+	const StdVector<uint8_t> &raw = _surfaces_output.light_surface.data;
+	if (data->try_store_block_channel_bytes(mesh_block_position, VoxelBuffer::CHANNEL_DATA5, to_span_const(raw))) {
+		const Vector3i bpos = mesh_block_position;
+		data->update_lods(Span<const Vector3i>(&bpos, 1), nullptr); // keep LOD1+ light in sync
+	}
 }
 
 } // namespace zylann::voxel

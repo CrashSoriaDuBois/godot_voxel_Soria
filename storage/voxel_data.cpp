@@ -1471,4 +1471,42 @@ Variant VoxelData::get_voxel_metadata(const Vector3i pos) {
 	return Variant();
 }
 
+bool VoxelData::try_store_block_channel_bytes(
+		const Vector3i bpos,
+		const unsigned int channel_index,
+		Span<const uint8_t> bytes
+) {
+	if (!get_bounds().contains(block_to_voxel(bpos))) {
+		return false;
+	}
+	Lod &lod = _lods[0];
+	SpatialLock3D::Write swlock(lod.spatial_lock, BoxBounds3i::from_position(bpos));
+
+	std::shared_ptr<VoxelBuffer> vb = try_get_writable_voxel_buffer_assuming_spatial_lock(lod, bpos);
+	if (vb == nullptr) {
+		return false; // streaming: block not loaded, we don't know what's in it
+	}
+	if (vb->get_channel_depth(channel_index) != VoxelBuffer::DEPTH_8_BIT || bytes.size() != vb->get_volume()) {
+		return false;
+	}
+
+	vb->decompress_channel(channel_index);
+	Span<uint8_t> dst;
+	if (!vb->get_channel_as_bytes(channel_index, dst) || dst.size() != bytes.size()) {
+		return false;
+	}
+	const bool changed = memcmp(dst.data(), bytes.data(), bytes.size()) != 0;
+	if (changed) {
+		memcpy(dst.data(), bytes.data(), bytes.size());
+	}
+
+	RWLockRead rlock(lod.map_lock);
+	VoxelDataBlock *block = lod.map.get_block(bpos);
+	if (block != nullptr && (changed || !block->is_edited())) {
+		block->set_edited(true); // protects from clear_cached_blocks_in_voxel_area
+		block->set_modified(true); // gets saved on unload
+	}
+	return true;
+}
+
 } // namespace zylann::voxel

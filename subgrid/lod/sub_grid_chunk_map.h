@@ -55,6 +55,10 @@ public:
 	// Automatically propagates downsampled copies to LOD1+.
 	void set_block_buffer(Vector3i lod0_chunk_pos, std::shared_ptr<VoxelBuffer> buf);
 
+	void remove_chunk_buffer(Vector3i chunk_pos) {
+		_lod_maps[0].remove_block(chunk_pos, VoxelDataMap::NoAction());
+	}
+
 	// Get raw LOD0 buffer (for saving)
 	std::shared_ptr<VoxelBuffer> get_chunk_buffer(Vector3i lod0_chunk_pos) const;
 

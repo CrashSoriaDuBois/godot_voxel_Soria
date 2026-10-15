@@ -382,6 +382,12 @@ public:
 	void set_voxel_metadata(const Vector3i pos, const Variant &meta);
 	Variant get_voxel_metadata(const Vector3i pos);
 
+	// Writes raw bytes into an 8-bit channel of a LOD0 data block. Allocates the block's voxel buffer
+	// (generating it) if the block is loaded but has none. Marks the block edited+modified so it survives
+	// cache clearing and gets saved. Does NOT schedule remeshing or LOD propagation.
+	// Returns false if the block isn't loaded/editable or sizes mismatch.
+	bool try_store_block_channel_bytes(Vector3i bpos, unsigned int channel_index, Span<const uint8_t> bytes);
+
 private:
 	void reset_maps_no_settings_lock();
 

@@ -23,6 +23,8 @@
 #include "terrain/variable_lod/voxel_lod_terrain.h" // for IMeshBlockLodListener
 #include "../storage/voxel_format.h"
 #include "../util/godot/classes/image_texture_3d.h"
+#include "core/io/dir_access.h"
+#include "voxel_sub_grid.h"
 // Forward declare Godot types to avoid heavy includes in header
 class AnimatableBody3D;
 
@@ -62,9 +64,7 @@ public:
 	void mark_chunk_dirty(const String &uuid_str, Vector3i chunk_pos);
 
 	String uuid_for_node(VoxelSubGrid *node) const;
-	String get_saves_dir() const {
-		return _saves_dir;
-	}
+
 	void mark_all_dirty(const String &uuid);
 
 	// -----------------------------------------------------------------------
@@ -75,6 +75,7 @@ public:
 		Vector3i chunk_pos;
 		std::shared_ptr<VoxelBuffer> buffer;
 		bool close_stream = false;
+		std::shared_ptr<std::atomic<int>> completion_counter;
 	};
 
 	// must be declared before SaveThreadData, which holds a queue of these.
@@ -134,6 +135,29 @@ public:
 		Vector<Vector3i> chunk_positions;
 	};
 
+	struct ShipEntityLoadQuery {
+		std::string ship_uuid;
+		std::string saves_dir;
+		Vector3i chunk_pos;
+		int local_key;
+		std::shared_ptr<std::atomic<bool>> done;
+		std::shared_ptr<Dictionary> out_entity;
+	};
+
+	struct ShipEntityKeysQuery {
+		std::string ship_uuid;
+		std::string saves_dir;
+		Vector3i chunk_pos;
+		std::shared_ptr<std::atomic<bool>> done;
+		std::shared_ptr<PackedInt32Array> out_keys;
+	};
+
+	struct ShipChunkClearRequest {
+		std::string ship_uuid;
+		std::string saves_dir;
+		Vector<Vector3i> positions;
+	};
+
 	// Save thread owns all streams, never accessed from main thread
 	struct SaveThreadData {
 		std::mutex mutex;
@@ -147,6 +171,9 @@ public:
 		std::vector<ShipChunkTimestampRequest> chunk_timestamp_queue;
 		std::vector<ShipChunkTimestampQuery> timestamp_query_queue;
 		std::vector<ShipChunkTimestampBatchRequest> timestamp_batch_queue;
+		std::vector<ShipChunkClearRequest> chunk_clear_queue;
+		std::vector<ShipEntityLoadQuery> entity_load_query_queue;
+		std::vector<ShipEntityKeysQuery> entity_keys_query_queue;
 		HashMap<String, Ref<VoxelStreamSQLite>> streams;
 	} _save_thread_data;
 
@@ -170,19 +197,26 @@ public:
 	);
 
 
+	String get_saves_dir() const {
+		return _saves_dir;
+	}
 
-	double get_ship_chunk_modified_time(const String &ship_uuid, Vector3i chunk_pos);
-	void query_ship_chunk_timestamps_async(
-			const String &ship_uuid,
-			int64_t request_id,
-			PackedVector3Array chunk_positions
-	);
+	VoxelSubGrid *get_ship_by_uuid_node(const String &uuid) const;
 
-	// -----------------------------------------------------------------------
-	// Persistence
+	Array get_ship_uuid_list() const {
+		Array out;
+		for (const auto &[uuid, state] : _ships) {
+			out.push_back(uuid);
+		}
+		return out;
+	}
 
-	void save_all();
-	void load_all();
+	PackedByteArray get_ship_metadata_blob(const String &uuid) const {
+		const ShipState *state = _ships.getptr(uuid);
+		if (state == nullptr || state->node == nullptr)
+			return PackedByteArray();
+		return state->node->get_metadata().serialize();
+	}
 
 	void save_block_entity_async(
 			const String &ship_uuid,
@@ -197,6 +231,29 @@ public:
 			PackedVector3Array chunk_positions,
 			double timestamp
 	);
+	double get_ship_chunk_modified_time(const String &ship_uuid, Vector3i chunk_pos);
+	void query_ship_chunk_timestamps_async(
+			const String &ship_uuid,
+			int64_t request_id,
+			PackedVector3Array chunk_positions
+	);
+
+	Dictionary load_ship_block_entity(const String &ship_uuid, Vector3i chunk_pos, int local_key);
+	PackedInt32Array get_ship_block_entity_keys(const String &ship_uuid, Vector3i chunk_pos);
+
+	PackedByteArray serialize_ship_for_network(const String &ship_uuid) const;
+	PackedByteArray serialize_ship_chunks_for_network(const String &ship_uuid, PackedVector3Array positions) const;
+	void spawn_ship_from_network(const String &ship_uuid, PackedByteArray meta_blob, PackedByteArray chunk_data);
+	void apply_ship_chunk_batch(const String &ship_uuid, PackedByteArray combined_data, double host_timestamp);
+	void clear_ship_chunk_batch(const String &ship_uuid, PackedVector3Array chunk_positions);
+
+
+
+
+	// -----------------------------------------------------------------------
+	// Persistence
+	void save_all();
+	void load_all();
 
 	// -----------------------------------------------------------------------
 	// Physics body interaction
@@ -239,7 +296,7 @@ private:
 	// sub_grid_lod_streaming.h needs to name SubGridManager::ShipState in its function
 	// signature. See subgrid/lod/sub_grid_lod_streaming.h for the rationale.
 
-	enum LoadState { SLEEPING, LOADED };
+	enum LoadState { SLEEPING, LOADED, UNLOADING };
 
 public:
 
@@ -311,6 +368,8 @@ public:
 
 		uint64_t homing_start_msec = 0;
 		uint64_t homing_timeout_msec = 4000; //test diferent timeouts times
+
+		std::shared_ptr<std::atomic<int>> unload_pending_count;
 	};
 
 	void begin_homing_disassemble(VoxelSubGrid *sg, const Transform3D &target_t, VoxelLodTerrain *terrain, float speed);
@@ -542,8 +601,11 @@ private:
 	float homing_speed = 5.f;
 	void _drive_homing_disassembles(double delta);
 
-	PackedByteArray serialize_ship_for_network(const String &ship_uuid) const;
-	void spawn_ship_from_network(const String &ship_uuid, const SubGridMetadata &meta, PackedByteArray chunk_data);
+	void _queue_ship_chunk_clear(
+			const std::string &ship_uuid,
+			const std::string &saves_dir,
+			const Vector<Vector3i> &positions
+	);
 };
 
 } // namespace zylann::voxel
