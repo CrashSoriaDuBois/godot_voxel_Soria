@@ -4073,6 +4073,80 @@ void VoxelLodTerrain::remove_mesh_block_lod_listener(IMeshBlockLodListener *list
 	}
 }
 
+bool VoxelLodTerrain::_b_set_voxel_grid(
+		Vector3i pos,
+		int res,
+		PackedInt32Array cells,
+		PackedInt32Array colors,
+		bool relevant
+) {
+	StdVector<uint16_t> c(cells.size()), col(colors.size());
+	for (int i = 0; i < cells.size(); ++i)
+		c[i] = uint16_t(cells[i]);
+	for (int i = 0; i < colors.size(); ++i)
+		col[i] = uint16_t(colors[i]);
+	if (!_data->try_set_voxel_grid(
+				pos,
+				uint8_t(res),
+				Span<const uint16_t>(c.data(), c.size()),
+				Span<const uint16_t>(col.data(), col.size())
+		)) {
+		return false;
+	}
+	post_edit_area(Box3i(pos, Vector3i(1, 1, 1)), true, relevant);
+	return true;
+}
+
+bool VoxelLodTerrain::_b_clear_voxel_grid(Vector3i pos, bool relevant) {
+	if (!_data->clear_voxel_grid(pos)) {
+		return false;
+	}
+	post_edit_area(Box3i(pos, Vector3i(1, 1, 1)), true, relevant);
+	return true;
+}
+
+int VoxelLodTerrain::_b_set_voxel_grid_cell(Vector3i pos, int res, Vector3i cell, int id, int color, bool relevant) {
+	bool structural = false;
+	const int filled = _data->try_set_voxel_grid_cell(pos, uint8_t(res), cell, uint16_t(id), color, structural);
+	if (filled >= 0) {
+		post_edit_area(Box3i(pos, Vector3i(1, 1, 1)), true, relevant);
+	}
+	return filled;
+}
+
+bool VoxelLodTerrain::_b_set_voxel_grid_cell_color(Vector3i pos, Vector3i cell, int color, bool relevant) {
+	if (!_data->try_set_voxel_grid_cell_color(pos, cell, uint16_t(color))) {
+		return false;
+	}
+	post_edit_area(Box3i(pos, Vector3i(1, 1, 1)), true, relevant);
+	return true;
+}
+
+Dictionary VoxelLodTerrain::_b_get_voxel_grid(Vector3i pos) const {
+	Dictionary d;
+	VoxelGridMetadata g;
+	if (!_data->try_get_voxel_grid(pos, g)) {
+		return d; // empty = no grid here
+	}
+	const unsigned int n = VoxelGridMetadata::cell_count(g.res);
+	PackedInt32Array cells;
+	cells.resize(n);
+	PackedInt32Array colors;
+	if (g.has_color) {
+		colors.resize(n);
+	}
+	for (unsigned int i = 0; i < n; ++i) {
+		cells.set(i, g.cells[i]);
+		if (g.has_color) {
+			colors.set(i, g.colors[i]);
+		}
+	}
+	d["res"] = int(g.res);
+	d["cells"] = cells;
+	d["colors"] = colors; // empty if the grid has no colors
+	return d;
+}
+
 void VoxelLodTerrain::_bind_methods() {
 	using Self = VoxelLodTerrain;
 
@@ -4126,6 +4200,20 @@ void VoxelLodTerrain::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_secondary_lod_distance", "lod_distance"), &Self::set_secondary_lod_distance);
 	ClassDB::bind_method(D_METHOD("get_secondary_lod_distance"), &Self::get_secondary_lod_distance);
+
+	//voxel subgrid
+	ClassDB::bind_method(
+			D_METHOD("set_voxel_grid", "pos", "res", "cells", "colors", "relevant"),
+			&Self::_b_set_voxel_grid, DEFVAL(PackedInt32Array()), DEFVAL(true));
+	ClassDB::bind_method(
+			D_METHOD("clear_voxel_grid", "pos", "relevant"), &Self::_b_clear_voxel_grid, DEFVAL(true));
+	ClassDB::bind_method(
+			D_METHOD("set_voxel_grid_cell", "pos", "res", "cell", "id", "color", "relevant"),
+			&Self::_b_set_voxel_grid_cell, DEFVAL(-1), DEFVAL(true));
+	ClassDB::bind_method(
+			D_METHOD("set_voxel_grid_cell_color", "pos", "cell", "color", "relevant"),
+			&Self::_b_set_voxel_grid_cell_color, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("get_voxel_grid", "pos"), &Self::_b_get_voxel_grid);
 
 	// Misc
 

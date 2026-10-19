@@ -7,6 +7,7 @@
 #include "metadata/voxel_metadata_variant.h"
 #include "voxel_buffer_gd.h"
 #include "voxel_data_grid.h"
+#include "metadata/voxel_grid_metadata.h"
 
 namespace zylann::voxel {
 
@@ -1506,6 +1507,168 @@ bool VoxelData::try_store_block_channel_bytes(
 		block->set_edited(true); // protects from clear_cached_blocks_in_voxel_area
 		block->set_modified(true); // gets saved on unload
 	}
+	return true;
+}
+
+bool VoxelData::try_set_voxel_grid(
+		const Vector3i pos,
+		const uint8_t res,
+		Span<const uint16_t> cells,
+		Span<const uint16_t> colors
+) {
+	const unsigned int n = VoxelGridMetadata::cell_count(res);
+	if (res < 2 || res > 4 || cells.size() != n || (colors.size() != 0 && colors.size() != n)) {
+		return false;
+	}
+	if (!get_bounds().contains(pos)) {
+		return false;
+	}
+	Lod &lod = _lods[0];
+	const Vector3i bpos = lod.map.voxel_to_block(pos);
+	SpatialLock3D::Write swlock(lod.spatial_lock, BoxBounds3i::from_position(bpos));
+
+	std::shared_ptr<VoxelBuffer> vb = try_get_writable_voxel_buffer_assuming_spatial_lock(lod, bpos);
+	if (vb == nullptr) {
+		return false;
+	}
+	VoxelMetadata *meta = vb->get_or_create_voxel_metadata(lod.map.to_local(pos));
+	ZN_ASSERT_RETURN_V(meta != nullptr, false);
+	meta->clear();
+
+	VoxelGridMetadata *g = ZN_NEW(VoxelGridMetadata);
+	g->res = res;
+	memcpy(g->cells, cells.data(), n * sizeof(uint16_t));
+	if (colors.size() != 0) {
+		g->has_color = true;
+		memcpy(g->colors, colors.data(), n * sizeof(uint16_t));
+	}
+	meta->set_custom(VoxelGridMetadata::TYPE_INDEX, g);
+	return true;
+}
+
+int VoxelData::try_set_voxel_grid_cell(
+		const Vector3i pos,
+		const uint8_t res,
+		const Vector3i cell,
+		const uint16_t id,
+		const int color,
+		bool &out_structural
+) {
+	out_structural = false;
+	if (res < 2 || res > 4 || cell.x < 0 || cell.y < 0 || cell.z < 0 || cell.x >= res || cell.y >= res ||
+		cell.z >= res || !get_bounds().contains(pos)) {
+		return -1;
+	}
+	Lod &lod = _lods[0];
+	const Vector3i bpos = lod.map.voxel_to_block(pos);
+	SpatialLock3D::Write swlock(lod.spatial_lock, BoxBounds3i::from_position(bpos));
+
+	std::shared_ptr<VoxelBuffer> vb = try_get_writable_voxel_buffer_assuming_spatial_lock(lod, bpos);
+	if (vb == nullptr) {
+		return -1;
+	}
+	const Vector3i rpos = lod.map.to_local(pos);
+	VoxelMetadata *meta = vb->get_or_create_voxel_metadata(rpos);
+	ZN_ASSERT_RETURN_V(meta != nullptr, -1);
+
+	VoxelGridMetadata *g = nullptr;
+	if (meta->get_type() == VoxelGridMetadata::TYPE_INDEX) {
+		g = static_cast<VoxelGridMetadata *>(&meta->get_custom());
+		if (g->res != res) {
+			return -1;
+		}
+	} else if (meta->get_type() == VoxelMetadata::TYPE_EMPTY) {
+		g = ZN_NEW(VoxelGridMetadata);
+		g->res = res;
+		meta->set_custom(VoxelGridMetadata::TYPE_INDEX, g);
+		out_structural = true;
+	} else {
+		return -1; // some other metadata lives here, don't overwrite it
+	}
+
+	const unsigned int idx = g->index(cell.x, cell.y, cell.z);
+	g->cells[idx] = id;
+	if (color >= 0) {
+		g->has_color = true; // colors[] is already initialised to 0xFFFF
+		g->colors[idx] = uint16_t(color);
+	}
+
+	int filled = 0;
+	const unsigned int n = VoxelGridMetadata::cell_count(res);
+	for (unsigned int i = 0; i < n; ++i) {
+		if (g->cells[i] != 0) {
+			++filled;
+		}
+	}
+	if (filled == 0) {
+		vb->erase_voxel_metadata(rpos); // frees g, don't touch it after this
+		out_structural = true;
+	}
+	return filled;
+}
+
+bool VoxelData::try_set_voxel_grid_cell_color(const Vector3i pos, const Vector3i cell, const uint16_t color) {
+	if (!get_bounds().contains(pos)) {
+		return false;
+	}
+	Lod &lod = _lods[0];
+	const Vector3i bpos = lod.map.voxel_to_block(pos);
+	SpatialLock3D::Write swlock(lod.spatial_lock, BoxBounds3i::from_position(bpos));
+
+	std::shared_ptr<VoxelBuffer> vb = try_get_writable_voxel_buffer_assuming_spatial_lock(lod, bpos);
+	if (vb == nullptr) {
+		return false;
+	}
+	VoxelMetadata *meta = vb->get_voxel_metadata(lod.map.to_local(pos));
+	if (meta == nullptr || meta->get_type() != VoxelGridMetadata::TYPE_INDEX) {
+		return false;
+	}
+	VoxelGridMetadata &g = static_cast<VoxelGridMetadata &>(meta->get_custom());
+	if (cell.x < 0 || cell.y < 0 || cell.z < 0 || cell.x >= g.res || cell.y >= g.res || cell.z >= g.res) {
+		return false;
+	}
+	g.has_color = true; // the other colors are already 0xFFFF, so uncolored cells stay white
+	g.colors[g.index(cell.x, cell.y, cell.z)] = color;
+	return true;
+}
+
+bool VoxelData::clear_voxel_grid(const Vector3i pos) {
+	Lod &lod = _lods[0];
+	const Vector3i bpos = lod.map.voxel_to_block(pos);
+	SpatialLock3D::Write swlock(lod.spatial_lock, BoxBounds3i::from_position(bpos));
+
+	std::shared_ptr<VoxelBuffer> vb = try_get_writable_voxel_buffer_assuming_spatial_lock(lod, bpos);
+	if (vb == nullptr) {
+		return false;
+	}
+	const Vector3i rpos = lod.map.to_local(pos);
+	const VoxelMetadata *meta = vb->get_voxel_metadata(rpos);
+	if (meta == nullptr || meta->get_type() != VoxelGridMetadata::TYPE_INDEX) {
+		return false;
+	}
+	vb->erase_voxel_metadata(rpos);
+	return true;
+}
+
+bool VoxelData::try_get_voxel_grid(const Vector3i pos, VoxelGridMetadata &out) const {
+	const Lod &lod = _lods[0];
+	const Vector3i bpos = lod.map.voxel_to_block(pos);
+	SpatialLock3D::Read srlock(lod.spatial_lock, BoxBounds3i::from_position(bpos));
+
+	bool generate = false;
+	std::shared_ptr<VoxelBuffer> vb = try_get_voxel_buffer_with_lock(lod, bpos, generate);
+	if (vb == nullptr) {
+		return false;
+	}
+	const VoxelMetadata *meta = vb->get_voxel_metadata(lod.map.to_local(pos));
+	if (meta == nullptr || meta->get_type() != VoxelGridMetadata::TYPE_INDEX) {
+		return false;
+	}
+	const VoxelGridMetadata &g = static_cast<const VoxelGridMetadata &>(meta->get_custom());
+	out.res = g.res;
+	out.has_color = g.has_color;
+	memcpy(out.cells, g.cells, sizeof(g.cells));
+	memcpy(out.colors, g.colors, sizeof(g.colors));
 	return true;
 }
 

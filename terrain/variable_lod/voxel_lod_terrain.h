@@ -113,6 +113,12 @@ public:
 	void set_threaded_update_enabled(bool enabled);
 	bool is_threaded_update_enabled() const;
 
+	bool _b_set_voxel_grid(Vector3i pos, int res, PackedInt32Array cells, PackedInt32Array colors, bool relevant);
+	bool _b_clear_voxel_grid(Vector3i pos, bool relevant);
+	int _b_set_voxel_grid_cell(Vector3i pos, int res, Vector3i cell, int id, int color, bool relevant);
+	bool _b_set_voxel_grid_cell_color(Vector3i pos, Vector3i cell, int color, bool relevant);
+	Dictionary _b_get_voxel_grid(Vector3i pos) const;
+
 #ifdef VOXEL_ENABLE_SMOOTH_MESHING
 	void set_normalmap_enabled(bool enable);
 	bool is_normalmap_enabled() const;

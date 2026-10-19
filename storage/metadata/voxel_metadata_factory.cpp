@@ -42,7 +42,7 @@ ICustomVoxelMetadata *VoxelMetadataFactory::try_construct(uint8_t type) const {
 	ZN_ASSERT_RETURN_V_MSG(
 			m != nullptr, nullptr, format("Custom metadata constructor for type {} returned nullptr", type));
 
-	return ctor();
+	return m; //fix to a supposed memory leak
 }
 
 } // namespace zylann::voxel

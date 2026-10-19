@@ -18,6 +18,8 @@
 #include <queue>
 #include "../../util/string/format.h"
 
+#include "../../storage/metadata/voxel_grid_metadata.h"
+
 using namespace zylann::godot;
 
 namespace zylann::voxel {
@@ -51,6 +53,111 @@ inline uint8_t get_light_color(uint8_t v) {
 inline uint8_t get_light_intensity(uint8_t v) {
 	return v & 0xF;
 }
+//voxel subgrid
+
+struct GridContext {
+	StdVector<uint16_t> slot_by_index; // padded volume; 0 = not a grid, else entries index + 1
+	StdVector<const VoxelGridMetadata *> entries;
+	void clear() {
+		slot_by_index.clear();
+		entries.clear();
+	}
+};
+
+GridContext &get_tls_grid_context() {
+	static thread_local GridContext ctx;
+	return ctx;
+}
+
+inline bool is_usable_cell(const BakedLibrary &lib, uint16_t id) {
+	return id != AIR_ID && lib.has_model(id) && lib.models[id].fluid_index == NULL_FLUID_INDEX;
+}
+
+void emit_grid_voxel(
+		StdVector<VoxelMesherBlocky::Arrays> &out_arrays_per_material,
+		StdVector<int> &index_offsets,
+		VoxelMesher::Output::CollisionSurface *collision_surface,
+		int &collision_surface_index_offset,
+		const BakedLibrary &library,
+		const VoxelGridMetadata &grid,
+		const Vector3f voxel_pos,
+		const Color tint
+) {
+	const int res = grid.res;
+	const float inv = 1.f / float(res);
+
+	for (int cz = 0; cz < res; ++cz) {
+		for (int cx = 0; cx < res; ++cx) {
+			for (int cy = 0; cy < res; ++cy) {
+				const unsigned int idx = grid.index(cx, cy, cz);
+				const uint16_t id = grid.cells[idx];
+				if (!is_usable_cell(library, id)) {
+					continue;
+				}
+				const BakedModel &bm = library.models[id];
+				const BakedModel::Model &model = bm.model;
+				Color color = bm.color * tint;
+				if (grid.has_color) {
+					color = color * VoxelGridMetadata::decode_color(grid.colors[idx]);
+				}
+				const Vector3f cell_pos = voxel_pos + Vector3f(cx, cy, cz) * inv;
+
+				for (unsigned int side = 0; side < Cube::SIDE_COUNT; ++side) {
+					if ((model.empty_sides_mask & (1 << side)) != 0) {
+						continue;
+					}
+					// Cull against the neighbor cell inside the same grid.
+					const Vector3i n = Cube::g_side_normals[side];
+					const int nx = cx + n.x, ny = cy + n.y, nz = cz + n.z;
+					if (nx >= 0 && ny >= 0 && nz >= 0 && nx < res && ny < res && nz < res) {
+						const uint16_t nid = grid.cells[grid.index(nx, ny, nz)];
+						if (is_usable_cell(library, nid) && library.models[nid].culls_neighbors) {
+							continue;
+						}
+					}
+
+					for (unsigned int s = 0; s < model.surface_count; ++s) {
+						const BakedModel::Surface &surface = model.surfaces[s];
+						const BakedModel::SideSurface &ss = model.sides_surfaces[side][s];
+						const unsigned int vertex_count = ss.positions.size();
+						const unsigned int index_count = ss.indices.size();
+						if (vertex_count == 0) {
+							continue;
+						}
+						VoxelMesherBlocky::Arrays &arrays = out_arrays_per_material[surface.material_id];
+						int &index_offset = index_offsets[surface.material_id];
+
+						for (unsigned int i = 0; i < vertex_count; ++i) {
+							arrays.positions.push_back(ss.positions[i] * inv + cell_pos);
+							arrays.normals.push_back(to_vec3f(n));
+							arrays.uvs.push_back(ss.uvs[i]);
+							arrays.colors.push_back(color);
+						}
+						if (ss.tangents.size() > 0) {
+							const int at = arrays.tangents.size();
+							arrays.tangents.resize(at + vertex_count * 4);
+							memcpy(arrays.tangents.data() + at, ss.tangents.data(), vertex_count * 4 * sizeof(float));
+						}
+						for (unsigned int j = 0; j < index_count; ++j) {
+							arrays.indices.push_back(index_offset + ss.indices[j]);
+						}
+						if (collision_surface != nullptr && surface.collision_enabled) {
+							for (unsigned int i = 0; i < vertex_count; ++i) {
+								collision_surface->positions.push_back(ss.positions[i] * inv + cell_pos);
+							}
+							for (unsigned int j = 0; j < index_count; ++j) {
+								collision_surface->indices.push_back(collision_surface_index_offset + ss.indices[j]);
+							}
+							collision_surface_index_offset += vertex_count;
+						}
+						index_offset += vertex_count;
+					}
+				}
+			}
+		}
+	}
+}
+
 
 //used by navmesh to desimate inner verts
 static void merge_navmesh_polygons(
@@ -222,7 +329,8 @@ void generate_mesh(
 		const float baked_occlusion_darkness,
 		const TintSampler tint_sampler,
 		const Span<const uint8_t> light_buffer,
-		const bool has_light
+		const bool has_light,
+		const GridContext *grids
 ) {
 	// TODO Optimization: not sure if this mandates a template function. There is so much more happening in this
 	// function other than reading voxels, although reading is on the hottest path. It needs to be profiled. If
@@ -315,6 +423,23 @@ void generate_mesh(
 				const unsigned int voxel_index = y + x * row_size + z * deck_size;
 				const unsigned int voxel_id = type_buffer[voxel_index];
 
+				if (grids != nullptr) {
+					const uint16_t slot = grids->slot_by_index[voxel_index];
+					if (slot != 0) {
+						emit_grid_voxel(
+								out_arrays_per_material,
+								index_offsets,
+								collision_surface,
+								collision_surface_index_offset,
+								library,
+								*grids->entries[slot - 1],
+								Vector3f(x - 1, y - 1, z - 1),
+								tint_sampler.evaluate(Vector3i(x, y, z))
+						);
+						continue;
+					}
+				}
+
 				// TODO Don't assume air is 0?
 				if (voxel_id == AIR_ID || !library.has_model(voxel_id)) {
 					continue;
@@ -328,6 +453,11 @@ void generate_mesh(
 				for (unsigned int side = 0; side < Cube::SIDE_COUNT; ++side) {
 					if ((model.empty_sides_mask & (1 << side)) != 0) {
 						// This side is empty
+						continue;
+					}
+
+					if (grids != nullptr && grids->slot_by_index[voxel_index + side_neighbor_lut[side]] != 0) {
+						visible_sides_mask |= (1 << side);
 						continue;
 					}
 
@@ -938,6 +1068,30 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 		const blocky::TintSampler tint_sampler =
 				blocky::TintSampler::create(voxels, static_cast<blocky::TintSampler::Mode>(params.tint_mode));
 
+		blocky::GridContext &gc = blocky::get_tls_grid_context();
+		gc.clear();
+		const blocky::GridContext *grids = nullptr;
+		if (input.lod_index == 0) {
+			const int row = block_size.y;
+			const int deck = block_size.x * row;
+			voxels.for_each_voxel_metadata_in_area(
+					Box3i(Vector3i(), block_size),
+					[&](Vector3i p, const VoxelMetadata &meta) {
+						if (meta.get_type() != VoxelGridMetadata::TYPE_INDEX) {
+							return;
+						}
+						if (gc.slot_by_index.empty()) {
+							gc.slot_by_index.assign(block_size.x * block_size.y * block_size.z, 0);
+						}
+						gc.entries.push_back(&static_cast<const VoxelGridMetadata &>(meta.get_custom()));
+						gc.slot_by_index[p.y + p.x * row + p.z * deck] = uint16_t(gc.entries.size());
+					}
+			);
+			if (!gc.entries.empty()) {
+				grids = &gc;
+			}
+		}
+
 		switch (channel_depth) {
 			case VoxelBuffer::DEPTH_8_BIT:
 
@@ -952,7 +1106,8 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 						baked_occlusion_darkness,
 						tint_sampler,
 						to_span_const(cache.light_buffer),
-						has_light
+						has_light,
+						grids    
 				);
 				if (input.lod_index > 0) {
 					blocky::append_skirts(
@@ -975,7 +1130,8 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 						baked_occlusion_darkness,
 						tint_sampler,
 						to_span_const(cache.light_buffer),
-						has_light
+						has_light,
+						grids    
 				);
 				if (input.lod_index > 0) {
 					blocky::append_skirts(model_ids, block_size, arrays_per_material, library_baked_data, tint_sampler);

@@ -7,6 +7,7 @@
 #include "../util/thread/spatial_lock_3d.h"
 #include "voxel_data_map.h"
 #include "voxel_format.h"
+#include "metadata/voxel_grid_metadata.h"
 
 #ifdef VOXEL_ENABLE_MODIFIERS
 #include "../modifiers/voxel_modifier_stack.h"
@@ -381,6 +382,19 @@ public:
 
 	void set_voxel_metadata(const Vector3i pos, const Variant &meta);
 	Variant get_voxel_metadata(const Vector3i pos);
+
+	// Sets or replaces the sub-grid of a voxel at LOD0. `cells` must have res^3 entries.
+	bool try_set_voxel_grid(Vector3i pos, uint8_t res, Span<const uint16_t> cells, Span<const uint16_t> colors);
+
+	int try_set_voxel_grid_cell(Vector3i pos, uint8_t res, Vector3i cell, uint16_t id, int color, bool &out_structural);
+	// Removes the sub-grid, so the voxel meshes as its type-channel block again. Returns false if there was none.
+	bool clear_voxel_grid(Vector3i pos);
+
+	bool try_get_voxel_grid(Vector3i pos, VoxelGridMetadata &out) const;
+
+	// Changes only the color of one cell of an existing sub-grid. Never creates, resizes or empties a grid.
+	// Returns false if the voxel has no grid, or the cell is out of range.
+	bool try_set_voxel_grid_cell_color(Vector3i pos, Vector3i cell, uint16_t color);
 
 	// Writes raw bytes into an 8-bit channel of a LOD0 data block. Allocates the block's voxel buffer
 	// (generating it) if the block is loaded but has none. Marks the block edited+modified so it survives

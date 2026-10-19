@@ -158,6 +158,9 @@ void copy_block_and_neighbors(
 					for (const uint8_t channel_index : channels) {
 						dst.copy_channel_from(*src, src_min, src_max, Vector3i(), channel_index);
 					}
+					if (lod_index == 0) {
+						dst.copy_voxel_metadata_in_area(*src, Box3i::from_min_max(src_min, src_max), Vector3i());
+					}
 
 					if (boxes_to_generate.size() > 0) {
 						// Subtract edited box from the area to generate

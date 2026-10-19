@@ -28,6 +28,7 @@
 #include "meshers/cubes/voxel_mesher_cubes.h"
 #include "storage/metadata/voxel_metadata_factory.h"
 #include "storage/metadata/voxel_metadata_variant.h"
+#include "storage/metadata/voxel_grid_metadata.h"
 #include "storage/voxel_buffer_gd.h"
 #include "storage/voxel_format_gd.h"
 #include "storage/voxel_memory_pool.h"
@@ -431,6 +432,7 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 		VoxelMetadataFactory::get_singleton().add_constructor_by_type<zylann::voxel::godot::VoxelMetadataVariant>(
 				zylann::voxel::godot::METADATA_TYPE_VARIANT
 		);
+		VoxelMetadataFactory::get_singleton().add_constructor_by_type<VoxelGridMetadata>(VoxelGridMetadata::TYPE_INDEX);
 
 #ifdef VOXEL_ENABLE_SMOOTH_MESHING
 		VoxelMesherTransvoxel::load_static_resources();
