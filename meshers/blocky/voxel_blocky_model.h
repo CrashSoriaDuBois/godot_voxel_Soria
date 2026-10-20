@@ -68,6 +68,11 @@ public:
 		return _culls_neighbors;
 	}
 
+	void set_cast_ao(bool enabled);
+	bool get_cast_ao() const {
+		return _cast_ao;
+	}
+
 	void set_collision_mask(uint32_t mask);
 	inline uint32_t get_collision_mask() const {
 		return _collision_mask;
@@ -189,6 +194,7 @@ private:
 	// If enabled, this voxel culls the faces of its neighbors. Disabling
 	// can be useful for denser transparent voxels, such as foliage.
 	bool _culls_neighbors = true;
+	bool _cast_ao = true;
 	bool _random_tickable = false;
 	uint32_t _tags_mask = 1;
 	uint8_t _mesh_ortho_rotation = 0;

@@ -228,6 +228,7 @@ void VoxelBlockyModel::bake(blocky::ModelBakingContext &ctx) const {
 	// baked_data.contributes_to_ao is set by the side culling phase
 	baked_data.transparency_index = _transparency_index;
 	baked_data.culls_neighbors = _culls_neighbors;
+	baked_data.cast_ao = _cast_ao;
 	baked_data.color = _color;
 	baked_data.is_random_tickable = _random_tickable;
 	baked_data.box_collision_mask = _collision_mask;
@@ -349,6 +350,7 @@ void VoxelBlockyModel::copy_base_properties_from(const VoxelBlockyModel &src) {
 	// _surface_count = src._surface_count;
 	_transparency_index = src._transparency_index;
 	_culls_neighbors = src._culls_neighbors;
+	_cast_ao = src._cast_ao;
 	_random_tickable = src._random_tickable;
 	_color = src._color;
 	_collision_aabbs = src._collision_aabbs;
@@ -587,6 +589,13 @@ void VoxelBlockyModel::set_light_color_index(int value) {
 	emit_changed();
 }
 
+void VoxelBlockyModel::set_cast_ao(bool enabled) {
+	if (enabled != _cast_ao) {
+		_cast_ao = enabled;
+		emit_changed(); // so the library rebakes when you toggle it in the inspector
+	}
+}
+
 void VoxelBlockyModel::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_color", "color"), &VoxelBlockyModel::set_color);
 	ClassDB::bind_method(D_METHOD("get_color"), &VoxelBlockyModel::get_color);
@@ -603,6 +612,9 @@ void VoxelBlockyModel::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_culls_neighbors", "culls_neighbors"), &VoxelBlockyModel::set_culls_neighbors);
 	ClassDB::bind_method(D_METHOD("get_culls_neighbors"), &VoxelBlockyModel::get_culls_neighbors);
+
+	ClassDB::bind_method(D_METHOD("set_cast_ao", "cast_ao"), &VoxelBlockyModel::set_cast_ao);
+	ClassDB::bind_method(D_METHOD("get_cast_ao"), &VoxelBlockyModel::get_cast_ao);
 
 	ClassDB::bind_method(D_METHOD("is_random_tickable"), &VoxelBlockyModel::is_random_tickable);
 	ClassDB::bind_method(D_METHOD("set_random_tickable"), &VoxelBlockyModel::set_random_tickable);
@@ -645,6 +657,7 @@ void VoxelBlockyModel::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "color"), "set_color", "get_color");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "transparency_index"), "set_transparency_index", "get_transparency_index");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "culls_neighbors"), "set_culls_neighbors", "get_culls_neighbors");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "cast_ao"), "set_cast_ao", "get_cast_ao");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "random_tickable"), "set_random_tickable", "is_random_tickable");
 
 	// TODO This is not supposed to be 3D layers.

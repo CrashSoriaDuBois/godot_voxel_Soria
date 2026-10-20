@@ -120,6 +120,7 @@ struct BakedModel {
 	uint8_t transparency_index;
 	bool culls_neighbors;
 	bool contributes_to_ao;
+	bool cast_ao = true;
 	bool empty = true;
 	bool is_random_tickable;
 	bool is_transparent;

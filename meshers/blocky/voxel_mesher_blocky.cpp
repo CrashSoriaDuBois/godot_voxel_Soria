@@ -29,7 +29,7 @@ namespace blocky {
 inline bool contributes_to_ao(const BakedLibrary &lib, uint32_t voxel_id) {
 	if (voxel_id < lib.models.size()) {
 		const BakedModel &t = lib.models[voxel_id];
-		return t.contributes_to_ao;
+		return t.contributes_to_ao && t.cast_ao;
 	}
 	return true;
 }
