@@ -5,6 +5,7 @@
 #include "../../util/string/std_string.h"
 #include "../voxel_stream.h"
 #include "block_location.h"
+#include "entity_types.h"
 
 struct sqlite3;
 struct sqlite3_stmt;
@@ -89,28 +90,19 @@ public:
 
 	void migrate_to_latest_version();
 
-bool save_block_entity(
-			const BlockLocation loc,
-			const int local_key,
-			const int action_type,
-			const Span<const uint8_t> data
-	);
-	bool load_block_entity(
-			const BlockLocation loc,
-			const int local_key,
-			int &out_action_type,
-			StdVector<uint8_t> &out_data
-	);
-	bool delete_block_entity(const BlockLocation loc, const int local_key);
-	int get_next_local_key(const BlockLocation loc);
-	bool load_block_entity_keys(const BlockLocation loc, StdVector<int> &out_keys);
+	bool begin_write_transaction(); // BEGIN IMMEDIATE
+	bool rollback_transaction();
 
-	bool save_new_block_entity( // atomically assigns the next local key and inserts the entity in one transaction.
-			const BlockLocation loc,
-			const int action_type,
-			const Span<const uint8_t> data,
-			int &out_local_key
-	);
+	// Entities. All write operations are atomic: on any failure nothing is written.
+	bool add_entity_groups(Span<const EntityGroup> groups);
+	bool add_entity_children(Vector3i root, Span<const Vector3i> children);
+	bool update_entity_data(Vector3i voxel, Span<const uint8_t> data);
+	bool read_entities(Span<const Vector3i> voxels, StdVector<EntityRow> &out);
+	bool read_entity_children(Vector3i root, StdVector<Vector3i> &out);
+	bool remove_entities(Span<const Vector3i> voxels, StdVector<EntityPromotion> &out_promotions);
+	bool list_entity_voxels_in_chunk(Vector3i chunk, StdVector<Vector3i> &out);
+
+
 	bool save_chunk_last_modified(const BlockLocation loc, double timestamp);
 	double load_chunk_last_modified(const BlockLocation loc); // returns -1 if not found
 
@@ -140,14 +132,27 @@ private:
 	sqlite3_stmt *_load_all_blocks_statement = nullptr;
 	sqlite3_stmt *_load_all_block_keys_statement = nullptr;
 
-	sqlite3_stmt *_save_block_entity_statement = nullptr;
-	sqlite3_stmt *_load_block_entity_statement = nullptr;
-	sqlite3_stmt *_delete_block_entity_statement = nullptr;
-	sqlite3_stmt *_load_next_local_key_statement = nullptr;
-	sqlite3_stmt *_load_chunk_entity_keys_statement = nullptr;
-
 	sqlite3_stmt *_save_chunk_meta_statement = nullptr;
 	sqlite3_stmt *_load_chunk_meta_statement = nullptr;
+
+	bool entity_insert(Vector3i voxel, int action_type, Span<const uint8_t> data, bool has_parent, Vector3i parent);
+	bool entity_select(Vector3i voxel, EntityRow &out);
+	bool entity_delete(Vector3i voxel);
+	bool entity_set_data(Vector3i voxel, Span<const uint8_t> data);
+	bool entity_promote(Vector3i voxel, Span<const uint8_t> data);
+	bool entity_reparent(Vector3i old_root, Vector3i new_root);
+	bool entity_children(Vector3i root, StdVector<Vector3i> &out);
+
+	sqlite3_stmt *_begin_immediate_statement = nullptr;
+	sqlite3_stmt *_rollback_statement = nullptr;
+	sqlite3_stmt *_entity_insert_statement = nullptr;
+	sqlite3_stmt *_entity_select_statement = nullptr;
+	sqlite3_stmt *_entity_delete_statement = nullptr;
+	sqlite3_stmt *_entity_set_data_statement = nullptr;
+	sqlite3_stmt *_entity_promote_statement = nullptr;
+	sqlite3_stmt *_entity_reparent_statement = nullptr;
+	sqlite3_stmt *_entity_children_statement = nullptr;
+	sqlite3_stmt *_entity_chunk_list_statement = nullptr;
 };
 
 } // namespace zylann::voxel::sqlite

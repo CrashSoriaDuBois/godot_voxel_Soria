@@ -2,6 +2,8 @@
 #include "../../thirdparty/sqlite/sqlite3.h"
 #include "../../util/profiling.h"
 #include "../../util/string/format.h"
+#include "../../util/containers/std_unordered_set.h"
+#include "../../util/string/std_string.h"
 
 namespace zylann::voxel::sqlite {
 
@@ -190,6 +192,7 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 		close();
 		return false;
 	}
+	sqlite3_busy_timeout(_db, 5000); // pooled connections can overlap, wait instead of failing instantly
 
 	// Note, SQLite uses UTF-8 encoding by default. We rely on that.
 	// https://www.sqlite.org/c3ref/open.html
@@ -200,40 +203,28 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 	const CoordinateColumnType block_key_column_type = get_coordinate_column_type(preferred_coordinate_format);
 
 	// Create tables if they don't exist.
-	const char *tables[5] = {
+	const char *tables[4] = {
 		"CREATE TABLE IF NOT EXISTS meta (version INTEGER, block_size_po2 INTEGER, coordinate_format INTEGER)",
 		"", // blocks — filled by switch below
 		"CREATE TABLE IF NOT EXISTS channels (idx INTEGER PRIMARY KEY, depth INTEGER)",
-		"", // block_entities — filled by switch below
-		"" // chunk_meta — filled below
+		"" // block_entities — filled by switch below
+		
 	};
 
 	switch (block_key_column_type) {
 		case COORDINATE_COLUMN_U64:
 			tables[1] = "CREATE TABLE IF NOT EXISTS blocks (loc INTEGER PRIMARY KEY, vb BLOB, instances BLOB)";
-			tables[3] = "CREATE TABLE IF NOT EXISTS block_entities "
-						"(loc INTEGER NOT NULL, local_key INTEGER NOT NULL, "
-						"action_type INTEGER NOT NULL, data BLOB, "
-						"PRIMARY KEY (loc, local_key))";
-			tables[4] = "CREATE TABLE IF NOT EXISTS chunk_meta "
+			tables[3] = "CREATE TABLE IF NOT EXISTS chunk_meta "
 						"(loc INTEGER PRIMARY KEY, last_modified REAL)";
 			break;
 		case COORDINATE_COLUMN_STRING:
 			tables[1] = "CREATE TABLE IF NOT EXISTS blocks (loc TEXT PRIMARY KEY, vb BLOB, instances BLOB)";
-			tables[3] = "CREATE TABLE IF NOT EXISTS block_entities "
-						"(loc TEXT NOT NULL, local_key INTEGER NOT NULL, "
-						"action_type INTEGER NOT NULL, data BLOB, "
-						"PRIMARY KEY (loc, local_key))";
-			tables[4] = "CREATE TABLE IF NOT EXISTS chunk_meta "
+			tables[3] = "CREATE TABLE IF NOT EXISTS chunk_meta "
 						"(loc TEXT PRIMARY KEY, last_modified REAL)";
 			break;
 		case COORDINATE_COLUMN_BLOB:
 			tables[1] = "CREATE TABLE IF NOT EXISTS blocks (loc BLOB PRIMARY KEY, vb BLOB, instances BLOB)";
-			tables[3] = "CREATE TABLE IF NOT EXISTS block_entities "
-						"(loc BLOB NOT NULL, local_key INTEGER NOT NULL, "
-						"action_type INTEGER NOT NULL, data BLOB, "
-						"PRIMARY KEY (loc, local_key))";
-			tables[4] = "CREATE TABLE IF NOT EXISTS chunk_meta "
+			tables[3] = "CREATE TABLE IF NOT EXISTS chunk_meta "
 						"(loc BLOB PRIMARY KEY, last_modified REAL)";
 			break;
 		default:
@@ -241,7 +232,7 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 			break;
 	}
 
-	for (size_t i = 0; i < 5; ++i) {
+	for (size_t i = 0; i < sizeof(tables) / sizeof(tables[0]); ++i) {
 		rc = sqlite3_exec(db, tables[i], nullptr, nullptr, &error_message);
 		if (rc != SQLITE_OK) {
 			ZN_PRINT_ERROR(format("Failed to create table: {}", error_message));
@@ -328,35 +319,6 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 
 	if (!prepare(
 				db,
-				&_save_block_entity_statement,
-				"INSERT INTO block_entities VALUES (:loc, :local_key, :action_type, :data) "
-				"ON CONFLICT(loc, local_key) DO UPDATE SET action_type=excluded.action_type, data=excluded.data"
-		)) {
-		return false;
-	}
-	if (!prepare(
-				db,
-				&_load_block_entity_statement,
-				"SELECT action_type, data FROM block_entities WHERE loc=:loc AND local_key=:local_key"
-		)) {
-		return false;
-	}
-	if (!prepare(
-				db,
-				&_delete_block_entity_statement,
-				"DELETE FROM block_entities WHERE loc=:loc AND local_key=:local_key"
-		)) {
-		return false;
-	}
-	if (!prepare(
-				db,
-				&_load_next_local_key_statement,
-				"SELECT COALESCE(MAX(local_key)+1, 0) FROM block_entities WHERE loc=:loc"
-		)) {
-		return false;
-	}
-	if (!prepare(
-				db,
 				&_save_chunk_meta_statement,
 				"INSERT INTO chunk_meta VALUES (:loc, :last_modified) "
 				"ON CONFLICT(loc) DO UPDATE SET last_modified=excluded.last_modified"
@@ -364,13 +326,6 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 		return false;
 	}
 	if (!prepare(db, &_load_chunk_meta_statement, "SELECT last_modified FROM chunk_meta WHERE loc=:loc")) {
-		return false;
-	}
-	if (!prepare(
-				db,
-				&_load_chunk_entity_keys_statement,
-				"SELECT local_key FROM block_entities WHERE loc=:loc ORDER BY local_key"
-		)) {
 		return false;
 	}
 
@@ -410,6 +365,53 @@ bool Connection::open(const char *fpath, const BlockLocation::CoordinateFormat p
 			);
 		}
 	}
+	{
+		const CoordinateColumnType ct = get_coordinate_column_type(meta.coordinate_format);
+		const char *loc_type =
+				ct == COORDINATE_COLUMN_U64 ? "INTEGER" : (ct == COORDINATE_COLUMN_STRING ? "TEXT" : "BLOB");
+		StdString create_table = StdString("CREATE TABLE IF NOT EXISTS entities (loc ") + loc_type +
+				" NOT NULL, idx INTEGER NOT NULL, action_type INTEGER NOT NULL, data BLOB, "
+				"px INTEGER, py INTEGER, pz INTEGER, PRIMARY KEY (loc, idx))";
+		const char *create_index = "CREATE INDEX IF NOT EXISTS entities_parent ON entities (px, py, pz)";
+		for (const char *sql : { create_table.c_str(), create_index }) {
+			char *err = nullptr;
+			if (sqlite3_exec(db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
+				ZN_PRINT_ERROR(format("Failed to create entity table/index: {}", err));
+				sqlite3_free(err);
+				close();
+				return false;
+			}
+		}
+
+		struct StatementDef {
+			sqlite3_stmt **stmt;
+			const char *sql;
+		};
+		const StatementDef defs[] = {
+			{ &_begin_immediate_statement, "BEGIN IMMEDIATE" },
+			{ &_rollback_statement, "ROLLBACK" },
+			{ &_entity_insert_statement,
+			  "INSERT INTO entities (loc, idx, action_type, data, px, py, pz) "
+			  "VALUES (:loc, :idx, :action, :data, :px, :py, :pz)" },
+			{ &_entity_select_statement,
+			  "SELECT action_type, data, px, py, pz FROM entities WHERE loc=:loc AND idx=:idx" },
+			{ &_entity_delete_statement, "DELETE FROM entities WHERE loc=:loc AND idx=:idx" },
+			{ &_entity_set_data_statement, "UPDATE entities SET data=:data WHERE loc=:loc AND idx=:idx" },
+			{ &_entity_promote_statement,
+			  "UPDATE entities SET data=:data, px=NULL, py=NULL, pz=NULL WHERE loc=:loc AND idx=:idx" },
+			{ &_entity_reparent_statement,
+			  "UPDATE entities SET px=:npx, py=:npy, pz=:npz WHERE px=:opx AND py=:opy AND pz=:opz" },
+			{ &_entity_children_statement,
+			  "SELECT loc, idx FROM entities WHERE px=:px AND py=:py AND pz=:pz ORDER BY loc, idx" },
+			{ &_entity_chunk_list_statement, "SELECT idx FROM entities WHERE loc=:loc ORDER BY idx" },
+		};
+		for (const StatementDef &def : defs) {
+			if (!prepare(db, def.stmt, def.sql)) {
+				close();
+				return false;
+			}
+		}
+	}
 
 	_meta = meta;
 	_opened_path = fpath;
@@ -433,11 +435,20 @@ void Connection::close() {
 	finalize(_save_channel_statement);
 	finalize(_load_all_blocks_statement);
 	finalize(_load_all_block_keys_statement);
-	finalize(_save_block_entity_statement);
-	finalize(_load_block_entity_statement);
-	finalize(_delete_block_entity_statement);
-	finalize(_load_next_local_key_statement);
-	finalize(_load_chunk_entity_keys_statement);
+
+	finalize(_begin_immediate_statement);
+	finalize(_rollback_statement);
+	finalize(_entity_insert_statement);
+	finalize(_entity_select_statement);
+	finalize(_entity_delete_statement);
+	finalize(_entity_set_data_statement);
+	finalize(_entity_promote_statement);
+	finalize(_entity_reparent_statement);
+	finalize(_entity_children_statement);
+	finalize(_entity_chunk_list_statement);
+	finalize(_save_chunk_meta_statement);
+	finalize(_load_chunk_meta_statement);
+
 	sqlite3_close(_db);
 	_db = nullptr;
 	_opened_path.clear();
@@ -967,200 +978,6 @@ void Connection::migrate_to_latest_version() {
 	}
 }
 
-bool Connection::save_block_entity(
-		const BlockLocation loc,
-		const int local_key,
-		const int action_type,
-		const Span<const uint8_t> data
-) {
-	sqlite3 *db = _db;
-	sqlite3_stmt *stmt = _save_block_entity_statement;
-
-	int rc = sqlite3_reset(stmt);
-	if (rc != SQLITE_OK) {
-		ERR_PRINT(sqlite3_errmsg(db));
-		return false;
-	}
-
-	BindBlockCoordinates coord_binding;
-	if (!coord_binding.bind(db, stmt, 1, _meta.coordinate_format, loc)) {
-		return false;
-	}
-
-	rc = sqlite3_bind_int(stmt, 2, local_key);
-	if (rc != SQLITE_OK) {
-		ERR_PRINT(sqlite3_errmsg(db));
-		return false;
-	}
-
-	rc = sqlite3_bind_int(stmt, 3, action_type);
-	if (rc != SQLITE_OK) {
-		ERR_PRINT(sqlite3_errmsg(db));
-		return false;
-	}
-
-	if (data.size() == 0) {
-		rc = sqlite3_bind_null(stmt, 4);
-	} else {
-		rc = sqlite3_bind_blob(stmt, 4, data.data(), data.size(), SQLITE_TRANSIENT);
-	}
-	if (rc != SQLITE_OK) {
-		ERR_PRINT(sqlite3_errmsg(db));
-		return false;
-	}
-
-	rc = sqlite3_step(stmt);
-	if (rc != SQLITE_DONE) {
-		ERR_PRINT(sqlite3_errmsg(db));
-		return false;
-	}
-
-	return true;
-}
-
-bool Connection::load_block_entity(
-		const BlockLocation loc,
-		const int local_key,
-		int &out_action_type,
-		StdVector<uint8_t> &out_data
-) {
-	sqlite3 *db = _db;
-	sqlite3_stmt *stmt = _load_block_entity_statement;
-
-	int rc = sqlite3_reset(stmt);
-	if (rc != SQLITE_OK) {
-		ERR_PRINT(sqlite3_errmsg(db));
-		return false;
-	}
-
-	BindBlockCoordinates coord_binding;
-	if (!coord_binding.bind(db, stmt, 1, _meta.coordinate_format, loc)) {
-		return false;
-	}
-
-	rc = sqlite3_bind_int(stmt, 2, local_key);
-	if (rc != SQLITE_OK) {
-		ERR_PRINT(sqlite3_errmsg(db));
-		return false;
-	}
-
-	rc = sqlite3_step(stmt);
-	if (rc == SQLITE_ROW) {
-		out_action_type = sqlite3_column_int(stmt, 0);
-		const void *blob = sqlite3_column_blob(stmt, 1);
-		const size_t blob_size = sqlite3_column_bytes(stmt, 1);
-		if (blob != nullptr && blob_size > 0) {
-			out_data.resize(blob_size);
-			memcpy(out_data.data(), blob, blob_size);
-		}
-		sqlite3_step(stmt); // consume SQLITE_DONE
-		return true;
-	}
-	return false; // not found
-}
-
-bool Connection::save_new_block_entity(
-		const BlockLocation loc,
-		const int action_type,
-		const Span<const uint8_t> data,
-		int &out_local_key
-) {
-	ZN_PROFILE_SCOPE();
-
-	TransactionScope transaction(*this);
-
-	const int local_key = get_next_local_key(loc);
-	if (local_key < 0) {
-		return false;
-	}
-
-	if (!save_block_entity(loc, local_key, action_type, data)) {
-		return false;
-	}
-
-	out_local_key = local_key;
-	return true;
-}
-
-bool Connection::delete_block_entity(const BlockLocation loc, const int local_key) {
-	sqlite3 *db = _db;
-	sqlite3_stmt *stmt = _delete_block_entity_statement;
-
-	int rc = sqlite3_reset(stmt);
-	if (rc != SQLITE_OK) {
-		ERR_PRINT(sqlite3_errmsg(db));
-		return false;
-	}
-
-	BindBlockCoordinates coord_binding;
-	if (!coord_binding.bind(db, stmt, 1, _meta.coordinate_format, loc)) {
-		return false;
-	}
-
-	rc = sqlite3_bind_int(stmt, 2, local_key);
-	if (rc != SQLITE_OK) {
-		ERR_PRINT(sqlite3_errmsg(db));
-		return false;
-	}
-
-	rc = sqlite3_step(stmt);
-	return rc == SQLITE_DONE;
-}
-
-int Connection::get_next_local_key(const BlockLocation loc) {
-	sqlite3 *db = _db;
-	sqlite3_stmt *stmt = _load_next_local_key_statement;
-
-	int rc = sqlite3_reset(stmt);
-	if (rc != SQLITE_OK) {
-		ERR_PRINT(sqlite3_errmsg(db));
-		return -1;
-	}
-
-	BindBlockCoordinates coord_binding;
-	if (!coord_binding.bind(db, stmt, 1, _meta.coordinate_format, loc)) {
-		return -1;
-	}
-
-	rc = sqlite3_step(stmt);
-	if (rc == SQLITE_ROW) {
-		const int next_key = sqlite3_column_int(stmt, 0);
-		sqlite3_step(stmt);
-		return next_key;
-	}
-	return -1;
-}
-
-bool Connection::load_block_entity_keys(const BlockLocation loc, StdVector<int> &out_keys) {
-	sqlite3 *db = _db;
-	sqlite3_stmt *stmt = _load_chunk_entity_keys_statement;
-
-	int rc = sqlite3_reset(stmt);
-	if (rc != SQLITE_OK) {
-		ERR_PRINT(sqlite3_errmsg(db));
-		return false;
-	}
-
-	BindBlockCoordinates coord;
-	if (!coord.bind(db, stmt, 1, _meta.coordinate_format, loc)) {
-		return false;
-	}
-
-	out_keys.clear();
-	while (true) {
-		rc = sqlite3_step(stmt);
-		if (rc == SQLITE_ROW) {
-			out_keys.push_back(sqlite3_column_int(stmt, 0));
-		} else if (rc == SQLITE_DONE) {
-			break;
-		} else {
-			ERR_PRINT(sqlite3_errmsg(db));
-			return false;
-		}
-	}
-	return true;
-}
-
 bool Connection::save_chunk_last_modified(const BlockLocation loc, double timestamp) {
 	sqlite3_stmt *stmt = _save_chunk_meta_statement;
 	int rc = sqlite3_reset(stmt);
@@ -1239,6 +1056,403 @@ double Connection::load_chunk_last_modified(const BlockLocation loc) {
 		return result;
 	}
 	return -1.0; // not found
+}
+namespace {
+
+// Rolls back on destruction unless commit() succeeded.
+struct EntityWriteTxn {
+	Connection &db;
+	bool started = false;
+	bool committed = false;
+	explicit EntityWriteTxn(Connection &p_db) : db(p_db) {
+		started = db.begin_write_transaction();
+	}
+	bool commit() {
+		committed = started && db.end_transaction();
+		return committed;
+	}
+	~EntityWriteTxn() {
+		if (started && !committed) {
+			db.rollback_transaction();
+		}
+	}
+};
+
+BlockLocation entity_location(const Vector3i voxel) {
+	BlockLocation l;
+	l.position = entity_chunk(voxel);
+	l.lod = 0;
+	return l;
+}
+
+inline Span<const uint8_t> as_span(const StdVector<uint8_t> &v) {
+	return Span<const uint8_t>(v.data(), v.size());
+}
+
+} // namespace
+
+bool Connection::begin_write_transaction() {
+	int rc = sqlite3_reset(_begin_immediate_statement);
+	if (rc != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(_db));
+		return false;
+	}
+	rc = sqlite3_step(_begin_immediate_statement);
+	if (rc != SQLITE_DONE) {
+		ERR_PRINT(sqlite3_errmsg(_db));
+		return false;
+	}
+	return true;
+}
+
+bool Connection::rollback_transaction() {
+	sqlite3_reset(_rollback_statement);
+	return sqlite3_step(_rollback_statement) == SQLITE_DONE;
+}
+
+// ---- single-statement helpers (must be called inside a transaction) ----
+
+bool Connection::entity_insert(
+		Vector3i voxel,
+		int action_type,
+		Span<const uint8_t> data,
+		bool has_parent,
+		Vector3i parent
+) {
+	sqlite3_stmt *s = _entity_insert_statement;
+	if (sqlite3_reset(s) != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(_db));
+		return false;
+	}
+	BindBlockCoordinates loc;
+	if (!loc.bind(_db, s, 1, _meta.coordinate_format, entity_location(voxel))) {
+		return false;
+	}
+	sqlite3_bind_int(s, 2, entity_index(voxel));
+	sqlite3_bind_int(s, 3, action_type);
+	if (data.size() == 0) {
+		sqlite3_bind_null(s, 4);
+	} else {
+		sqlite3_bind_blob(s, 4, data.data(), data.size(), SQLITE_TRANSIENT);
+	}
+	if (has_parent) {
+		sqlite3_bind_int(s, 5, parent.x);
+		sqlite3_bind_int(s, 6, parent.y);
+		sqlite3_bind_int(s, 7, parent.z);
+	} else {
+		sqlite3_bind_null(s, 5);
+		sqlite3_bind_null(s, 6);
+		sqlite3_bind_null(s, 7);
+	}
+	const int rc = sqlite3_step(s);
+	if (rc != SQLITE_DONE) {
+		// A primary key collision (voxel already holds an entity) lands here; callers roll back.
+		ZN_PRINT_VERBOSE(format("Entity insert failed at {}: {}", voxel, sqlite3_errmsg(_db)));
+	}
+	sqlite3_reset(s);
+	return rc == SQLITE_DONE;
+}
+
+bool Connection::entity_select(Vector3i voxel, EntityRow &out) {
+	out = EntityRow();
+	sqlite3_stmt *s = _entity_select_statement;
+	if (sqlite3_reset(s) != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(_db));
+		return false;
+	}
+	BindBlockCoordinates loc;
+	if (!loc.bind(_db, s, 1, _meta.coordinate_format, entity_location(voxel))) {
+		return false;
+	}
+	sqlite3_bind_int(s, 2, entity_index(voxel));
+
+	const int rc = sqlite3_step(s);
+	if (rc == SQLITE_ROW) {
+		out.exists = true;
+		out.action_type = sqlite3_column_int(s, 0);
+		const void *blob = sqlite3_column_blob(s, 1);
+		const size_t size = sqlite3_column_bytes(s, 1);
+		if (blob != nullptr && size > 0) {
+			out.data.resize(size);
+			memcpy(out.data.data(), blob, size);
+		}
+		out.is_child = sqlite3_column_type(s, 2) != SQLITE_NULL;
+		out.root = out.is_child ? Vector3i(sqlite3_column_int(s, 2), sqlite3_column_int(s, 3), sqlite3_column_int(s, 4))
+								: voxel;
+	}
+	sqlite3_reset(s);
+	return rc == SQLITE_ROW || rc == SQLITE_DONE; // "not found" is not an error
+}
+
+bool Connection::entity_delete(Vector3i voxel) {
+	sqlite3_stmt *s = _entity_delete_statement;
+	if (sqlite3_reset(s) != SQLITE_OK) {
+		return false;
+	}
+	BindBlockCoordinates loc;
+	if (!loc.bind(_db, s, 1, _meta.coordinate_format, entity_location(voxel))) {
+		return false;
+	}
+	sqlite3_bind_int(s, 2, entity_index(voxel));
+	const int rc = sqlite3_step(s);
+	sqlite3_reset(s);
+	return rc == SQLITE_DONE;
+}
+
+bool Connection::entity_set_data(Vector3i voxel, Span<const uint8_t> data) {
+	sqlite3_stmt *s = _entity_set_data_statement;
+	if (sqlite3_reset(s) != SQLITE_OK) {
+		return false;
+	}
+	if (data.size() == 0) {
+		sqlite3_bind_null(s, 1);
+	} else {
+		sqlite3_bind_blob(s, 1, data.data(), data.size(), SQLITE_TRANSIENT);
+	}
+	BindBlockCoordinates loc;
+	if (!loc.bind(_db, s, 2, _meta.coordinate_format, entity_location(voxel))) {
+		return false;
+	}
+	sqlite3_bind_int(s, 3, entity_index(voxel));
+	const int rc = sqlite3_step(s);
+	sqlite3_reset(s);
+	return rc == SQLITE_DONE;
+}
+
+bool Connection::entity_promote(Vector3i voxel, Span<const uint8_t> data) {
+	sqlite3_stmt *s = _entity_promote_statement;
+	if (sqlite3_reset(s) != SQLITE_OK) {
+		return false;
+	}
+	if (data.size() == 0) {
+		sqlite3_bind_null(s, 1);
+	} else {
+		sqlite3_bind_blob(s, 1, data.data(), data.size(), SQLITE_TRANSIENT);
+	}
+	BindBlockCoordinates loc;
+	if (!loc.bind(_db, s, 2, _meta.coordinate_format, entity_location(voxel))) {
+		return false;
+	}
+	sqlite3_bind_int(s, 3, entity_index(voxel));
+	const int rc = sqlite3_step(s);
+	sqlite3_reset(s);
+	return rc == SQLITE_DONE;
+}
+
+bool Connection::entity_reparent(Vector3i old_root, Vector3i new_root) {
+	sqlite3_stmt *s = _entity_reparent_statement;
+	if (sqlite3_reset(s) != SQLITE_OK) {
+		return false;
+	}
+	sqlite3_bind_int(s, 1, new_root.x);
+	sqlite3_bind_int(s, 2, new_root.y);
+	sqlite3_bind_int(s, 3, new_root.z);
+	sqlite3_bind_int(s, 4, old_root.x);
+	sqlite3_bind_int(s, 5, old_root.y);
+	sqlite3_bind_int(s, 6, old_root.z);
+	const int rc = sqlite3_step(s);
+	sqlite3_reset(s);
+	return rc == SQLITE_DONE;
+}
+
+bool Connection::entity_children(Vector3i root, StdVector<Vector3i> &out) {
+	out.clear();
+	sqlite3_stmt *s = _entity_children_statement;
+	if (sqlite3_reset(s) != SQLITE_OK) {
+		return false;
+	}
+	sqlite3_bind_int(s, 1, root.x);
+	sqlite3_bind_int(s, 2, root.y);
+	sqlite3_bind_int(s, 3, root.z);
+	const CoordinateColumnType ct = get_coordinate_column_type(_meta.coordinate_format);
+	while (true) {
+		const int rc = sqlite3_step(s);
+		if (rc == SQLITE_ROW) {
+			BlockLocation loc;
+			if (!read_block_location(_meta.coordinate_format, ct, s, 0, loc)) {
+				sqlite3_reset(s);
+				return false;
+			}
+			out.push_back(entity_voxel_from(loc.position, sqlite3_column_int(s, 1)));
+		} else if (rc == SQLITE_DONE) {
+			break;
+		} else {
+			ERR_PRINT(sqlite3_errmsg(_db));
+			sqlite3_reset(s);
+			return false;
+		}
+	}
+	sqlite3_reset(s);
+	return true;
+}
+
+// ---- public, transactional operations ----
+
+bool Connection::add_entity_groups(Span<const EntityGroup> groups) {
+	EntityWriteTxn txn(*this);
+	if (!txn.started) {
+		return false;
+	}
+	for (const EntityGroup &g : groups) {
+		if (g.action_type < 1 || g.action_type > 15) {
+			return false; // action type must fit in 4 bits and be non-zero
+		}
+		if (!entity_insert(g.root, g.action_type, as_span(g.data), false, Vector3i())) {
+			return false;
+		}
+		for (const Vector3i &c : g.children) {
+			if (c == g.root || !entity_insert(c, g.action_type, Span<const uint8_t>(), true, g.root)) {
+				return false;
+			}
+		}
+	}
+	return txn.commit();
+}
+
+bool Connection::add_entity_children(Vector3i root, Span<const Vector3i> children) {
+	EntityWriteTxn txn(*this);
+	if (!txn.started) {
+		return false;
+	}
+	EntityRow r;
+	if (!entity_select(root, r) || !r.exists || r.is_child) {
+		return false; // the group's root must exist and must itself be a root
+	}
+	for (const Vector3i &c : children) {
+		if (c == root || !entity_insert(c, r.action_type, Span<const uint8_t>(), true, root)) {
+			return false;
+		}
+	}
+	return txn.commit();
+}
+
+bool Connection::update_entity_data(Vector3i voxel, Span<const uint8_t> data) {
+	EntityWriteTxn txn(*this);
+	if (!txn.started) {
+		return false;
+	}
+	EntityRow r;
+	if (!entity_select(voxel, r) || !r.exists) {
+		return false;
+	}
+	if (!entity_set_data(r.is_child ? r.root : voxel, data)) {
+		return false;
+	}
+	return txn.commit();
+}
+
+bool Connection::read_entities(Span<const Vector3i> voxels, StdVector<EntityRow> &out) {
+	out.resize(voxels.size());
+	TransactionScope snapshot(*this);
+	for (size_t i = 0; i < voxels.size(); ++i) {
+		if (!entity_select(voxels[i], out[i])) {
+			return false;
+		}
+		if (out[i].exists && out[i].is_child) {
+			EntityRow root_row;
+			if (entity_select(out[i].root, root_row) && root_row.exists) {
+				out[i].data = root_row.data; // children report their group's payload
+			}
+		}
+	}
+	return true;
+}
+
+bool Connection::read_entity_children(Vector3i root, StdVector<Vector3i> &out) {
+	TransactionScope snapshot(*this);
+	return entity_children(root, out);
+}
+
+bool Connection::remove_entities(Span<const Vector3i> voxels, StdVector<EntityPromotion> &out_promotions) {
+	out_promotions.clear();
+
+	StdUnorderedSet<Vector3i> removing;
+	StdVector<Vector3i> unique;
+	for (const Vector3i &v : voxels) {
+		if (removing.insert(v).second) {
+			unique.push_back(v);
+		}
+	}
+
+	EntityWriteTxn txn(*this);
+	if (!txn.started) {
+		return false;
+	}
+
+	// Pass 1: a removed root that still has surviving children hands its data to the first survivor.
+	for (const Vector3i &v : unique) {
+		EntityRow row;
+		if (!entity_select(v, row)) {
+			return false;
+		}
+		if (!row.exists || row.is_child) {
+			continue;
+		}
+		StdVector<Vector3i> children;
+		if (!entity_children(v, children)) {
+			return false;
+		}
+		bool found = false;
+		Vector3i new_root;
+		for (const Vector3i &c : children) {
+			if (removing.find(c) == removing.end()) {
+				new_root = c;
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			continue; // every child is also being removed, pass 2 deletes them all
+		}
+		// Order matters: promote first (its parent columns become NULL), then re-point the others.
+		if (!entity_promote(new_root, as_span(row.data)) || !entity_reparent(v, new_root)) {
+			return false;
+		}
+		out_promotions.push_back({ new_root, row.action_type });
+	}
+
+	// Pass 2: delete every requested voxel. Voxels without a row are no-ops.
+	for (const Vector3i &v : unique) {
+		if (!entity_delete(v)) {
+			return false;
+		}
+	}
+
+	if (!txn.commit()) {
+		out_promotions.clear();
+		return false;
+	}
+	return true;
+}
+
+bool Connection::list_entity_voxels_in_chunk(Vector3i chunk, StdVector<Vector3i> &out) {
+	out.clear();
+	sqlite3_stmt *s = _entity_chunk_list_statement;
+	if (sqlite3_reset(s) != SQLITE_OK) {
+		ERR_PRINT(sqlite3_errmsg(_db));
+		return false;
+	}
+	BlockLocation location;
+	location.position = chunk;
+	location.lod = 0;
+	BindBlockCoordinates loc; // must outlive the stepping (SQLITE_STATIC binds)
+	if (!loc.bind(_db, s, 1, _meta.coordinate_format, location)) {
+		return false;
+	}
+	while (true) {
+		const int rc = sqlite3_step(s);
+		if (rc == SQLITE_ROW) {
+			out.push_back(entity_voxel_from(chunk, sqlite3_column_int(s, 0)));
+		} else if (rc == SQLITE_DONE) {
+			break;
+		} else {
+			ERR_PRINT(sqlite3_errmsg(_db));
+			sqlite3_reset(s);
+			return false;
+		}
+	}
+	sqlite3_reset(s);
+	return true;
 }
 
 } // namespace zylann::voxel::sqlite

@@ -25,6 +25,8 @@
 #include "../util/godot/classes/image_texture_3d.h"
 #include "core/io/dir_access.h"
 #include "voxel_sub_grid.h"
+#include <functional>
+#include "streams/sqlite/entity_types.h"
 // Forward declare Godot types to avoid heavy includes in header
 class AnimatableBody3D;
 
@@ -79,39 +81,6 @@ public:
 	};
 
 	// must be declared before SaveThreadData, which holds a queue of these.
-	struct EntityMigrationRequest {
-		Ref<VoxelStreamSQLite> src_stream_override;
-		std::string src_uuid;
-		std::string src_saves_dir;
-		Vector3i src_chunk_pos;
-		int src_local_key = -1;
-
-		Ref<VoxelStreamSQLite> dst_stream_override;
-		std::string dst_uuid;
-		std::string dst_saves_dir;
-		Vector3i dst_chunk_pos;
-
-		std::shared_ptr<std::atomic<bool>> done;
-		std::shared_ptr<uint32_t> out_channel_value;
-		std::shared_ptr<bool> out_success;
-	};
-
-	struct ShipEntitySaveRequest {
-		std::string ship_uuid;
-		std::string saves_dir;
-		int64_t request_id;
-		Vector3i chunk_pos;
-		int action_type;
-		PackedByteArray data;
-	};
-
-	struct ShipEntityDeleteRequest {
-		std::string ship_uuid;
-		std::string saves_dir;
-		int64_t request_id;
-		Vector3i chunk_pos;
-		int local_key;
-	};
 
 	struct ShipChunkTimestampRequest {
 		std::string ship_uuid;
@@ -135,22 +104,8 @@ public:
 		Vector<Vector3i> chunk_positions;
 	};
 
-	struct ShipEntityLoadQuery {
-		std::string ship_uuid;
-		std::string saves_dir;
-		Vector3i chunk_pos;
-		int local_key;
-		std::shared_ptr<std::atomic<bool>> done;
-		std::shared_ptr<Dictionary> out_entity;
-	};
 
-	struct ShipEntityKeysQuery {
-		std::string ship_uuid;
-		std::string saves_dir;
-		Vector3i chunk_pos;
-		std::shared_ptr<std::atomic<bool>> done;
-		std::shared_ptr<PackedInt32Array> out_keys;
-	};
+
 
 	struct ShipChunkClearRequest {
 		std::string ship_uuid;
@@ -165,15 +120,15 @@ public:
 		std::atomic<bool> running{ false };
 		std::atomic<int> items_in_flight{ 0 };
 		std::vector<SaveRequest> queue;
-		std::vector<EntityMigrationRequest> migration_queue;
-		std::vector<ShipEntitySaveRequest> entity_save_queue;
-		std::vector<ShipEntityDeleteRequest> entity_delete_queue;
+
+		std::vector<std::function<void(SaveThreadData &)>> task_queue;
+
 		std::vector<ShipChunkTimestampRequest> chunk_timestamp_queue;
 		std::vector<ShipChunkTimestampQuery> timestamp_query_queue;
 		std::vector<ShipChunkTimestampBatchRequest> timestamp_batch_queue;
 		std::vector<ShipChunkClearRequest> chunk_clear_queue;
-		std::vector<ShipEntityLoadQuery> entity_load_query_queue;
-		std::vector<ShipEntityKeysQuery> entity_keys_query_queue;
+
+
 		HashMap<String, Ref<VoxelStreamSQLite>> streams;
 	} _save_thread_data;
 
@@ -263,6 +218,32 @@ public:
 	void set_grab_target(VoxelSubGrid *sg, Transform3D target);
 	void apply_impulse(VoxelSubGrid *sg, Vector3 impulse, Vector3 world_point);
 	void apply_central_impulse(VoxelSubGrid *sg, Vector3 impulse);
+
+	//____________________________
+	//entities
+	// Runs fn on the save thread and waits for it to finish. Returns false (fn not run) if the thread isn't running.
+	// There is deliberately no timeout: fn may capture the caller's locals by reference.
+	bool run_on_save_thread_blocking(std::function<void(SaveThreadData &)> fn);
+
+	bool migrate_entities_blocking(
+			Ref<VoxelStreamSQLite> src_override,
+			const String &src_uuid,
+			const String &src_saves_dir,
+			Ref<VoxelStreamSQLite> dst_override,
+			const String &dst_uuid,
+			const String &dst_saves_dir,
+			const StdVector<sqlite::EntityMove> &moves,
+			StdVector<sqlite::EntityChannelWrite> &out_dst_values,
+			StdVector<sqlite::EntityPromotion> &out_src_promotions
+	);
+
+	// GDScript API for ship entities
+	bool ship_add_entities(const String &ship_uuid, Array groups);
+	bool ship_add_entity_children(const String &ship_uuid, Vector3i root, Array children);
+	bool ship_update_entity_data(const String &ship_uuid, Vector3i voxel, PackedByteArray entity_data);
+	Dictionary ship_read_entity(const String &ship_uuid, Vector3i voxel);
+	Dictionary ship_remove_entities(const String &ship_uuid, Array voxels);
+	Array ship_get_entity_voxels(const String &ship_uuid, Vector3i chunk);
 
 protected:
 	void _notification(int p_what);

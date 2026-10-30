@@ -541,6 +541,9 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 	HashSet<Vector3i> dirty_parent_chunks;
 	const int parent_cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
 
+	StdVector<sqlite::EntityMove> entity_moves;
+	const String saves_dir_abs = ProjectSettings::get_singleton()->globalize_path(_saves_dir);
+
 	_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) {
 		std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
 		if (!buf)
@@ -572,36 +575,10 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 						if (channel == VoxelBuffer::CHANNEL_TYPE) {
 							v = type_v;
 						} else if (channel == VoxelBuffer::CHANNEL_DATA6) {
-							const uint32_t raw = buf->get_voxel(x, y, z, channel);
-							print_line(
-									String("[child_to_parent] chunk_pos=") + String(chunk_pos) +
-									" local=" + String(Vector3i(x, y, z)) + " raw=" + itos(raw)
-							);
-							if (raw != 0 && _manager != nullptr) {
-								const int src_local_key = raw & 0xFFF;
-								const String saves_dir_abs =
-										ProjectSettings::get_singleton()->globalize_path(_saves_dir);
-								print_line(
-										String("[child_to_parent] migrating: src_ship='") + uuid_to_string(_meta.uuid) +
-										"' src_chunk=" + String(chunk_pos) + " src_key=" + itos(src_local_key) +
-										" -> dst_ship='" + uuid_to_string(parent_sg->get_metadata().uuid) +
-										"' dst_chunk=" + String(parent_chunk) + " saves_dir_abs='" + saves_dir_abs + "'"
-								);
-								v = _manager->migrate_block_entity_blocking(
-										Ref<VoxelStreamSQLite>(),
-										uuid_to_string(_meta.uuid),
-										saves_dir_abs,
-										chunk_pos,
-										src_local_key,
-										Ref<VoxelStreamSQLite>(),
-										uuid_to_string(parent_sg->get_metadata().uuid),
-										saves_dir_abs,
-										parent_chunk
-								);
-								print_line(String("[child_to_parent] migration returned channel_value=") + itos(v));
-							} else {
-								v = 0;
+							if (buf->get_voxel(x, y, z, channel) != 0) {
+								entity_moves.push_back({ block_origin + Vector3i(x, y, z), parent_i });
 							}
+							v = 0;
 						} else {
 							v = buf->get_voxel(x, y, z, channel);
 						}
@@ -611,6 +588,29 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 					dirty_parent_chunks.insert(parent_chunk);
 				}
 	});
+
+		if (!entity_moves.empty() && _manager != nullptr) {
+		StdVector<sqlite::EntityChannelWrite> dst_values;
+		StdVector<sqlite::EntityPromotion> src_promotions;
+		const bool ok = _manager->migrate_entities_blocking(
+				Ref<VoxelStreamSQLite>(),
+				uuid_to_string(_meta.uuid),
+				saves_dir_abs,
+				Ref<VoxelStreamSQLite>(),
+				uuid_to_string(parent_sg->get_metadata().uuid),
+				saves_dir_abs,
+				entity_moves,
+				dst_values,
+				src_promotions
+		);
+		if (ok) {
+			for (const sqlite::EntityChannelWrite &w : dst_values) {
+				parent_sg->set_voxel(w.value, w.voxel, VoxelBuffer::CHANNEL_DATA6);
+			}
+		} else {
+			ERR_PRINT("Child disassembly: failed to move block entities into the parent ship");
+		}
+	}
 
 	// Mark affected parent chunks dirty
 	if (_manager != nullptr) {
@@ -1054,7 +1054,7 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(
 
 	// Resolved ONCE, before the loop — not per voxel.
 	Ref<VoxelStreamSQLite> terrain_stream = Object::cast_to<VoxelStreamSQLite>(terrain->get_stream().ptr());
-	const int terrain_block_size_po2 = terrain->get_data_block_size_pow2();
+	StdVector<sqlite::EntityMove> entity_moves;
 
 	_chunks.for_each_chunk([&](Vector3i chunk_pos, VoxelDataBlock &) {
 		std::shared_ptr<VoxelBuffer> buf = _chunks.get_chunk_buffer(chunk_pos);
@@ -1088,24 +1088,10 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(
 						if (channel == VoxelBuffer::CHANNEL_TYPE) {
 							cv = v;
 						} else if (channel == VoxelBuffer::CHANNEL_DATA6) {
-							const uint32_t raw = buf->get_voxel(x, y, z, channel);
-							if (raw != 0 && _manager != nullptr) {
-								const int src_local_key = raw & 0xFFF;
-								const Vector3i dst_chunk_pos = target_pos >> terrain_block_size_po2;
-								cv = _manager->migrate_block_entity_blocking(
-										Ref<VoxelStreamSQLite>(),
-										uuid_to_string(_meta.uuid),
-										ProjectSettings::get_singleton()->globalize_path(_saves_dir),
-										chunk_pos,
-										src_local_key,
-										terrain_stream,
-										"",
-										"",
-										dst_chunk_pos
-								);
-							} else {
-								cv = 0;
+							if (buf->get_voxel(x, y, z, channel) != 0) {
+								entity_moves.push_back({ local_p, target_pos });
 							}
+							cv = 0; // written below once the rows have moved
 						} else {
 							cv = buf->get_voxel(x, y, z, channel);
 						}
@@ -1116,6 +1102,30 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(
 			}
 		}
 	});
+	if (!entity_moves.empty() && _manager != nullptr) {
+		StdVector<sqlite::EntityChannelWrite> dst_values;
+		StdVector<sqlite::EntityPromotion> src_promotions; // the ship is being discarded, nothing to fix up
+		const bool ok = _manager->migrate_entities_blocking(
+				Ref<VoxelStreamSQLite>(),
+				uuid_to_string(_meta.uuid),
+				ProjectSettings::get_singleton()->globalize_path(_saves_dir),
+				terrain_stream,
+				"",
+				"",
+				entity_moves,
+				dst_values,
+				src_promotions
+		);
+		if (ok) {
+			tool->set_channel(VoxelBuffer::CHANNEL_DATA6);
+			for (const sqlite::EntityChannelWrite &w : dst_values) {
+				tool->set_voxel(w.voxel, w.value, false);
+			}
+			tool->set_channel(VoxelBuffer::CHANNEL_TYPE);
+		} else {
+			ERR_PRINT("Disassembly: failed to move block entities into the terrain, they stay in the ship's database");
+		}
+	}
 }
 
 bool VoxelSubGrid::_check_subgrid_clear_for_transform(SubGridChunkMap &parent_chunks, const Transform3D &to_parent_t) {

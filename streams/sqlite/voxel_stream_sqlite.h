@@ -8,6 +8,7 @@
 #include "../voxel_stream.h"
 #include "../voxel_stream_cache.h"
 #include "block_key_cache.h"
+#include "entity_types.h"
 
 namespace zylann::voxel::sqlite {
 class Connection;
@@ -37,21 +38,7 @@ public:
 	void load_voxel_blocks(Span<VoxelStream::VoxelQueryData> p_blocks) override;
 	void save_voxel_blocks(Span<VoxelStream::VoxelQueryData> p_blocks) override;
 
-bool save_block_entity(Vector3i chunk_pos, int local_key, int action_type, PackedByteArray data);
-	Dictionary load_block_entity(Vector3i chunk_pos, int local_key);
-	bool delete_block_entity(Vector3i chunk_pos, int local_key);
-	void delete_block_entity_async(int64_t request_id, Vector3i chunk_pos, int local_key);
-	bool delete_block_entity_internal(Vector3i chunk_pos, int local_key); // called from task
 
-	int get_next_local_key(Vector3i chunk_pos);
-	PackedInt32Array get_block_entity_keys(Vector3i chunk_pos);
-
-	bool save_new_block_entity_internal( // not exposed to GDScript. Called from SaveBlockEntityTask on the IO thread.
-			Vector3i chunk_pos,
-			int action_type,
-			Span<const uint8_t> data,
-			int &out_local_key
-	);
 
 	bool save_chunk_last_modified(Vector3i chunk_pos, double timestamp);
 	double load_chunk_last_modified(Vector3i chunk_pos);
@@ -97,7 +84,19 @@ bool save_block_entity(Vector3i chunk_pos, int local_key, int action_type, Packe
 
 	bool copy_blocks_to_other_sqlite_stream(Ref<VoxelStreamSQLite> dst_stream);
 
-	void save_block_entity_async(int64_t request_id, Vector3i chunk_pos, int action_type, PackedByteArray data);
+	// Native entity API (thread-safe, goes through the connection pool)
+	bool add_entity_groups(Span<const sqlite::EntityGroup> groups);
+	bool read_entity_rows(Span<const Vector3i> voxels, StdVector<sqlite::EntityRow> &out);
+	bool read_entity_children(Vector3i root, StdVector<Vector3i> &out);
+	bool remove_entity_voxels(Span<const Vector3i> voxels, StdVector<sqlite::EntityPromotion> &out);
+
+	// GDScript API
+	bool add_block_entities(Array groups); // [{root, action_type, data, children}]
+	bool add_block_entity_children(Vector3i root, Array children);
+	bool update_block_entity_data(Vector3i voxel, PackedByteArray data);
+	Dictionary read_block_entity(Vector3i voxel);
+	Dictionary remove_block_entities(Array voxels);
+	Array get_block_entity_voxels(Vector3i chunk);
 
 private:
 	void rebuild_key_cache();

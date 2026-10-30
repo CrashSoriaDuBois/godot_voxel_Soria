@@ -5,6 +5,7 @@
 #include "../sub_grid_metadata.h"
 #include "core/templates/hash_set.h"
 #include "edition/voxel_tool.h"
+#include "../../streams/sqlite/entity_types.h"
 
 // Forward declarations
 namespace zylann::voxel {
@@ -26,6 +27,7 @@ public:
 		Vector3i local_origin_in_world;
 		Vector<AssembledBody *> children;
 		bool terrain_anchored = false;
+		StdVector<sqlite::EntityMove> entity_moves; // terrain voxel -> ship-local voxel, moved after the fill succeeded
 	};
 
 	struct AssemblyConfig {
@@ -69,6 +71,14 @@ private:
 	static void _erase_from_terrain(VoxelTool *tool, AssembledBody *body, Ref<VoxelBlockyLibraryBase> lib);
 	static bool is_movable(VoxelTool *tool, Vector3i pos);
 	static Vector3i _facing_from_index(uint32_t idx);
+	static void _migrate_entities(
+			VoxelTool *tool,
+			SubGridManager *manager,
+			Ref<VoxelStreamSQLite> terrain_stream,
+			const String &saves_dir_abs,
+			AssembledBody *body,
+			String &out_error
+	);
 };
 
 } // namespace zylann::voxel

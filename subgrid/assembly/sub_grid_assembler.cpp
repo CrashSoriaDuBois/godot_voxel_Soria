@@ -142,6 +142,12 @@ SubGridAssembler::AssembledBody *SubGridAssembler::assemble(
 		return nullptr;
 	}
 
+	_migrate_entities(tool.ptr(), manager, terrain_stream, saves_dir_abs, root, out_error);
+	if (!out_error.is_empty()) {
+		_free_tree(root);
+		return nullptr;
+	}
+
 	// We do this AFTER the full flood-fill (including children) so a failed assembly leaves the terrain untouched.
 	_erase_from_terrain(tool.ptr(), root, lib);
 
@@ -224,32 +230,10 @@ void SubGridAssembler::flood_fill(
 				v = voxel;
 			} else if (channel == VoxelBuffer::CHANNEL_DATA6) {
 				tool->set_channel(channel);
-				const uint32_t raw = tool->get_voxel(pos);
-				print_line(String("[flood_fill] pos=") + String(pos) + " CHANNEL_DATA6 raw=" + itos(raw));
-				if (raw != 0) {
-					const int src_local_key = raw & 0xFFF;
-					const Vector3i src_chunk_pos = pos >> 4;
-					const Vector3i dst_chunk_pos = local_pos >> SubGridChunkMap::CHUNK_SIZE_PO2;
-					print_line(
-							String("[flood_fill] migrating entity: src_chunk=") + String(src_chunk_pos) +
-							" src_key=" + itos(src_local_key) + " -> dst_ship='" + dst_ship_uuid +
-							"' dst_chunk=" + String(dst_chunk_pos) + " saves_dir='" + saves_dir + "'"
-					);
-					v = manager->migrate_block_entity_blocking(
-							terrain_stream,
-							"",
-							"",
-							src_chunk_pos,
-							src_local_key,
-							Ref<VoxelStreamSQLite>(),
-							dst_ship_uuid,
-							saves_dir,
-							dst_chunk_pos
-					);
-					print_line(String("[flood_fill] migration returned channel_value=") + itos(v));
-				} else {
-					v = 0;
+				if (tool->get_voxel(pos) != 0) {
+					out_body->entity_moves.push_back({ pos, local_pos });
 				}
+				v = 0; // filled in by _migrate_entities once the rows have really been moved
 			} else {
 				tool->set_channel(channel);
 				v = tool->get_voxel(pos);
@@ -418,6 +402,45 @@ Vector3i SubGridAssembler::facing_from_bearing_id(uint32_t voxel_id) {
 			return { 0, 0, -1 }; // -Z
 		default:
 			return { 0, 1, 0 };
+	}
+}
+
+void SubGridAssembler::_migrate_entities(
+		VoxelTool *tool,
+		SubGridManager *manager,
+		Ref<VoxelStreamSQLite> terrain_stream,
+		const String &saves_dir_abs,
+		AssembledBody *body,
+		String &out_error
+) {
+	if (!body->entity_moves.empty()) {
+		StdVector<sqlite::EntityChannelWrite> dst_values;
+		StdVector<sqlite::EntityPromotion> src_promotions;
+		const bool ok = manager->migrate_entities_blocking(
+				terrain_stream,
+				"",
+				"",
+				Ref<VoxelStreamSQLite>(),
+				uuid_to_string_bytes(body->uuid),
+				saves_dir_abs,
+				body->entity_moves,
+				dst_values,
+				src_promotions
+		);
+		if (!ok) {
+			out_error = "Failed to move block entities into the new ship";
+			return;
+		}
+		for (const sqlite::EntityChannelWrite &w : dst_values) {
+			body->chunks.set_voxel(w.value, w.voxel, VoxelBuffer::CHANNEL_DATA6);
+		}
+
+	}
+	for (AssembledBody *child : body->children) {
+		_migrate_entities(tool, manager, terrain_stream, saves_dir_abs, child, out_error);
+		if (!out_error.is_empty()) {
+			return;
+		}
 	}
 }
 
