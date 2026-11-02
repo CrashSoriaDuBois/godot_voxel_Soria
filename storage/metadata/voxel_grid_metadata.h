@@ -7,6 +7,10 @@
 #include "voxel_metadata.h"
 #include <cstring>
 
+#include "../../util/containers/std_vector.h"
+#include "../../util/thread/mutex.h"
+#include "../../util/godot/core/aabb.h"
+
 namespace zylann::voxel {
 
 class VoxelGridMetadata : public ICustomVoxelMetadata {
@@ -14,6 +18,13 @@ public:
 	static constexpr uint8_t TYPE_INDEX = VoxelMetadata::TYPE_APP_SPECIFIC_BEGIN;
 	static constexpr unsigned int MAX_CELLS = 64;
 	static constexpr uint8_t FLAG_HAS_COLOR = 0x80;
+
+	// Collision boxes in voxel-local space (0..1), built lazily by VoxelBoxMover.
+	// Mutable because readers fill it while holding only a read lock; the mutex serializes that.
+	mutable Mutex collision_mutex;
+	mutable StdVector<AABB> collision_boxes;
+	mutable uint32_t collision_cache_mask = 0;
+	mutable bool collision_cache_valid = false;
 
 	uint8_t res = 0;
 	bool has_color = false;

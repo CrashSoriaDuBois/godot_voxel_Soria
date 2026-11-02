@@ -8,6 +8,9 @@
 #include "../variable_lod/voxel_lod_terrain.h"
 #include "voxel_terrain.h"
 
+#include "../../storage/metadata/voxel_grid_metadata.h"
+#include "../../util/thread/spatial_lock_3d.h"
+
 namespace zylann::voxel {
 
 namespace {
@@ -187,6 +190,160 @@ bool intersects(Span<const AABB> aabbs, const AABB &box) {
 	return false;
 }
 
+
+// voxelgrid methods
+inline bool is_full_cube_collider(const blocky::BakedModel &m) {
+	return m.box_collision_aabbs.size() == 1 && m.box_collision_aabbs[0].position.is_equal_approx(Vector3()) &&
+			m.box_collision_aabbs[0].size.is_equal_approx(Vector3(1, 1, 1));
+}
+
+void build_grid_collision_boxes(
+		const VoxelGridMetadata &g,
+		const blocky::BakedLibrary &lib,
+		const uint32_t collision_mask,
+		StdVector<AABB> &out
+) {
+	const int res = g.res;
+	const float inv = 1.f / float(res);
+	uint64_t used = 0;
+
+	auto id_at = [&](int x, int y, int z) { return g.cells[g.index(x, y, z)]; };
+	auto is_free = [&](int x, int y, int z) { return (used & (uint64_t(1) << g.index(x, y, z))) == 0; };
+	auto mergeable = [&](int x, int y, int z) {
+		const uint16_t id = id_at(x, y, z);
+		if (id == 0 || !lib.has_model(id)) {
+			return false;
+		}
+		const blocky::BakedModel &m = lib.models[id];
+		return (m.box_collision_mask & collision_mask) != 0 && is_full_cube_collider(m);
+	};
+
+	for (int z = 0; z < res; ++z) {
+		for (int x = 0; x < res; ++x) {
+			for (int y = 0; y < res; ++y) {
+				if (!is_free(x, y, z)) {
+					continue;
+				}
+				const uint16_t id = id_at(x, y, z);
+				if (id == 0 || !lib.has_model(id)) {
+					continue;
+				}
+				const blocky::BakedModel &m = lib.models[id];
+				if ((m.box_collision_mask & collision_mask) == 0) {
+					continue;
+				}
+
+				if (!is_full_cube_collider(m)) {
+					// Partial model (slab, fence...): scale its own boxes into the cell
+					for (const AABB &b : m.box_collision_aabbs) {
+						out.push_back(AABB((b.position + Vector3(x, y, z)) * inv, b.size * inv));
+					}
+					continue;
+				}
+
+				// Grow a box: along y, then x, then z
+				int y1 = y + 1;
+				while (y1 < res && is_free(x, y1, z) && mergeable(x, y1, z)) {
+					++y1;
+				}
+				int x1 = x + 1;
+				for (; x1 < res; ++x1) {
+					bool ok = true;
+					for (int yy = y; yy < y1 && ok; ++yy) {
+						ok = is_free(x1, yy, z) && mergeable(x1, yy, z);
+					}
+					if (!ok) {
+						break;
+					}
+				}
+				int z1 = z + 1;
+				for (; z1 < res; ++z1) {
+					bool ok = true;
+					for (int xx = x; xx < x1 && ok; ++xx) {
+						for (int yy = y; yy < y1 && ok; ++yy) {
+							ok = is_free(xx, yy, z1) && mergeable(xx, yy, z1);
+						}
+					}
+					if (!ok) {
+						break;
+					}
+				}
+				for (int zz = z; zz < z1; ++zz) {
+					for (int xx = x; xx < x1; ++xx) {
+						for (int yy = y; yy < y1; ++yy) {
+							used |= uint64_t(1) << g.index(xx, yy, zz);
+						}
+					}
+				}
+				out.push_back(AABB(Vector3(x, y, z) * inv, Vector3(x1 - x, y1 - y, z1 - z) * inv));
+			}
+		}
+	}
+}
+void append_grid_boxes(
+		const VoxelGridMetadata &g,
+		const blocky::BakedLibrary &lib,
+		const uint32_t mask,
+		const Vector3i vpos,
+		StdVector<AABB> &out
+) {
+	MutexLock lock(g.collision_mutex);
+	if (!g.collision_cache_valid || g.collision_cache_mask != mask) {
+		g.collision_boxes.clear();
+		build_grid_collision_boxes(g, lib, mask, g.collision_boxes);
+		g.collision_cache_mask = mask;
+		g.collision_cache_valid = true;
+	}
+	for (const AABB &b : g.collision_boxes) {
+		AABB w = b;
+		w.position += vpos;
+		out.push_back(w);
+	}
+}
+
+// One pass over the sparse metadata of the blocks overlapping the box: one lock per block, cost proportional
+// to the number of grids, not the number of voxels. Appends their boxes and remembers which voxels were grids.
+void collect_grid_boxes(
+		const VoxelData &voxels,
+		const blocky::BakedLibrary &lib,
+		const Vector3i minp,
+		const Vector3i maxp,
+		const uint32_t mask,
+		StdVector<AABB> &out_boxes,
+		StdVector<Vector3i> &out_grid_positions
+) {
+	const int bs = voxels.get_block_size();
+	const Box3i block_box = Box3i::from_min_max(minp, maxp).downscaled(bs);
+
+	// Gather first, lock afterwards (gathering takes the same lock internally, don't nest it)
+	StdVector<std::shared_ptr<VoxelBuffer>> blocks(Vector3iUtil::get_volume_u64(block_box.size));
+	voxels.get_blocks_with_voxel_data(block_box, 0, to_span(blocks));
+
+	SpatialLock3D::Read srlock(voxels.get_spatial_lock(0), BoxBounds3i(block_box));
+
+	unsigned int index = 0;
+	block_box.for_each_cell_zxy([&](const Vector3i bpos) {
+		const std::shared_ptr<VoxelBuffer> &vb = blocks[index++];
+		if (vb == nullptr) {
+			return;
+		}
+		const Vector3i origin = bpos * bs;
+		vb->for_each_voxel_metadata_in_area(
+				Box3i(minp - origin, maxp - minp),
+				[&](const Vector3i rpos, const VoxelMetadata &meta) {
+					if (meta.get_type() != VoxelGridMetadata::TYPE_INDEX) {
+						return;
+					}
+					const Vector3i vpos = origin + rpos;
+					out_grid_positions.push_back(vpos);
+					append_grid_boxes(
+							static_cast<const VoxelGridMetadata &>(meta.get_custom()), lib, mask, vpos, out_boxes
+					);
+				}
+		);
+	});
+}
+
 void collect_boxes_blocky(
 		const VoxelData &voxels,
 		const VoxelMesherBlocky &mesher,
@@ -205,11 +362,28 @@ void collect_boxes_blocky(
 
 	Vector3i i = minp;
 
+	static thread_local StdVector<Vector3i> tls_grid_positions;
+	tls_grid_positions.clear();
+	collect_grid_boxes(voxels, baked_data, minp, maxp, collision_mask, potential_boxes, tls_grid_positions);
+
 	// TODO Optimization: read the whole box of voxels at once, querying individually is slower
 	for (i.z = minp.z; i.z < maxp.z; ++i.z) {
 		for (i.y = minp.y; i.y < maxp.y; ++i.y) {
 			for (i.x = minp.x; i.x < maxp.x; ++i.x) {
 				const int type_id = voxels.get_voxel(i, channel, defval).i;
+
+				if (!tls_grid_positions.empty()) {
+					bool is_grid = false;
+					for (const Vector3i &gp : tls_grid_positions) {
+						if (gp == i) {
+							is_grid = true;
+							break;
+						}
+					}
+					if (is_grid) {
+						continue; // precise boxes already added, ignore the fallback block's boxes
+					}
+				}
 
 				if (baked_data.has_model(type_id)) {
 					const blocky::BakedModel &model = baked_data.models[type_id];

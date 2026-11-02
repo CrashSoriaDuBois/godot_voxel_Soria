@@ -1588,6 +1588,7 @@ int VoxelData::try_set_voxel_grid_cell(
 
 	const unsigned int idx = g->index(cell.x, cell.y, cell.z);
 	g->cells[idx] = id;
+	g->collision_cache_valid = false;
 	if (color >= 0) {
 		g->has_color = true; // colors[] is already initialised to 0xFFFF
 		g->colors[idx] = uint16_t(color);
