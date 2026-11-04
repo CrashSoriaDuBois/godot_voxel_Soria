@@ -49,6 +49,12 @@ void VoxelSubGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("apply_impulse", "impulse", "world_point"), &VoxelSubGrid::apply_impulse);
 	ClassDB::bind_method(D_METHOD("apply_central_impulse", "impulse"), &VoxelSubGrid::apply_central_impulse);
 	ClassDB::bind_method(D_METHOD("get_uuid_string"), &VoxelSubGrid::get_uuid_string);
+
+	ClassDB::bind_method(D_METHOD("get_snapped_transform", "upright_only"), &VoxelSubGrid::get_snapped_transform, DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("get_snapped_transform_of", "t", "upright_only"), &VoxelSubGrid::get_snapped_transform_of);
+	ClassDB::bind_method(D_METHOD("begin_align", "snap_speed", "timeout_seconds", "upright_only"),&VoxelSubGrid::begin_align, DEFVAL(4.0), DEFVAL(4.0), DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("disassemble_at", "terrain", "placement"), &VoxelSubGrid::disassemble_at);
+	ADD_SIGNAL(MethodInfo("align_finished", PropertyInfo(Variant::BOOL, "aligned"), PropertyInfo(Variant::TRANSFORM3D, "final_transform")));
 }
 
 void VoxelSubGrid::_notification(int p_what) {
@@ -1163,4 +1169,63 @@ bool VoxelSubGrid::_check_subgrid_clear_for_transform(SubGridChunkMap &parent_ch
 String VoxelSubGrid::get_uuid_string() const {
 	return uuid_to_string(_meta.uuid);
 }
+
+Transform3D VoxelSubGrid::get_snapped_transform_of(const Transform3D &t, bool upright_only) {
+	const Basis nearest = _nearest_cardinal_basis(t.basis.orthonormalized(), upright_only);
+	return Transform3D(nearest, Vector3(Math::round(t.origin.x), Math::round(t.origin.y), Math::round(t.origin.z)));
+}
+
+Transform3D VoxelSubGrid::get_snapped_transform(bool upright_only) {
+	return get_snapped_transform_of(get_global_transform(), upright_only);
+}
+
+void VoxelSubGrid::begin_align(float snap_speed, float timeout_seconds, bool upright_only) {
+	const Transform3D snapped = get_snapped_transform(upright_only);
+
+	// Every outcome goes through align_finished, so GDScript never waits on a signal that won't come.
+	if (!(is_root() && !_meta.is_terrain_anchored) || _manager == nullptr) {
+		WARN_PRINT("begin_align: only registered, free-floating root ships can align.");
+		call_deferred("emit_signal", "align_finished", false, snapped);
+		return;
+	}
+	if (upright_only) {
+		const Vector3 hull_up = get_global_basis().orthonormalized().get_column(1).normalized();
+		const float tilt_deg = Math::rad_to_deg(Math::acos(CLAMP(hull_up.dot(Vector3(0, 1, 0)), -1.f, 1.f)));
+		if (tilt_deg > 44.0f) {
+			call_deferred("emit_signal", "align_finished", false, snapped);
+			return;
+		}
+	}
+	_manager->begin_homing_align(this, snapped, snap_speed, timeout_seconds, upright_only);
+}
+
+Dictionary VoxelSubGrid::disassemble_at(VoxelLodTerrain *terrain, const Transform3D &placement_t) {
+	Dictionary r;
+	r["ok"] = false;
+	if (terrain == nullptr) {
+		r["reason"] = "no_terrain";
+		return r;
+	}
+	if (!is_inside_tree()) {
+		r["reason"] = "not_in_tree";
+		return r;
+	}
+	if (!(is_root() && !_meta.is_terrain_anchored)) {
+		r["reason"] = "not_a_free_root"; // terrain-anchored roots and children keep using try_disassemble_at
+		return r;
+	}
+	// Don't let a stale or forged transform teleport the ship. Tune this to your homing tolerance.
+	if (placement_t.origin.distance_to(get_global_position()) > 2.0f) {
+		r["reason"] = "too_far_from_ship";
+		return r;
+	}
+	if (!_check_terrain_clear_for_transform(terrain, placement_t)) {
+		r["reason"] = "terrain_blocked";
+		return r;
+	}
+	_disassemble_root_to_terrain(terrain, placement_t);
+	r["ok"] = true;
+	return r;
+}
+
 } // namespace zylann::voxel

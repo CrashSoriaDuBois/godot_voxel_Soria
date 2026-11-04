@@ -64,6 +64,12 @@ public:
 	void grab_with_rotation(Vector3 grab_point_local, float strength = 1.0f);
 	void release();
 	void set_grab_target(Transform3D target);
+
+	Transform3D get_snapped_transform(bool upright_only);
+	void begin_align(float snap_speed, float timeout_seconds, bool upright_only);
+
+	Transform3D get_snapped_transform_of(const Transform3D &t, bool upright_only);
+
 	void apply_impulse(Vector3 impulse, Vector3 world_point);
 	void apply_central_impulse(Vector3 impulse);
 
@@ -105,6 +111,8 @@ public:
 	void try_disassemble(class VoxelLodTerrain *terrain);
 
 	void try_disassemble_at(VoxelLodTerrain *terrain, const Transform3D &placement_t);
+
+	Dictionary disassemble_at(VoxelLodTerrain *terrain, const Transform3D &placement_t);
 
 	void align_and_disassemble(float rpm, VoxelLodTerrain *terrain, bool upright_only, float snap_speed = 5.f);
 

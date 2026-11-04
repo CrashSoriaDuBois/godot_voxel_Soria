@@ -2808,6 +2808,8 @@ void SubGridManager::begin_homing_disassemble(
 	state->homing_terrain = terrain;
 	state->homing_speed = MAX(speed, 0.1f);
 	state->homing_start_msec = Time::get_singleton()->get_ticks_msec();
+	state->homing_disassemble_on_finish = true;
+	state->homing_custom_timeout_msec = 0;
 
 
 	//state->homing_speed = Math::max(speed, 0.1f);
@@ -2837,15 +2839,40 @@ void SubGridManager::_drive_homing_disassembles(double delta) {
 		const float linear_dist = linear_error.length();
 		const float angular_dist = Math::abs((float)angle);
 		const bool arrived = linear_dist < 0.02f && angular_dist < Math::deg_to_rad(1.0f);
-		const bool timed_out = (now - state.homing_start_msec) > state.homing_timeout_msec;
+		const uint64_t timeout_msec = state.homing_custom_timeout_msec > 0 ? state.homing_custom_timeout_msec
+																		   : (uint64_t)state.homing_timeout_msec;
+		const bool timed_out = (now - state.homing_start_msec) > timeout_msec;
 
 		if (arrived || timed_out) {
 			state.homing_to_disassemble = false;
+
+			// ---- align only: report and let GDScript decide ----
+			if (!state.homing_disassemble_on_finish) {
+				Transform3D final_t;
+				if (arrived) {
+					final_t = state.homing_target_t;
+					ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM, final_t);
+					ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, Vector3());
+					ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
+				} else {
+					// Timed out: leave the body where physics left it and report its nearest legal pose.
+					final_t = state.node != nullptr
+							? state.node->get_snapped_transform_of(current, state.homing_upright_only)
+							: current;
+				}
+				if (state.node != nullptr) {
+					// Deferred on purpose: a handler may call disassemble_at(), which can unregister ships
+					// while this loop is still iterating _ships.
+					state.node->call_deferred("emit_signal", "align_finished", arrived, final_t);
+				}
+				continue;
+			}
+
+			// ---- disassemble on finish (original behaviour, unchanged) ----
 			VoxelLodTerrain *terrain = state.homing_terrain;
 			state.homing_terrain = nullptr;
 			Transform3D committed_t = state.homing_target_t;
 
-			// Re-verify right before committing, the transform was only checked once, at command time, up to homing_timeout_msec ago
 			bool still_clear = (terrain == nullptr || state.node == nullptr)
 					? true
 					: state.node->_check_terrain_clear_for_transform(terrain, committed_t);
@@ -2853,11 +2880,9 @@ void SubGridManager::_drive_homing_disassembles(double delta) {
 			if (!still_clear) {
 				WARN_PRINT("Homing disassemble aborted: target transform no longer clear at commit "
 						   "time. Cancelling sequence, ship remains under normal physics.");
-				// Don't force the transform/velocities, leave the body wherever physics actually left it, and don't paste anything. homing_to_disassemble is already false, so suspension/normal control resumes on the next tick.
 				continue;
 			}
 
-			// Snap is purely cosmetic here, the transform used for actual voxel placement is always committed_t, now re-confirmed clear, never wherever physics actually left the body, even if it got stuck and never reached this spot.
 			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM, committed_t);
 			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, Vector3());
 			ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, Vector3());
@@ -2880,6 +2905,39 @@ void SubGridManager::_drive_homing_disassembles(double delta) {
 		ps->body_set_state(state.body_rid, PhysicsServer3D::BODY_STATE_ANGULAR_VELOCITY, angular_vel);
 	}
 }
+
+void SubGridManager::begin_homing_align(
+		VoxelSubGrid *sg,
+		const Transform3D &target_t,
+		float speed,
+		float timeout_seconds,
+		bool upright_only
+) {
+	ERR_FAIL_COND(sg == nullptr);
+	String uuid = uuid_for_node(sg);
+	ShipState *state = _ships.getptr(uuid);
+	if (state == nullptr || !state->body_rid.is_valid()) {
+		WARN_PRINT("begin_homing_align: ship not registered or not rigid, reporting failure.");
+		sg->call_deferred("emit_signal", "align_finished", false, target_t);
+		return;
+	}
+	if (state->homing_to_disassemble) {
+		WARN_PRINT("begin_homing_align: ship is already homing, ignoring this call.");
+		return;
+	}
+
+	state->homing_to_disassemble = true; // reused as the "homing active" flag
+	state->homing_disassemble_on_finish = false;
+	state->homing_upright_only = upright_only;
+	state->homing_target_t = target_t;
+	state->homing_terrain = nullptr;
+	state->homing_speed = MAX(speed, 0.1f);
+	state->homing_start_msec = Time::get_singleton()->get_ticks_msec();
+	state->homing_custom_timeout_msec = (uint64_t)(MAX(timeout_seconds, 0.1f) * 1000.0f);
+
+	PhysicsServer3D::get_singleton()->body_set_mode(state->body_rid, PhysicsServer3D::BODY_MODE_RIGID);
+}
+
 std::shared_ptr<VoxelBuffer> SubGridManager::_build_light_padded_buffer(VoxelSubGrid *node, Vector3i lod_pos, int lod)
 		const {
 	const SubGridChunkMap &chunk_map = node->get_chunk_map();

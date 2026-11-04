@@ -343,6 +343,11 @@ public:
 		float grab_strength = 1.0f;
 
 		bool homing_to_disassemble = false;
+
+		bool homing_disassemble_on_finish = true; // false = align only, report through align_finished
+		bool homing_upright_only = true;
+		uint64_t homing_custom_timeout_msec = 0; // 0 = use the existing homing_timeout_msec
+
 		Transform3D homing_target_t;
 		VoxelLodTerrain *homing_terrain = nullptr;
 		float homing_speed = 5.f;
@@ -354,6 +359,14 @@ public:
 	};
 
 	void begin_homing_disassemble(VoxelSubGrid *sg, const Transform3D &target_t, VoxelLodTerrain *terrain, float speed);
+
+	void begin_homing_align(
+			VoxelSubGrid *sg,
+			const Transform3D &target_t,
+			float speed,
+			float timeout_seconds,
+			bool upright_only
+	);
 
 private:
 	// -----------------------------------------------------------------------
