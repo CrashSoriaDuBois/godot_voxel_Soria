@@ -11,6 +11,8 @@
 #include "../../util/thread/mutex.h"
 #include "../../util/godot/core/aabb.h"
 
+#include "../../util/math/color8.h"
+
 namespace zylann::voxel {
 
 class VoxelGridMetadata : public ICustomVoxelMetadata {
@@ -47,7 +49,7 @@ public:
 	}
 
 	static inline Color decode_color(uint16_t c) {
-		return Color(float((c >> 11) & 31) / 31.f, float((c >> 5) & 63) / 63.f, float(c & 31) / 31.f);
+		return Color(Color8::from_u16(c));
 	}
 
 	size_t get_serialized_size() const override {
@@ -126,6 +128,38 @@ public:
 		const unsigned int n = cell_count(res);
 		return res == o.res && has_color == o.has_color && memcmp(cells, o.cells, 2 * n) == 0 &&
 				(!has_color || memcmp(colors, o.colors, 2 * n) == 0);
+	}
+
+	void assign_from(const VoxelGridMetadata &o) {
+		res = o.res;
+		has_color = o.has_color;
+		memcpy(cells, o.cells, sizeof(cells));
+		memcpy(colors, o.colors, sizeof(colors));
+		collision_cache_valid = false;
+	}
+
+	// Rotates the cells by an integer cube rotation M (columns = rotated X, Y, Z axes, same convention as
+	// SubGridAssembler/_paste_rotated_chunks_to_terrain). Works on doubled cell-center coordinates, so it is exact.
+	void rotate_into(const int M[3][3], VoxelGridMetadata &out) const {
+		out.res = res;
+		out.has_color = has_color;
+		out.collision_cache_valid = false;
+		for (int z = 0; z < res; ++z) {
+			for (int x = 0; x < res; ++x) {
+				for (int y = 0; y < res; ++y) {
+					const int d[3] = { 2 * x + 1 - res, 2 * y + 1 - res, 2 * z + 1 - res };
+					int c[3];
+					for (int i = 0; i < 3; ++i) {
+						const int dd = M[i][0] * d[0] + M[i][1] * d[1] + M[i][2] * d[2];
+						c[i] = (dd + res - 1) / 2;
+					}
+					const unsigned int src = index(x, y, z);
+					const unsigned int dst = out.index(c[0], c[1], c[2]);
+					out.cells[dst] = cells[src];
+					out.colors[dst] = colors[src];
+				}
+			}
+		}
 	}
 };
 

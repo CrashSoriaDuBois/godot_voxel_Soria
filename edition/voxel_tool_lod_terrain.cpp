@@ -15,6 +15,7 @@
 #include "floating_chunks.h"
 #include "funcs.h"
 #include "raycast.h"
+#include "../storage/metadata/voxel_grid_metadata.h"
 
 #ifdef VOXEL_ENABLE_MESH_SDF
 #include "voxel_mesh_sdf_gd.h"
@@ -269,6 +270,73 @@ Variant VoxelToolLodTerrain::get_voxel_metadata(const Vector3i pos) const {
 	ZN_ASSERT_RETURN_V(_terrain != nullptr, Variant());
 	VoxelData &data = _terrain->get_storage();
 	return data.get_voxel_metadata(pos);
+}
+
+bool VoxelToolLodTerrain::set_voxel_grid(
+		Vector3i pos,
+		int res,
+		PackedInt32Array cells,
+		PackedInt32Array colors,
+		bool relevant
+) {
+	ERR_FAIL_COND_V(_terrain == nullptr, false);
+	VoxelGridMetadata g;
+	if (!grid_from_arrays(res, cells, colors, g)) {
+		return false;
+	}
+	const Box3i box(pos, Vector3i(1, 1, 1));
+	if (!is_area_editable(box)) {
+		ZN_PRINT_WARNING("Area not editable");
+		return false;
+	}
+	const unsigned int n = VoxelGridMetadata::cell_count(g.res);
+	if (!_terrain->get_storage().try_set_voxel_grid(
+				pos,
+				g.res,
+				Span<const uint16_t>(g.cells, n),
+				g.has_color ? Span<const uint16_t>(g.colors, n) : Span<const uint16_t>()
+		)) {
+		return false;
+	}
+	_post_edit(box, relevant);
+	return true;
+}
+
+bool VoxelToolLodTerrain::clear_voxel_grid(Vector3i pos, bool relevant) {
+	ERR_FAIL_COND_V(_terrain == nullptr, false);
+	if (!_terrain->get_storage().clear_voxel_grid(pos)) {
+		return false;
+	}
+	_post_edit(Box3i(pos, Vector3i(1, 1, 1)), relevant);
+	return true;
+}
+
+int VoxelToolLodTerrain::set_voxel_grid_cell(Vector3i pos, int res, Vector3i cell, int id, int color, bool relevant) {
+	ERR_FAIL_COND_V(_terrain == nullptr, -1);
+	bool structural = false;
+	const int filled = _terrain->get_storage().try_set_voxel_grid_cell(pos, uint8_t(res), cell, uint16_t(id), color, structural);
+	if (filled >= 0) {
+		_post_edit(Box3i(pos, Vector3i(1, 1, 1)), relevant);
+	}
+	return filled;
+}
+
+bool VoxelToolLodTerrain::set_voxel_grid_cell_color(Vector3i pos, Vector3i cell, int color, bool relevant) {
+	ERR_FAIL_COND_V(_terrain == nullptr, false);
+	if (!_terrain->get_storage().try_set_voxel_grid_cell_color(pos, cell, uint16_t(color))) {
+		return false;
+	}
+	_post_edit(Box3i(pos, Vector3i(1, 1, 1)), relevant);
+	return true;
+}
+
+Dictionary VoxelToolLodTerrain::get_voxel_grid(Vector3i pos) const {
+	ERR_FAIL_COND_V(_terrain == nullptr, Dictionary());
+	VoxelGridMetadata g;
+	if (!_terrain->get_storage().try_get_voxel_grid(pos, g)) {
+		return Dictionary();
+	}
+	return grid_to_dictionary(g);
 }
 
 float VoxelToolLodTerrain::get_voxel_f_interpolated(Vector3 position) const {

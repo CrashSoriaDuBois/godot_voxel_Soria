@@ -202,4 +202,131 @@ void SubGridChunkMap::clear_buffers() {
 	_dirty_chunks.clear();
 }
 
+//________________________________________________
+
+VoxelBuffer &SubGridChunkMap::_get_or_create_lod0_buffer(Vector3i chunk_pos) {
+	const int cs = 1 << CHUNK_SIZE_PO2;
+	VoxelDataBlock *block = _lod_maps[0].get_block(chunk_pos);
+	if (block == nullptr) {
+		auto buf = std::make_shared<VoxelBuffer>(VoxelBuffer::ALLOCATOR_POOL);
+		buf->create(cs, cs, cs, &_format);
+		block = _lod_maps[0].set_block_buffer(chunk_pos, buf, /*overwrite=*/false);
+		_all_lod0_chunk_positions.insert(chunk_pos);
+		_all_lod_chunk_positions[0].insert(chunk_pos);
+	}
+	return block->get_voxels();
+}
+
+bool SubGridChunkMap::set_voxel_grid(Vector3i local_pos, const VoxelGridMetadata &g) {
+	if (g.res < 2 || g.res > 4) {
+		return false;
+	}
+	const Vector3i chunk_pos = voxel_to_lod0_chunk(local_pos);
+	VoxelBuffer &buf = _get_or_create_lod0_buffer(chunk_pos);
+	VoxelMetadata *meta = buf.get_or_create_voxel_metadata(local_pos - (chunk_pos << CHUNK_SIZE_PO2));
+	ERR_FAIL_COND_V(meta == nullptr, false);
+	meta->clear();
+	VoxelGridMetadata *ng = ZN_NEW(VoxelGridMetadata);
+	ng->assign_from(g);
+	meta->set_custom(VoxelGridMetadata::TYPE_INDEX, ng);
+	_dirty_chunks.insert(chunk_pos);
+	return true;
+}
+
+bool SubGridChunkMap::get_voxel_grid(Vector3i local_pos, VoxelGridMetadata &out) const {
+	const Vector3i chunk_pos = voxel_to_lod0_chunk(local_pos);
+	const VoxelDataBlock *block = _lod_maps[0].get_block(chunk_pos);
+	if (block == nullptr || !block->has_voxels()) {
+		return false;
+	}
+	const VoxelMetadata *meta = block->get_voxels_const().get_voxel_metadata(local_pos - (chunk_pos << CHUNK_SIZE_PO2));
+	if (meta == nullptr || meta->get_type() != VoxelGridMetadata::TYPE_INDEX) {
+		return false;
+	}
+	out.assign_from(static_cast<const VoxelGridMetadata &>(meta->get_custom()));
+	return true;
+}
+
+bool SubGridChunkMap::clear_voxel_grid(Vector3i local_pos) {
+	const Vector3i chunk_pos = voxel_to_lod0_chunk(local_pos);
+	VoxelDataBlock *block = _lod_maps[0].get_block(chunk_pos);
+	if (block == nullptr || !block->has_voxels()) {
+		return false;
+	}
+	VoxelBuffer &buf = block->get_voxels();
+	const Vector3i rpos = local_pos - (chunk_pos << CHUNK_SIZE_PO2);
+	const VoxelMetadata *meta = buf.get_voxel_metadata(rpos);
+	if (meta == nullptr || meta->get_type() != VoxelGridMetadata::TYPE_INDEX) {
+		return false;
+	}
+	buf.erase_voxel_metadata(rpos);
+	_dirty_chunks.insert(chunk_pos);
+	return true;
+}
+
+int SubGridChunkMap::set_voxel_grid_cell(Vector3i local_pos, uint8_t res, Vector3i cell, uint16_t id, int color) {
+	if (res < 2 || res > 4 || cell.x < 0 || cell.y < 0 || cell.z < 0 || cell.x >= res || cell.y >= res ||
+		cell.z >= res) {
+		return -1;
+	}
+	const Vector3i chunk_pos = voxel_to_lod0_chunk(local_pos);
+	VoxelBuffer &buf = _get_or_create_lod0_buffer(chunk_pos);
+	const Vector3i rpos = local_pos - (chunk_pos << CHUNK_SIZE_PO2);
+	VoxelMetadata *meta = buf.get_or_create_voxel_metadata(rpos);
+	ERR_FAIL_COND_V(meta == nullptr, -1);
+
+	VoxelGridMetadata *g = nullptr;
+	if (meta->get_type() == VoxelGridMetadata::TYPE_INDEX) {
+		g = static_cast<VoxelGridMetadata *>(&meta->get_custom());
+		if (g->res != res) {
+			return -1;
+		}
+	} else if (meta->get_type() == VoxelMetadata::TYPE_EMPTY) {
+		g = ZN_NEW(VoxelGridMetadata);
+		g->res = res;
+		meta->set_custom(VoxelGridMetadata::TYPE_INDEX, g);
+	} else {
+		return -1;
+	}
+
+	const unsigned int idx = g->index(cell.x, cell.y, cell.z);
+	g->cells[idx] = id;
+	g->collision_cache_valid = false;
+	if (color >= 0) {
+		g->has_color = true;
+		g->colors[idx] = uint16_t(color);
+	}
+	int filled = 0;
+	for (unsigned int i = 0; i < VoxelGridMetadata::cell_count(res); ++i) {
+		if (g->cells[i] != 0) {
+			++filled;
+		}
+	}
+	if (filled == 0) {
+		buf.erase_voxel_metadata(rpos); // frees g
+	}
+	_dirty_chunks.insert(chunk_pos);
+	return filled;
+}
+
+bool SubGridChunkMap::set_voxel_grid_cell_color(Vector3i local_pos, Vector3i cell, uint16_t color) {
+	const Vector3i chunk_pos = voxel_to_lod0_chunk(local_pos);
+	VoxelDataBlock *block = _lod_maps[0].get_block(chunk_pos);
+	if (block == nullptr || !block->has_voxels()) {
+		return false;
+	}
+	VoxelMetadata *meta = block->get_voxels().get_voxel_metadata(local_pos - (chunk_pos << CHUNK_SIZE_PO2));
+	if (meta == nullptr || meta->get_type() != VoxelGridMetadata::TYPE_INDEX) {
+		return false;
+	}
+	VoxelGridMetadata &g = static_cast<VoxelGridMetadata &>(meta->get_custom());
+	if (cell.x < 0 || cell.y < 0 || cell.z < 0 || cell.x >= g.res || cell.y >= g.res || cell.z >= g.res) {
+		return false;
+	}
+	g.has_color = true;
+	g.colors[g.index(cell.x, cell.y, cell.z)] = color;
+	_dirty_chunks.insert(chunk_pos);
+	return true;
+}
+
 } // namespace zylann::voxel

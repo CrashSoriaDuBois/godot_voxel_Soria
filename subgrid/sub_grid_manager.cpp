@@ -2096,6 +2096,9 @@ std::shared_ptr<VoxelBuffer> SubGridManager::_build_padded_buffer(VoxelSubGrid *
 			}
 		}
 	}
+	if (lod == 0) {
+		padded->copy_voxel_metadata_in_area(*buf, Box3i(Vector3i(), Vector3i(cs, cs, cs)), Vector3i(pad, pad, pad));
+	}
 
 	// Pad from LOD-space neighbors (same lod level)
 	const Vector3i dirs[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
@@ -2104,6 +2107,16 @@ std::shared_ptr<VoxelBuffer> SubGridManager::_build_padded_buffer(VoxelSubGrid *
 		if (!nbuf) {
 			continue;
 		}
+
+		if (lod == 0) {
+			// Border slab only: enough for neighbor culling, which treats grid voxels as hollow
+			const Vector3i src_min(dir.x == -1 ? cs - 1 : 0, dir.y == -1 ? cs - 1 : 0, dir.z == -1 ? cs - 1 : 0);
+			const Vector3i src_size(dir.x != 0 ? 1 : cs, dir.y != 0 ? 1 : cs, dir.z != 0 ? 1 : cs);
+			padded->copy_voxel_metadata_in_area(
+					*nbuf, Box3i(src_min, src_size), src_min + dir * cs + Vector3i(pad, pad, pad)
+			);
+		}
+
 		for (int a = 0; a < cs; a++) {
 			for (int b = 0; b < cs; b++) {
 				int nx, ny, nz, px, py, pz;
@@ -2123,6 +2136,13 @@ std::shared_ptr<VoxelBuffer> SubGridManager::_build_padded_buffer(VoxelSubGrid *
 			}
 		}
 	}
+
+	// The blocky mesher returns early when the type channel is uniform. A chunk whose only content is chisel
+	// grids with an air fallback would otherwise never mesh.
+	if (padded->get_voxel_metadata().size() > 0) {
+		padded->decompress_channel(VoxelBuffer::CHANNEL_TYPE);
+	}
+
 	return padded;
 }
 

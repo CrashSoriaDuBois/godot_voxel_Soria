@@ -13,6 +13,8 @@
 
 namespace zylann::voxel {
 
+class VoxelGridMetadata;
+
 #ifdef VOXEL_ENABLE_MESH_SDF
 class VoxelMeshSDF;
 #endif
@@ -130,6 +132,20 @@ public:
 	virtual void set_voxel_metadata(const Vector3i pos, const Variant &meta);
 	virtual Variant get_voxel_metadata(const Vector3i pos) const;
 
+	// Chisel grids (sub-voxel cells). Only tools that support them override these.
+	// `relevant` = whether the edit can change light (terrain only, ship tools ignore it).
+	virtual bool set_voxel_grid(
+			Vector3i pos,
+			int res,
+			PackedInt32Array cells,
+			PackedInt32Array colors = PackedInt32Array(),
+			bool relevant = true
+	);
+	virtual bool clear_voxel_grid(Vector3i pos, bool relevant = true);
+	virtual int set_voxel_grid_cell(Vector3i pos, int res, Vector3i cell, int id, int color = -1, bool relevant = true);
+	virtual bool set_voxel_grid_cell_color(Vector3i pos, Vector3i cell, int color, bool relevant = false);
+	virtual Dictionary get_voxel_grid(Vector3i pos) const;
+
 	virtual VoxelFormat get_format() const;
 
 protected:
@@ -150,6 +166,14 @@ protected:
 			const bool with_pre_generate,
 			bool p_relevant = false
 	);
+
+	static bool grid_from_arrays(
+			int res,
+			const PackedInt32Array &cells,
+			const PackedInt32Array &colors,
+			VoxelGridMetadata &out
+	);
+	static Dictionary grid_to_dictionary(const VoxelGridMetadata &g);
 
 #ifdef VOXEL_ENABLE_MESH_SDF
 	void do_mesh_chunked(

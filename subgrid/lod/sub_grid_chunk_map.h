@@ -7,6 +7,8 @@
 #include <functional>
 #include <memory>
 
+#include "../../storage/metadata/voxel_grid_metadata.h"
+
 namespace zylann::voxel {
 
 // Maximum number of LOD levels supported.
@@ -142,6 +144,13 @@ public:
 		return lod_pos * (cs * stride);
 	}
 
+	bool set_voxel_grid(Vector3i local_pos, const VoxelGridMetadata &g);
+	bool get_voxel_grid(Vector3i local_pos, VoxelGridMetadata &out) const;
+	bool clear_voxel_grid(Vector3i local_pos);
+	// Returns filled-cell count after the write (0 = grid removed), or -1 on failure. color < 0 keeps the color.
+	int set_voxel_grid_cell(Vector3i local_pos, uint8_t res, Vector3i cell, uint16_t id, int color);
+	bool set_voxel_grid_cell_color(Vector3i local_pos, Vector3i cell, uint16_t color);
+
 private:
 	VoxelFormat _format;
 	// One VoxelDataMap per LOD level.
@@ -167,6 +176,8 @@ private:
 	// lod_pos is the target position in lod-space.
 	// Reads from lod-1 space (which at lod=1 means lod0).
 	void _downsample_lod_chunk(Vector3i lod_pos, int lod);
+
+	VoxelBuffer &_get_or_create_lod0_buffer(Vector3i chunk_pos);
 };
 
 } // namespace zylann::voxel

@@ -4,6 +4,7 @@
 #include "../util/godot/core/random_pcg.h"
 #include "../util/macros.h"
 #include "voxel_tool.h"
+#include "../storage/metadata/voxel_grid_metadata.h"
 
 ZN_GODOT_FORWARD_DECLARE(class Node);
 
@@ -37,6 +38,15 @@ public:
 
 	void set_voxel_metadata(const Vector3i pos, const Variant &meta) override;
 	Variant get_voxel_metadata(const Vector3i pos) const override;
+
+	bool set_voxel_grid(
+		Vector3i pos, int res, PackedInt32Array cells, PackedInt32Array colors = PackedInt32Array(),
+		bool relevant = true) override;
+	bool clear_voxel_grid(Vector3i pos, bool relevant = true) override;
+	int set_voxel_grid_cell(
+			Vector3i pos, int res, Vector3i cell, int id, int color = -1, bool relevant = true) override;
+	bool set_voxel_grid_cell_color(Vector3i pos, Vector3i cell, int color, bool relevant = false) override;
+	Dictionary get_voxel_grid(Vector3i pos) const override;
 
 	// Specialized API
 

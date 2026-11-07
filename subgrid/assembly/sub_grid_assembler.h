@@ -68,7 +68,9 @@ private:
 			const VoxelFormat &format,
 			String &out_error);
 
-	static void _erase_from_terrain(VoxelTool *tool, AssembledBody *body, Ref<VoxelBlockyLibraryBase> lib);
+	static void _erase_from_terrain(VoxelLodTerrain *terrain, VoxelTool *tool, AssembledBody *body, Ref<VoxelBlockyLibraryBase> lib);
+	static void _copy_grids_from_terrain(VoxelLodTerrain *terrain, AssembledBody *body);
+
 	static bool is_movable(VoxelTool *tool, Vector3i pos);
 	static Vector3i _facing_from_index(uint32_t idx);
 	static void _migrate_entities(

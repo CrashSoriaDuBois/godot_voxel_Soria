@@ -8,6 +8,8 @@
 #include "../util/profiling.h"
 #include "funcs.h"
 
+#include "../storage/metadata/voxel_grid_metadata.h"
+
 #ifdef VOXEL_ENABLE_MESH_SDF
 #include "voxel_mesh_sdf_gd.h"
 #endif
@@ -422,6 +424,74 @@ Variant VoxelTool::get_voxel_metadata(const Vector3i pos) const {
 	return Variant();
 }
 
+bool VoxelTool::set_voxel_grid(Vector3i, int, PackedInt32Array, PackedInt32Array, bool) {
+	ERR_PRINT("Not implemented");
+	return false;
+}
+
+bool VoxelTool::clear_voxel_grid(Vector3i, bool) {
+	ERR_PRINT("Not implemented");
+	return false;
+}
+
+int VoxelTool::set_voxel_grid_cell(Vector3i, int, Vector3i, int, int, bool) {
+	ERR_PRINT("Not implemented");
+	return -1;
+}
+
+bool VoxelTool::set_voxel_grid_cell_color(Vector3i, Vector3i, int, bool) {
+	ERR_PRINT("Not implemented");
+	return false;
+}
+
+Dictionary VoxelTool::get_voxel_grid(Vector3i) const {
+	ERR_PRINT("Not implemented");
+	return Dictionary();
+}
+
+bool VoxelTool::grid_from_arrays(
+		int res,
+		const PackedInt32Array &cells,
+		const PackedInt32Array &colors,
+		VoxelGridMetadata &out
+) {
+	const int n = res * res * res;
+	if (res < 2 || res > 4 || cells.size() != n || (colors.size() != 0 && colors.size() != n)) {
+		return false;
+	}
+	out.res = uint8_t(res);
+	for (int i = 0; i < n; ++i) {
+		out.cells[i] = uint16_t(cells[i]);
+	}
+	if (colors.size() != 0) {
+		out.has_color = true;
+		for (int i = 0; i < n; ++i) {
+			out.colors[i] = uint16_t(colors[i]);
+		}
+	}
+	return true;
+}
+
+Dictionary VoxelTool::grid_to_dictionary(const VoxelGridMetadata &g) {
+	Dictionary d;
+	const unsigned int n = VoxelGridMetadata::cell_count(g.res);
+	PackedInt32Array cells, colors;
+	cells.resize(n);
+	if (g.has_color) {
+		colors.resize(n);
+	}
+	for (unsigned int i = 0; i < n; ++i) {
+		cells.set(i, g.cells[i]);
+		if (g.has_color) {
+			colors.set(i, g.colors[i]);
+		}
+	}
+	d["res"] = int(g.res);
+	d["cells"] = cells;
+	d["colors"] = colors; // empty if the grid has no colors
+	return d;
+}
+
 VoxelFormat VoxelTool::get_format() const {
 	ERR_PRINT("Not implemented");
 	return VoxelFormat();
@@ -801,6 +871,19 @@ void VoxelTool::_bind_methods() {
 			),
 			&VoxelTool::paste_masked_writable_list
 	);
+
+	ClassDB::bind_method(
+		D_METHOD("set_voxel_grid", "pos", "res", "cells", "colors", "relevant"),
+		&VoxelTool::set_voxel_grid, DEFVAL(PackedInt32Array()), DEFVAL(true));
+	ClassDB::bind_method(
+		D_METHOD("clear_voxel_grid", "pos", "relevant"), &VoxelTool::clear_voxel_grid, DEFVAL(true));
+	ClassDB::bind_method(
+		D_METHOD("set_voxel_grid_cell", "pos", "res", "cell", "id", "color", "relevant"),
+		&VoxelTool::set_voxel_grid_cell, DEFVAL(-1), DEFVAL(true));
+	ClassDB::bind_method(
+		D_METHOD("set_voxel_grid_cell_color", "pos", "cell", "color", "relevant"),
+		&VoxelTool::set_voxel_grid_cell_color, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("get_voxel_grid", "pos"), &VoxelTool::get_voxel_grid);
 
 	ClassDB::bind_method(
 			D_METHOD("raycast", "origin", "direction", "max_distance", "collision_mask"),

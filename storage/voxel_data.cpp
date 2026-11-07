@@ -1546,7 +1546,7 @@ bool VoxelData::try_set_voxel_grid(
 	return true;
 }
 
-int VoxelData::try_set_voxel_grid_cell(
+int VoxelData::try_set_voxel_grid_cell(// delete later
 		const Vector3i pos,
 		const uint8_t res,
 		const Vector3i cell,

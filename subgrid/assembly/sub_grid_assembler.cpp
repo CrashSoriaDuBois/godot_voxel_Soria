@@ -11,6 +11,8 @@
 #include "../sub_grid_manager.h" // full definition needed to call manager->migrate_...
 #include "core/io/dir_access.h" // add to includes
 
+#include "../../storage/metadata/voxel_grid_metadata.h"
+
 namespace zylann::voxel {
 
 namespace {
@@ -148,10 +150,24 @@ SubGridAssembler::AssembledBody *SubGridAssembler::assemble(
 		return nullptr;
 	}
 
+	_copy_grids_from_terrain(terrain, root);
+
 	// We do this AFTER the full flood-fill (including children) so a failed assembly leaves the terrain untouched.
-	_erase_from_terrain(tool.ptr(), root, lib);
+	_erase_from_terrain(terrain, tool.ptr(), root, lib);
 
 	return root;
+}
+
+void SubGridAssembler::_copy_grids_from_terrain(VoxelLodTerrain *terrain, AssembledBody *body) {
+	for (const KeyValue<Vector3i, uint32_t> &kv : body->world_blocks) {
+		VoxelGridMetadata g;
+		if (terrain->get_storage().try_get_voxel_grid(kv.key, g)) {
+			body->chunks.set_voxel_grid(kv.key - body->local_origin_in_world, g);
+		}
+	}
+	for (AssembledBody *child : body->children) {
+		_copy_grids_from_terrain(terrain, child);
+	}
 }
 
 // ________________________________________________________________
@@ -305,7 +321,7 @@ void SubGridAssembler::flood_fill(
 // Erase assembled blocks from terrain (called only on success)
 
 
-void SubGridAssembler::_erase_from_terrain(VoxelTool *tool, AssembledBody *body, Ref<VoxelBlockyLibraryBase> lib) {
+void SubGridAssembler::_erase_from_terrain(VoxelLodTerrain *terrain,VoxelTool *tool, AssembledBody *body, Ref<VoxelBlockyLibraryBase> lib) {
 
 	for (const KeyValue<Vector3i, uint32_t> &kv : body->world_blocks) {
 		bool relevant = false;
@@ -315,13 +331,14 @@ void SubGridAssembler::_erase_from_terrain(VoxelTool *tool, AssembledBody *body,
 			relevant = baked.has_model(kv.value) && baked.models[kv.value].light_emission > 0;
 		}
 		tool->set_channel(VoxelBuffer::CHANNEL_TYPE);
-		tool->set_voxel(kv.key, 0, relevant);
 
+		tool->set_voxel(kv.key, 0, relevant);
+		terrain->get_storage().clear_voxel_grid(kv.key);
 		tool->set_channel(VoxelBuffer::CHANNEL_DATA6);
 		tool->set_voxel(kv.key, 0, false); // clear stale entity marker too
 	}
 	for (AssembledBody *child : body->children) {
-		_erase_from_terrain(tool, child, lib);
+		_erase_from_terrain(terrain, tool, child, lib);
 	}
 }
 

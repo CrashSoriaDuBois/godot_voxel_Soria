@@ -3,6 +3,7 @@
 #include "storage/voxel_format.h"
 #include "voxel_sub_grid.h"
 #include "sub_grid_manager.h"
+#include "storage/metadata/voxel_grid_metadata.h"
 
 namespace zylann::voxel {
 
@@ -76,7 +77,7 @@ void VoxelToolSubGrid::_post_edit(const Box3i &box, bool p_relevant) {
 	_mark_box_dirty(box);
 }
 
-void VoxelToolSubGrid::_mark_box_dirty(const Box3i &box) {
+void VoxelToolSubGrid::_mark_box_dirty(const Box3i &box, bool relevant) {
 	const int chunk_size_po2 = SubGridChunkMap::CHUNK_SIZE_PO2;
 
 	// Convert voxel box corners to chunk positions (floor division).
@@ -109,6 +110,61 @@ void VoxelToolSubGrid::_mark_box_dirty(const Box3i &box) {
 void VoxelToolSubGrid::_bind_methods() {
 	// No subgrid-specific methods yet beyond what VoxelTool already exposes.
 	// Add here if needed, e.g. a subgrid-local raycast.
+}
+
+bool VoxelToolSubGrid::set_voxel_grid(
+		Vector3i pos,
+		int res,
+		PackedInt32Array cells,
+		PackedInt32Array colors,
+		bool relevant
+) {
+	ERR_FAIL_COND_V(_grid == nullptr, false);
+	VoxelGridMetadata g;
+	if (!grid_from_arrays(res, cells, colors, g)) {
+		return false;
+	}
+	if (!_grid->get_chunk_map_mut().set_voxel_grid(pos, g)) {
+		return false;
+	}
+	_mark_box_dirty(Box3i(pos, Vector3i(1, 1, 1)));
+	return true;
+}
+
+bool VoxelToolSubGrid::clear_voxel_grid(Vector3i pos, bool relevant) {
+	ERR_FAIL_COND_V(_grid == nullptr, false);
+	if (!_grid->get_chunk_map_mut().clear_voxel_grid(pos)) {
+		return false;
+	}
+	_mark_box_dirty(Box3i(pos, Vector3i(1, 1, 1)));
+	return true;
+}
+
+int VoxelToolSubGrid::set_voxel_grid_cell(Vector3i pos, int res, Vector3i cell, int id, int color, bool relevant) {
+	ERR_FAIL_COND_V(_grid == nullptr, -1);
+	const int filled = _grid->get_chunk_map_mut().set_voxel_grid_cell(pos, uint8_t(res), cell, uint16_t(id), color);
+	if (filled >= 0) {
+		_mark_box_dirty(Box3i(pos, Vector3i(1, 1, 1)));
+	}
+	return filled;
+}
+
+bool VoxelToolSubGrid::set_voxel_grid_cell_color(Vector3i pos, Vector3i cell, int color, bool relevant) {
+	ERR_FAIL_COND_V(_grid == nullptr, false);
+	if (!_grid->get_chunk_map_mut().set_voxel_grid_cell_color(pos, cell, uint16_t(color))) {
+		return false;
+	}
+	_mark_box_dirty(Box3i(pos, Vector3i(1, 1, 1)));
+	return true;
+}
+
+Dictionary VoxelToolSubGrid::get_voxel_grid(Vector3i pos) const {
+	ERR_FAIL_COND_V(_grid == nullptr, Dictionary());
+	VoxelGridMetadata g;
+	if (!_grid->get_chunk_map().get_voxel_grid(pos, g)) {
+		return Dictionary();
+	}
+	return grid_to_dictionary(g);
 }
 
 } // namespace zylann::voxel

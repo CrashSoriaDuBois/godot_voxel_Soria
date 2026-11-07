@@ -372,7 +372,11 @@ void VoxelSubGrid::_save_chunk(Vector3i chunk_pos) {
 	// Globalize on main thread, not save thread
 	req.saves_dir = ProjectSettings::get_singleton()->globalize_path(_saves_dir).utf8().get_data();
 	req.chunk_pos = chunk_pos;
-	req.buffer = buf;
+
+	auto snapshot = std::make_shared<VoxelBuffer>(VoxelBuffer::ALLOCATOR_POOL);
+	buf->copy_to(*snapshot, true); // true = include metadata
+	req.buffer = snapshot;
+
 	_manager->push_save(req);
 }
 
@@ -541,6 +545,14 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 	Transform3D parent_world_t = parent_sg->get_global_transform();
 	Transform3D to_parent = parent_world_t.affine_inverse() * my_world_t;
 
+	const Basis pb = to_parent.basis.orthonormalized();
+	auto snap_col = [](Vector3 c) {
+		c = c.normalized();
+		return Vector3i((int)Math::round(c.x), (int)Math::round(c.y), (int)Math::round(c.z));
+	};
+	const Vector3i pix = snap_col(pb.get_column(0)), piy = snap_col(pb.get_column(1)), piz = snap_col(pb.get_column(2));
+	const int PM[3][3] = { { pix.x, piy.x, piz.x }, { pix.y, piy.y, piz.y }, { pix.z, piy.z, piz.z } };
+
 	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
 
 	// Track which parent chunks get written so we can mark them dirty
@@ -567,6 +579,13 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 					Vector3i parent_i = Vector3i(
 							Math::floor(parent_center.x), Math::floor(parent_center.y), Math::floor(parent_center.z)
 					);
+
+					const VoxelMetadata *gm = buf->get_voxel_metadata(Vector3i(x, y, z));
+					if (gm != nullptr && gm->get_type() == VoxelGridMetadata::TYPE_INDEX) {
+						VoxelGridMetadata rotated_grid;
+						static_cast<const VoxelGridMetadata &>(gm->get_custom()).rotate_into(PM, rotated_grid);
+						parent_sg->get_chunk_map_mut().set_voxel_grid(parent_i, rotated_grid);
+					}
 
 					// Moved up from below the channel loop, needed as dst_chunk_pos for migration.
 					Vector3i parent_chunk = Vector3i(
@@ -1087,6 +1106,20 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(
 					rotated.y = M[1][0] * local_p.x + M[1][1] * local_p.y + M[1][2] * local_p.z;
 					rotated.z = M[2][0] * local_p.x + M[2][1] * local_p.y + M[2][2] * local_p.z;
 					Vector3i target_pos = origin_i + rotated;
+
+					const VoxelMetadata *gm = buf->get_voxel_metadata(Vector3i(x, y, z));
+					if (gm != nullptr && gm->get_type() == VoxelGridMetadata::TYPE_INDEX) {
+						VoxelGridMetadata rotated_grid;
+						static_cast<const VoxelGridMetadata &>(gm->get_custom()).rotate_into(M, rotated_grid);
+						const unsigned int n = VoxelGridMetadata::cell_count(rotated_grid.res);
+						terrain->get_storage().try_set_voxel_grid(
+								target_pos,
+								rotated_grid.res,
+								Span<const uint16_t>(rotated_grid.cells, n),
+								rotated_grid.has_color ? Span<const uint16_t>(rotated_grid.colors, n)
+													   : Span<const uint16_t>()
+						);
+					}
 
 					for (int c = 0; c < SubGridChunkMap::SUBGRID_CHANNEL_COUNT; c++) {
 						const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
