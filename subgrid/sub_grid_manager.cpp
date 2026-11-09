@@ -506,10 +506,9 @@ void SubGridManager::_save_thread_func() {
 		for (auto &req : batch) {
 			struct Decrement {
 				std::atomic<int> &counter;
-				bool skip;
-				~Decrement() { if (!skip) --counter; }
+				~Decrement() { --counter; }
 			};
-			Decrement dec{ d.items_in_flight, req.close_stream };
+			Decrement dec{ d.items_in_flight };
 
 			String uuid = String(req.uuid.c_str());
 			if (req.close_stream) {
@@ -2167,22 +2166,18 @@ void SubGridManager::save_all() {
 	Vector<SubGridMetadata> metas;
 
 	for (auto &[uuid, state] : _ships) {
-		if (state.node == nullptr)
+		if (state.node == nullptr) {
 			continue;
+		}
 
-		print_line(
-				String("save_all: saving uuid=") + uuid + " pos=" + String(state.node->get_metadata().world_position) +
-				" rot=(" + rtos(state.node->get_metadata().world_rotation.x) + "," +
-				rtos(state.node->get_metadata().world_rotation.y) + "," +
-				rtos(state.node->get_metadata().world_rotation.z) + "," +
-				rtos(state.node->get_metadata().world_rotation.w) + ")" +
-				" pivot=" + String(state.node->_promoted_pivot_world) +
-				" is_terrain_anchored=" + (state.node->get_metadata().is_terrain_anchored ? "true" : "false") +
-				" is_root=" + (state.node->get_metadata().is_root ? "true" : "false")
-		);
+		// 1. Push every dirty chunk, and register new chunk positions in the metadata (must be before step 3).
+		if (state.load_state == LOADED) {
+			state.node->flush_dirty_chunks();
+		}
 
+		// 2. Refresh the saved transform.
 		if (state.body_rid.is_valid()) {
-			Transform3D t = PhysicsServer3D::get_singleton()->body_get_state(
+			const Transform3D t = PhysicsServer3D::get_singleton()->body_get_state(
 					state.body_rid, PhysicsServer3D::BODY_STATE_TRANSFORM
 			);
 			state.node->get_metadata_mut().world_position = t.origin;
@@ -2191,10 +2186,12 @@ void SubGridManager::save_all() {
 			state.node->get_metadata_mut().world_position = state.node->get_global_position();
 			state.node->get_metadata_mut().world_rotation = state.node->get_global_basis().get_rotation_quaternion();
 		}
+
+		// 3. Only now copy the metadata into the index.
 		metas.push_back(state.node->get_metadata());
 	}
-	// Wait for chunk saves to complete before writing index
-	// (save thread is still running at this point)
+
+	// Chunk saves must be on disk before the index that references them is written.
 	wait_save_queue();
 	_save_metadata_index(metas);
 }
