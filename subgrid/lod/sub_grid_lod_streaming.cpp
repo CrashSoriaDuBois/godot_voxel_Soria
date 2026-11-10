@@ -259,11 +259,13 @@ void update_mesh_block_load(
 	}
 }
 
+// Only viewers that want visuals take part in ship LOD/mesh streaming. Data-only viewers (remote avatars)
+// still keep ships loaded in RAM through SubGridManager::_process_streaming, but never get a mesh box.
 bool get_engine_viewer(ViewerID id, VoxelEngine::Viewer &out_viewer) {
 	bool found = false;
 	VoxelEngine::Viewer result;
 	VoxelEngine::get_singleton().for_each_viewer([&](ViewerID vid, const VoxelEngine::Viewer &viewer) {
-		if (vid == id) {
+		if (vid == id && viewer.require_visuals) {
 			result = viewer;
 			found = true;
 		}
@@ -317,6 +319,9 @@ void pair_ship_viewers(SubGridManager::ShipState &state, Span<const float> lod_d
 
 	// --- Pass 2: new viewers entering range. MIRROR of the "New viewer" branch.
 	VoxelEngine::get_singleton().for_each_viewer([&](ViewerID id, const VoxelEngine::Viewer &viewer) {
+		if (!viewer.require_visuals) {
+			return;
+		}
 		const float dist = ship_world_pos.distance_to(viewer.world_position);
 		if (dist >= pairing_distance) {
 			return;
