@@ -65,6 +65,10 @@ inline Span<const Vector2> to_span(const PackedVector2Array &a) {
 	return Span<const Vector2>(a.ptr(), a.size());
 }
 
+inline Span<Vector2> to_span(PackedVector2Array &a) {
+	return Span<Vector2>(a.ptrw(), a.size());
+}
+
 inline Span<const Vector3> to_span(const PackedVector3Array &a) {
 	return Span<const Vector3>(a.ptr(), a.size());
 }
@@ -83,6 +87,10 @@ inline Span<const uint8_t> to_span(const PackedByteArray &a) {
 
 inline Span<String> to_span(PackedStringArray &a) {
 	return Span<String>(a.ptrw(), a.size());
+}
+
+inline Span<const String> to_span_const(const PackedStringArray &a) {
+	return Span<const String>(a.ptr(), a.size());
 }
 
 } // namespace zylann

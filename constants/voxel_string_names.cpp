@@ -127,6 +127,21 @@ VoxelStringNames::VoxelStringNames() {
 	noise_dimension = StringName("noise_dimension");
 	noise_on_scale = StringName("noise_on_scale");
 
+	atlas = StringName("atlas");
+	mode = StringName("mode");
+	ToolSelect = StringName("ToolSelect");
+	RegionEdit = StringName("RegionEdit");
+	FlatButton = StringName("FlatButton");
+	item_selected = StringName("item_selected");
+	pressed = StringName("pressed");
+	draw = StringName("draw");
+	gui_input = StringName("gui_input");
+	id_pressed = StringName("id_pressed");
+	item_clicked = StringName("item_clicked");
+	confirmed = StringName("confirmed");
+	toggled = StringName("toggled");
+	TerrainMatchCornersAndSides = StringName("TerrainMatchCornersAndSides");
+
 	add_child = StringName("add_child");
 }
 

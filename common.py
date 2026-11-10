@@ -161,13 +161,18 @@ def get_sources(env, is_editor_build):
             "editor/graph/*.cpp",
             "editor/blocky_library/*.cpp",
             "editor/blocky_library/types/*.cpp",
+            "editor/blocky_texture_atlas/*.cpp",
             "editor/multipass/*.cpp",
 
-            "util/godot/debug_renderer.cpp",
+            "util/godot/debug_renderer.cpp", # Not editor-only, but only used in editor for now
             "util/godot/check_ref_ownership.cpp",
+            "util/godot/pan_zoom_container.cpp", # Not editor-only, but only used in editor for now
+
+            "util/godot/inspector/*.cpp",
 
             "util/godot/classes/editor_plugin.cpp",
             "util/godot/classes/editor_file_dialog.cpp",
+            "util/godot/classes/editor_help.cpp",
             "util/godot/classes/editor_import_plugin.cpp",
             "util/godot/classes/editor_inspector_plugin.cpp",
             "util/godot/classes/editor_property.cpp",

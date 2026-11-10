@@ -34,6 +34,18 @@ static const uint16_t AIR_ID = 0;
 static const uint8_t NULL_FLUID_INDEX = 255;
 static constexpr uint32_t MAX_SURFACES = 2;
 
+enum TileType : uint8_t {
+	TILE_SINGLE,
+	// Tiles are laid out as a 12x4 sheet with 47 cases of the blob tileset
+	// TODO Maybe allow them to be packed in any fitting way instead?
+	TILE_BLOB9,
+	// Tiles are picked at random among the group of tiles. Optionally, they are randomly rotated.
+	TILE_RANDOM,
+	// Tiles are extended into a repeating group of tiles.
+	TILE_EXTENDED,
+	TILE_MAX,
+};
+
 // Plain data strictly used by the mesher.
 // It becomes distinct because it's going to be used in a multithread environment,
 // while the configuration that produced the data can be changed by the user at any time.
@@ -80,6 +92,7 @@ struct BakedModel {
 		FixedArray<Surface, MAX_SURFACES> surfaces;
 		// Model sides: they are separated because this way we can occlude them easily.
 		FixedArray<FixedArray<SideSurface, MAX_SURFACES>, Cube::SIDE_COUNT> sides_surfaces;
+		std::array<uint16_t, Cube::SIDE_COUNT> side_tiles;
 		unsigned int surface_count = 0;
 		// Cached information to check this case early.
 		// Bits are indexed with the Cube::Side enum.
@@ -104,6 +117,9 @@ struct BakedModel {
 		// TODO ^ Make it UniquePtr? That array takes space for what is essentially a niche feature
 
 		void clear() {
+			for (uint16_t &t : side_tiles) {
+				t = std::numeric_limits<uint16_t>::max();
+			}
 			for (Surface &surface : surfaces) {
 				surface.clear();
 			}
@@ -177,15 +193,23 @@ struct BakedLibrary {
 	// Lots of data can get moved but it's only on load.
 	StdVector<BakedModel> models;
 	StdVector<BakedFluid> fluids;
-
-	// struct VariantInfo {
-	// 	uint16_t type_index;
-	// 	FixedArray<uint8_t, 4> attributes;
-	// };
-
-	// StdVector<VariantInfo> variant_infos;
+	// uint8_t default_tile_resolution = 16;
 
 	unsigned int indexed_materials_count = 0;
+
+	struct Tile {
+		TileType type;
+		uint8_t atlas_id;
+		uint8_t group_size_x;
+		uint8_t group_size_y;
+		// For blob tiles, when true, if the neighbor voxel exists but its face is covered, it will still be considered
+		// connecting.
+		bool connect_to_covered = false;
+		Vector2f atlas_uv_origin;
+		// Size of 1 tile in the atlas in texture normalized coordinates
+		Vector2f atlas_uv_step;
+	};
+	StdVector<Tile> tiles;
 
 	inline bool has_model(uint32_t i) const {
 		return i < models.size();
@@ -199,6 +223,51 @@ struct BakedLibrary {
 		return side_pattern_culling.get(pattern_a + pattern_b * side_pattern_count);
 	}
 };
+
+inline bool is_face_visible_regardless_of_shape(const BakedModel &vt, const BakedModel &other_vt) {
+	// TODO Maybe we could get rid of `empty` here and instead set `culls_neighbors` to false during baking
+	return other_vt.empty || (other_vt.transparency_index > vt.transparency_index) || !other_vt.culls_neighbors;
+}
+
+// Does not account for other factors
+inline bool is_face_visible_according_to_shape(
+		const BakedLibrary &lib,
+		const BakedModel &vt,
+		const BakedModel &other_vt,
+		const int side
+) {
+	const unsigned int ai = vt.model.side_pattern_indices[side];
+	const unsigned int bi = other_vt.model.side_pattern_indices[Cube::g_opposite_side[side]];
+	// Patterns are not the same, and B does not occlude A
+	return (ai != bi) && !lib.get_side_pattern_occlusion(bi, ai);
+}
+
+// Assuming `current_model` has geometry on this side
+inline bool is_face_visible(
+		const BakedLibrary &lib,
+		const BakedModel &current_model,
+		const BakedModel &neighbor_model,
+		const Cube::Side side
+) {
+	if (is_face_visible_regardless_of_shape(current_model, neighbor_model)) {
+		return true;
+	}
+	return is_face_visible_according_to_shape(lib, current_model, neighbor_model, side);
+}
+
+// Assuming `current_model` has geometry on this side
+inline bool is_face_visible(
+		const BakedLibrary &lib,
+		const BakedModel &current_model,
+		const uint32_t neighbor_model_id,
+		const Cube::Side side
+) {
+	if (neighbor_model_id >= lib.models.size()) {
+		return true;
+	}
+	const BakedModel &neighbor_model = lib.models[neighbor_model_id];
+	return is_face_visible(lib, current_model, neighbor_model, side);
+}
 
 } // namespace zylann::voxel::blocky
 

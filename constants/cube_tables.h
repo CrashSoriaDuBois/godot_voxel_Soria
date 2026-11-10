@@ -1,6 +1,7 @@
 #ifndef CUBE_TABLES_H
 #define CUBE_TABLES_H
 
+#include "../util/math/vector2f.h"
 #include "../util/math/vector3f.h"
 #include "../util/math/vector3i.h"
 
@@ -71,6 +72,8 @@ enum Corner {
 
 extern const Vector3f g_corner_position[CORNER_COUNT];
 
+extern const Vector2f g_side_uvs[SIDE_COUNT][4];
+
 extern const int g_side_quad_triangles[SIDE_COUNT][6];
 
 // extern const unsigned int g_side_coord[SIDE_COUNT];
@@ -98,6 +101,10 @@ const unsigned int MOORE_AREA_3D_CENTRAL_INDEX = 13;
 extern const Vector3i g_ordered_moore_area_3d[MOORE_AREA_3D_COUNT];
 
 Cube::Side dir_to_side(Vector3i d);
+
+inline uint32_t side_to_axis(uint32_t side) {
+	return side >> 1;
+}
 
 } // namespace zylann::voxel::Cube
 

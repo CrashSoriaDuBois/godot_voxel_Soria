@@ -115,6 +115,21 @@ public:
 	StringName noise_dimension;
 	StringName noise_on_scale;
 
+	StringName atlas;
+	StringName mode;
+	StringName ToolSelect;
+	StringName RegionEdit;
+	StringName FlatButton;
+	StringName item_selected;
+	StringName pressed;
+	StringName draw;
+	StringName gui_input;
+	StringName id_pressed;
+	StringName item_clicked;
+	StringName confirmed;
+	StringName toggled;
+	StringName TerrainMatchCornersAndSides;
+
 	StringName add_child;
 };
 

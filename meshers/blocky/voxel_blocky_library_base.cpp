@@ -7,7 +7,8 @@
 #include "../../util/profiling.h"
 // #include "../../util/string/format.h" // DEBUG
 #include "voxel_blocky_model.h"
-#include "voxel_mesher_blocky.h"
+// #include "voxel_mesher_blocky.h"
+#include "blocky_baked_library.h"
 #include <bitset>
 
 namespace zylann::voxel {
@@ -465,14 +466,14 @@ void generate_cutout_side_surface(
 		cut_tangents.resize(cut_vertices_2d.size() * 4);
 	}
 	// Recover vertex attributes by interpolating over the original geometry
-	interpolate_attributes_assume_no_seams( //
-			to_span(vertices_2d), //
-			to_span(side_surface.indices), //
-			to_span(side_surface.uvs), //
-			to_span(side_surface.tangents), //
-			to_span(cut_vertices_2d), //
-			to_span(cut_uvs), //
-			to_span(cut_tangents) //
+	interpolate_attributes_assume_no_seams(
+			to_span(vertices_2d),
+			to_span(side_surface.indices),
+			to_span(side_surface.uvs),
+			to_span(side_surface.tangents),
+			to_span(cut_vertices_2d),
+			to_span(cut_uvs),
+			to_span(cut_tangents)
 	);
 
 	if (side == Cube::SIDE_NEGATIVE_X || side == Cube::SIDE_NEGATIVE_Y || side == Cube::SIDE_POSITIVE_Z) {
@@ -505,7 +506,7 @@ void generate_model_cutout_sides(BakedModel &model_data, const uint16_t model_id
 
 		for (uint16_t side = 0; side < Cube::SIDE_COUNT; ++side) {
 			// Test if the face is totally occluded first
-			if (!is_face_visible(lib, model_data, other_model_id, side)) {
+			if (!is_face_visible(lib, model_data, other_model_id, static_cast<Cube::Side>(side))) {
 				continue;
 			}
 			if (is_face_visible_regardless_of_shape(model_data, other_model_data)) {
