@@ -584,8 +584,50 @@ void generate_mesh(
 							} break;
 
 							case TILE_EXTENDED: {
-								ltpos.x = (block_world_origin.x + x) % tile.group_size_x;
-								ltpos.y = (block_world_origin.y + y) % tile.group_size_y;
+								const Vector3i world_pos = block_world_origin + Vector3i(x, y, z);
+
+								int u = 0;
+								int v = 0;
+
+								switch (side) {
+									case Cube::SIDE_LEFT: // +X
+										u = -world_pos.z;
+										v = -world_pos.y;
+										break;
+
+									case Cube::SIDE_RIGHT: // -X
+										u = world_pos.z;
+										v = -world_pos.y;
+										break;
+
+									case Cube::SIDE_TOP: // +Y
+										u = world_pos.x;
+										v = world_pos.z;
+										break;
+
+									case Cube::SIDE_BOTTOM: // -Y
+										u = world_pos.x;
+										v = -world_pos.z;
+										break;
+
+									case Cube::SIDE_BACK: // -Z
+										u = -world_pos.x;
+										v = -world_pos.y;
+										break;
+
+									case Cube::SIDE_FRONT: // +Z
+										u = world_pos.x;
+										v = -world_pos.y;
+										break;
+								}
+
+								const auto positive_mod = [](int value, int modulus) {
+									const int r = value % modulus;
+									return r < 0 ? r + modulus : r;
+								};
+
+								ltpos.x = positive_mod(u, tile.group_size_x);
+								ltpos.y = positive_mod(v, tile.group_size_y);
 							} break;
 
 							default:
