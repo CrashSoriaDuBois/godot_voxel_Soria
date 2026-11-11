@@ -575,15 +575,17 @@ void generate_mesh(
 								uint32_t h = zylann::hash_djb2_one_32(x);
 								h = zylann::hash_djb2_one_32(y, h);
 								h = zylann::hash_djb2_one_32(z, h);
-								ltpos.x = h % tile.group_size_x;
-								ltpos.y = h / tile.group_size_y;
+								const uint32_t index = h % (tile.group_size_x * tile.group_size_y);
+
+								ltpos.x = index % tile.group_size_x;
+								ltpos.y = index / tile.group_size_x;
 								// TODO Random rotation? Not sure if I want to support this in the end.
 								// That would also only work well with square tiles.
 							} break;
 
 							case TILE_EXTENDED: {
 								ltpos.x = (block_world_origin.x + x) % tile.group_size_x;
-								ltpos.y = (block_world_origin.y + y) / tile.group_size_y;
+								ltpos.y = (block_world_origin.y + y) % tile.group_size_y;
 							} break;
 
 							default:
