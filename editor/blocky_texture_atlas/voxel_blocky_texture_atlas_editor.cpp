@@ -277,7 +277,7 @@ void VoxelBlockyTextureAtlasEditor::set_godot_editor_interface(EditorInterface *
 
 	_godot_editor_interface = editor_interface;
 
-	EditorFileSystem *efs = _godot_editor_interface->get_resource_file_system();
+	EditorFileSystem *efs = _godot_editor_interface->get_resource_filesystem();
 	efs->connect("resources_reimported", callable_mp(this, &VoxelBlockyTextureAtlasEditor::on_resources_reimported));
 }
 
@@ -1282,7 +1282,7 @@ void VoxelBlockyTextureAtlasEditor::on_blob9_gen_apply_button_pressed() {
 	PackedStringArray to_reimport;
 	// Note, `res://` paths are required here, otherwise the texture won't update properly
 	to_reimport.push_back(res_path);
-	EditorFileSystem *efs = zylann::godot::EditorInterfaceShims::get_resource_file_system(*_godot_editor_interface);
+	EditorFileSystem *efs = zylann::godot::EditorInterfaceShims::get_resource_filesystem(*_godot_editor_interface);
 	ZN_ASSERT_RETURN(efs != nullptr);
 	efs->reimport_files(to_reimport);
 

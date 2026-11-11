@@ -18,11 +18,11 @@ using namespace godot;
 namespace zylann::godot {
 namespace EditorInterfaceShims {
 
-inline EditorFileSystem *get_resource_file_system(EditorInterface &self) {
+inline EditorFileSystem *get_resource_filesystem(EditorInterface &self) {
 #if defined(ZN_GODOT)
-	return self.get_resource_file_system();
+    return self.get_resource_filesystem();
 #elif defined(ZN_GODOT_EXTENSION)
-	return self.get_resource_filesystem();
+    return self.get_resource_filesystem();
 #endif
 }
 

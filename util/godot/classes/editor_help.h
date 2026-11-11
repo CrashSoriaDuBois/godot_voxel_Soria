@@ -2,7 +2,7 @@
 #define ZN_GODOT_EDITOR_HELP_H
 
 #if defined(ZN_GODOT)
-#include "editor/editor_help.h"
+#include <editor/doc/editor_help.h>
 #elif defined(ZN_GODOT_EXTENSION)
 #include "../core/string.h"
 using namespace godot;
