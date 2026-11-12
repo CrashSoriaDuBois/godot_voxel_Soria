@@ -29,7 +29,7 @@ namespace zylann::voxel {
 // 	return std::string_view();
 // }
 
-const char *VoxelBlockyTextureAtlas::TILE_TYPE_HINT_STRING = "Single,Blob9,Random,Extended";
+const char *VoxelBlockyTextureAtlas::TILE_TYPE_HINT_STRING = "Single,Blob9,Random,Extended,Blob9Random";
 
 Vector2i VoxelBlockyTextureAtlas::get_default_tile_resolution() const {
 	return _default_tile_resolution;

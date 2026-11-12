@@ -571,6 +571,52 @@ void generate_mesh(
 								ltpos.y = case_index / BLOB9_DEFAULT_LAYOUT_SIZE_X;
 							} break;
 
+							case TILE_BLOB9_RANDOM: {
+								const Vector3i tile_jump = tile_jumps_per_side[side];
+
+								const uint32_t connection_mask = fetch_connection_mask(
+										type_buffer,
+										voxel,
+										voxel_id,
+										voxel_index,
+										tile_jump,
+										static_cast<Cube::Side>(side),
+										library,
+										tile.connect_to_covered
+								);
+
+								const uint32_t case_index = get_case_index_from_connection_mask(connection_mask);
+
+								const Vector3i world_pos = block_world_origin + Vector3i(x, y, z);
+
+								uint32_t h = zylann::hash_djb2_one_32(static_cast<uint32_t>(world_pos.x));
+								h = zylann::hash_djb2_one_32(static_cast<uint32_t>(world_pos.y), h);
+								h = zylann::hash_djb2_one_32(static_cast<uint32_t>(world_pos.z), h);
+
+								// Avalanche the hash so its low bits don't produce a checkerboard.
+								h ^= h >> 16;
+								h *= 0x85ebca6b;
+								h ^= h >> 13;
+								h *= 0xc2b2ae35;
+								h ^= h >> 16;
+
+								uint32_t atlas_index;
+
+								if (case_index == 26) {
+									// Four plain variants.
+									static constexpr uint8_t PLAIN_VARIANTS[4] = { 26, 47, 74, 95 };
+
+									atlas_index = PLAIN_VARIANTS[h % 4];
+
+								} else {
+									// Two variants for the other Blob9 configurations.
+									atlas_index = case_index + (h % 2) * BLOB9_RANDOM_HALF_TILE_COUNT;
+								}
+
+								ltpos.x = atlas_index % BLOB9_DEFAULT_LAYOUT_SIZE_X;
+								ltpos.y = atlas_index / BLOB9_DEFAULT_LAYOUT_SIZE_X;
+							} break;
+
 							case TILE_RANDOM: {
 								uint32_t h = zylann::hash_djb2_one_32(x);
 								h = zylann::hash_djb2_one_32(y, h);

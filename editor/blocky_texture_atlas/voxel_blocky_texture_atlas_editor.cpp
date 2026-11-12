@@ -43,6 +43,7 @@ enum ContextMenuID {
 	MENU_CREATE_BLOB9_TILE,
 	MENU_CREATE_RANDOM_TILE,
 	MENU_CREATE_EXTENDED_TILE,
+	MENU_CREATE_BLOB9_RANDOM_TILE,
 	MENU_REMOVE_TILE,
 	MENU_RENAME_TILE,
 	MENU_GENERATE_FROM_COMPACT5
@@ -228,6 +229,7 @@ VoxelBlockyTextureAtlasEditor::VoxelBlockyTextureAtlasEditor() {
 		_create_context_menu->add_item("Create Blob9 Tile", MENU_CREATE_BLOB9_TILE);
 		_create_context_menu->add_item("Create Random Tile", MENU_CREATE_RANDOM_TILE);
 		_create_context_menu->add_item("Create Extended Tile", MENU_CREATE_EXTENDED_TILE);
+		_create_context_menu->add_item("Create Blob9 Random Tile", MENU_CREATE_BLOB9_RANDOM_TILE);
 		_create_context_menu->connect(
 				sn.id_pressed, callable_mp(this, &VoxelBlockyTextureAtlasEditor::on_context_menu_id_pressed)
 		);
@@ -518,7 +520,7 @@ void VoxelBlockyTextureAtlasEditor::on_texture_rect_draw() {
 			if (tile.is_tombstone()) {
 				continue;
 			}
-			if (tile.type == blocky::TILE_BLOB9) {
+			if (tile.type == blocky::TILE_BLOB9 || tile.type == blocky::TILE_BLOB9_RANDOM) {
 				const Vector2i layout_origin(tile.position_x, tile.position_y);
 
 				// This assumes the default layout!
@@ -563,7 +565,7 @@ void VoxelBlockyTextureAtlasEditor::on_texture_rect_draw() {
 		);
 
 		if (_connectivity_button->is_pressed() || _blob9_gen.container->is_visible()) {
-			if (tile.type == blocky::TILE_BLOB9) {
+			if (tile.type == blocky::TILE_BLOB9 || tile.type == blocky::TILE_BLOB9_RANDOM) {
 				const Vector2i layout_origin(tile.position_x, tile.position_y);
 
 				const std::array<uint8_t, blocky::COMPACT5_TILE_COUNT> compact5_ref_cases =
@@ -791,6 +793,21 @@ void VoxelBlockyTextureAtlasEditor::on_context_menu_id_pressed(int id) {
 			create_tile(_atlas.ptr(), _undo_redo, tile);
 			_undo_redo->commit_action();
 			// on_atlas_changed();
+		} break;
+
+		case MENU_CREATE_BLOB9_RANDOM_TILE: {
+			ZN_ASSERT_RETURN(is_tile_rect_valid(_tile_selection_rect));
+
+			VoxelBlockyTextureAtlas::Tile tile;
+			tile.type = blocky::TILE_BLOB9_RANDOM;
+			tile.position_x = _tile_selection_rect.position.x * ts.x;
+			tile.position_y = _tile_selection_rect.position.y * ts.y;
+			tile.group_size_x = blocky::BLOB9_DEFAULT_LAYOUT_SIZE_X;
+			tile.group_size_y = blocky::BLOB9_RANDOM_LAYOUT_SIZE_Y;
+
+			_undo_redo->create_action("Create Blob9 Random Tile");
+			create_tile(_atlas.ptr(), _undo_redo, tile);
+			_undo_redo->commit_action();
 		} break;
 
 		case MENU_RENAME_TILE:

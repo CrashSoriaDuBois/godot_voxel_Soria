@@ -15,6 +15,10 @@ static constexpr unsigned int BLOB9_TILE_COUNT = 47;
 static constexpr unsigned int BLOB9_DEFAULT_LAYOUT_SIZE_X = 12;
 static constexpr unsigned int BLOB9_DEFAULT_LAYOUT_SIZE_Y = 4;
 
+static constexpr unsigned int BLOB9_RANDOM_LAYOUT_SIZE_Y = BLOB9_DEFAULT_LAYOUT_SIZE_Y * 2;
+static constexpr unsigned int BLOB9_RANDOM_HALF_TILE_COUNT = BLOB9_DEFAULT_LAYOUT_SIZE_X * BLOB9_DEFAULT_LAYOUT_SIZE_Y;
+static constexpr unsigned int BLOB9_RANDOM_UNUSED_TILE_INDEX = BLOB9_TILE_COUNT;
+
 enum Compact5Index {
 	COMPACT5_POINT = 0,
 	COMPACT5_HORIZONTAL = 1,

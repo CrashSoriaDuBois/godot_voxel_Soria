@@ -43,6 +43,7 @@ enum TileType : uint8_t {
 	TILE_RANDOM,
 	// Tiles are extended into a repeating group of tiles.
 	TILE_EXTENDED,
+	TILE_BLOB9_RANDOM,
 	TILE_MAX,
 };
 
