@@ -74,18 +74,93 @@ inline bool is_usable_cell(const BakedLibrary &lib, uint16_t id) {
 	return id != AIR_ID && lib.has_model(id) && lib.models[id].fluid_index == NULL_FLUID_INDEX;
 }
 
+inline std::array<Vector3i, 6> make_tile_jumps(const Vector3i jump) {
+	std::array<Vector3i, 6> t;
+	// Same table as in generate_mesh, for any index layout (jump = steps along x, y, z)
+	t[Cube::SIDE_NEGATIVE_X] = Vector3i(jump.z, -jump.y, -jump.x);
+	t[Cube::SIDE_POSITIVE_X] = Vector3i(-jump.z, -jump.y, jump.x);
+	t[Cube::SIDE_NEGATIVE_Y] = Vector3i(jump.x, -jump.z, -jump.y);
+	t[Cube::SIDE_POSITIVE_Y] = Vector3i(jump.x, jump.z, jump.y);
+	t[Cube::SIDE_NEGATIVE_Z] = Vector3i(-jump.x, -jump.y, -jump.z);
+	t[Cube::SIDE_POSITIVE_Z] = Vector3i(jump.x, -jump.y, jump.z);
+	return t;
+}
+
+// Fills (res+2)^3 ids: the grid's own cells plus a one-cell border taken from the neighboring voxels.
+// Layout matches the mesher: y fastest, then x, then z.
+template <typename Type_T>
+void build_grid_neighborhood(
+		uint16_t *out,
+		const GridContext &grids,
+		const VoxelGridMetadata &grid,
+		Span<const Type_T> type_buffer,
+		const int voxel_index,
+		const int row_size,
+		const int deck_size
+) {
+	const int res = grid.res;
+	const int S = res + 2;
+	for (int cz = -1; cz <= res; ++cz) {
+		for (int cx = -1; cx <= res; ++cx) {
+			for (int cy = -1; cy <= res; ++cy) {
+				const int ox = cx < 0 ? -1 : (cx >= res ? 1 : 0);
+				const int oy = cy < 0 ? -1 : (cy >= res ? 1 : 0);
+				const int oz = cz < 0 ? -1 : (cz >= res ? 1 : 0);
+				uint16_t id;
+				if (ox == 0 && oy == 0 && oz == 0) {
+					id = grid.cells[grid.index(cx, cy, cz)];
+				} else {
+					const int nidx = voxel_index + ox * row_size + oy + oz * deck_size;
+					const uint16_t slot = grids.slot_by_index[nidx];
+					if (slot != 0) {
+						const VoxelGridMetadata &ng = *grids.entries[slot - 1];
+						if (ng.res == res) {
+							const int lx = ox < 0 ? res - 1 : (ox > 0 ? 0 : cx);
+							const int ly = oy < 0 ? res - 1 : (oy > 0 ? 0 : cy);
+							const int lz = oz < 0 ? res - 1 : (oz > 0 ? 0 : cz);
+							id = ng.cells[ng.index(lx, ly, lz)];
+						} else {
+							id = 0;
+						}
+					} else {
+						id = static_cast<uint16_t>(type_buffer[nidx]);
+					}
+				}
+				out[(cy + 1) + (cx + 1) * S + (cz + 1) * S * S] = id;
+			}
+		}
+	}
+}
+
+template <typename Type_T>
 void emit_grid_voxel(
 		StdVector<VoxelMesherBlocky::Arrays> &out_arrays_per_material,
 		StdVector<int> &index_offsets,
 		VoxelMesher::Output::CollisionSurface *collision_surface,
 		int &collision_surface_index_offset,
 		const BakedLibrary &library,
+		const GridContext &grids,
 		const VoxelGridMetadata &grid,
-		const Vector3f voxel_pos,
+		Span<const Type_T> type_buffer,
+		const int voxel_index,
+		const int row_size,
+		const int deck_size,
+		const Vector3i padded_pos, // x, y, z in the padded buffer
+		const Vector3i block_world_origin,
 		const Color tint
 ) {
 	const int res = grid.res;
 	const float inv = 1.f / float(res);
+	const Vector3f voxel_pos(padded_pos.x - 1, padded_pos.y - 1, padded_pos.z - 1);
+
+	uint16_t hood[6 * 6 * 6];
+	bool hood_built = false;
+	const int S = res + 2;
+
+	const auto positive_mod = [](int value, int modulus) {
+		const int r = value % modulus;
+		return r < 0 ? r + modulus : r;
+	};
 
 	for (int cz = 0; cz < res; ++cz) {
 		for (int cx = 0; cx < res; ++cx) {
@@ -103,11 +178,14 @@ void emit_grid_voxel(
 				}
 				const Vector3f cell_pos = voxel_pos + Vector3f(cx, cy, cz) * inv;
 
+				// Integer cell coordinates, used by random and extended tiles
+				const Vector3i cell_world = (block_world_origin + padded_pos) * res + Vector3i(cx, cy, cz);
+				const Vector3i cell_local = padded_pos * res + Vector3i(cx, cy, cz);
+
 				for (unsigned int side = 0; side < Cube::SIDE_COUNT; ++side) {
 					if ((model.empty_sides_mask & (1 << side)) != 0) {
 						continue;
 					}
-					// Cull against the neighbor cell inside the same grid.
 					const Vector3i n = Cube::g_side_normals[side];
 					const int nx = cx + n.x, ny = cy + n.y, nz = cz + n.z;
 					if (nx >= 0 && ny >= 0 && nz >= 0 && nx < res && ny < res && nz < res) {
@@ -117,9 +195,130 @@ void emit_grid_voxel(
 						}
 					}
 
-					for (unsigned int s = 0; s < model.surface_count; ++s) {
+					const FixedArray<BakedModel::SideSurface, MAX_SURFACES> *side_surfaces =
+							&model.sides_surfaces[side];
+					unsigned int surface_count = model.surface_count;
+
+					const uint16_t tile_index = model.side_tiles[side];
+					if (tile_index != std::numeric_limits<uint16_t>::max()) {
+						const BakedLibrary::Tile &tile = library.tiles[tile_index];
+						Vector2i ltpos;
+						bool has_tile = true;
+
+						switch (tile.type) {
+							case TILE_BLOB9:
+							case TILE_BLOB9_RANDOM: {
+								if (!hood_built) {
+									build_grid_neighborhood<Type_T>(
+											hood, grids, grid, type_buffer, voxel_index, row_size, deck_size
+									);
+									hood_built = true;
+								}
+								const std::array<Vector3i, 6> tj = make_tile_jumps(Vector3i(S, 1, S * S));
+								const uint32_t connection_mask = fetch_connection_mask(
+										Span<const uint16_t>(hood, S * S * S),
+										bm,
+										id,
+										(cy + 1) + (cx + 1) * S + (cz + 1) * S * S,
+										tj[side],
+										static_cast<Cube::Side>(side),
+										library,
+										tile.connect_to_covered
+								);
+								const uint32_t case_index = get_case_index_from_connection_mask(connection_mask);
+
+								if (tile.type == TILE_BLOB9) {
+									ltpos.x = case_index % BLOB9_DEFAULT_LAYOUT_SIZE_X;
+									ltpos.y = case_index / BLOB9_DEFAULT_LAYOUT_SIZE_X;
+								} else {
+									uint32_t h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_world.x));
+									h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_world.y), h);
+									h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_world.z), h);
+									h ^= h >> 16;
+									h *= 0x85ebca6b;
+									h ^= h >> 13;
+									h *= 0xc2b2ae35;
+									h ^= h >> 16;
+
+									uint32_t atlas_index;
+									if (case_index == 26) {
+										static constexpr uint8_t PLAIN_VARIANTS[4] = { 26, 47, 74, 95 };
+										atlas_index = PLAIN_VARIANTS[h % 4];
+									} else {
+										atlas_index = case_index + (h % 2) * BLOB9_RANDOM_HALF_TILE_COUNT;
+									}
+									ltpos.x = atlas_index % BLOB9_DEFAULT_LAYOUT_SIZE_X;
+									ltpos.y = atlas_index / BLOB9_DEFAULT_LAYOUT_SIZE_X;
+								}
+							} break;
+
+							case TILE_RANDOM: {
+								uint32_t h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_local.x));
+								h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_local.y), h);
+								h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_local.z), h);
+								const uint32_t index = h % (tile.group_size_x * tile.group_size_y);
+								ltpos.x = index % tile.group_size_x;
+								ltpos.y = index / tile.group_size_x;
+							} break;
+
+							case TILE_EXTENDED: {
+								int u = 0;
+								int v = 0;
+								switch (side) {
+									case Cube::SIDE_LEFT: // +X
+										u = -cell_world.z;
+										v = -cell_world.y;
+										break;
+									case Cube::SIDE_RIGHT: // -X
+										u = cell_world.z;
+										v = -cell_world.y;
+										break;
+									case Cube::SIDE_TOP: // +Y
+										u = cell_world.x;
+										v = cell_world.z;
+										break;
+									case Cube::SIDE_BOTTOM: // -Y
+										u = cell_world.x;
+										v = -cell_world.z;
+										break;
+									case Cube::SIDE_BACK: // -Z
+										u = -cell_world.x;
+										v = -cell_world.y;
+										break;
+									case Cube::SIDE_FRONT: // +Z
+										u = cell_world.x;
+										v = -cell_world.y;
+										break;
+								}
+								ltpos.x = positive_mod(u, tile.group_size_x);
+								ltpos.y = positive_mod(v, tile.group_size_y);
+							} break;
+
+							default:
+								has_tile = false; // TILE_SINGLE: already baked into the surfaces
+								break;
+						}
+
+						if (has_tile) {
+							static thread_local FixedArray<BakedModel::SideSurface, MAX_SURFACES> tls_tile_surfaces;
+							const BakedModel::SideSurface &src_surface = (*side_surfaces)[0];
+							BakedModel::SideSurface &dst_surface = tls_tile_surfaces[0];
+							dst_surface.indices = src_surface.indices;
+							dst_surface.positions = src_surface.positions;
+							dst_surface.tangents = src_surface.tangents;
+							dst_surface.uvs = src_surface.uvs;
+							const Vector2f uv_offset = to_vec2f(ltpos) * tile.atlas_uv_step;
+							for (Vector2f &uv : dst_surface.uvs) {
+								uv += uv_offset;
+							}
+							side_surfaces = &tls_tile_surfaces;
+							surface_count = 1;
+						}
+					}
+
+					for (unsigned int s = 0; s < surface_count; ++s) {
 						const BakedModel::Surface &surface = model.surfaces[s];
-						const BakedModel::SideSurface &ss = model.sides_surfaces[side][s];
+						const BakedModel::SideSurface &ss = (*side_surfaces)[s];
 						const unsigned int vertex_count = ss.positions.size();
 						const unsigned int index_count = ss.indices.size();
 						if (vertex_count == 0) {
@@ -440,14 +639,20 @@ void generate_mesh(
 				if (grids != nullptr) {
 					const uint16_t slot = grids->slot_by_index[voxel_index];
 					if (slot != 0) {
-						emit_grid_voxel(
+						emit_grid_voxel<Type_T>(
 								out_arrays_per_material,
 								index_offsets,
 								collision_surface,
 								collision_surface_index_offset,
 								library,
+								*grids,
 								*grids->entries[slot - 1],
-								Vector3f(x - 1, y - 1, z - 1),
+								type_buffer,
+								voxel_index,
+								row_size,
+								deck_size,
+								Vector3i(x, y, z),
+								block_world_origin,
 								tint_sampler.evaluate(Vector3i(x, y, z))
 						);
 						continue;
