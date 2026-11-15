@@ -63,10 +63,12 @@ void VoxelBlockyLibrary::bake() {
 	// This is the only place we modify the data.
 
 	_indexed_materials.clear();
+	// Tiles are re-registered by the AtlasIndexer on every bake, so stale ones must go or they pile up
+	// (and eventually overflow the uint16 tile index).
+	_baked_data.tiles.clear();
 	blocky::MaterialIndexer materials{ _indexed_materials };
 
 	StdVector<Ref<VoxelBlockyFluid>> indexed_fluids;
-	StdVector<Ref<VoxelBlockyTextureAtlas>> atlases;
 	blocky::AtlasIndexer atlas_indexer(_baked_data.tiles);
 
 	_baked_data.models.resize(_voxel_models.size());

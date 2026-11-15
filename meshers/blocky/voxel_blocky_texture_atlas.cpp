@@ -459,24 +459,24 @@ void VoxelBlockyTextureAtlas::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_default_tile_resolution"), &Self::get_default_tile_resolution);
 
 	ClassDB::bind_method(D_METHOD("set_tile_name", "tile_id", "name"), &Self::set_tile_name);
-	ClassDB::bind_method(D_METHOD("get_tile_name"), &Self::get_tile_name);
+	ClassDB::bind_method(D_METHOD("get_tile_name", "tile_id"), &Self::get_tile_name);
 
 	ClassDB::bind_method(D_METHOD("set_tile_type", "tile_id", "type"), &Self::set_tile_type);
-	ClassDB::bind_method(D_METHOD("get_tile_type"), &Self::get_tile_type);
+	ClassDB::bind_method(D_METHOD("get_tile_type", "tile_id"), &Self::get_tile_type);
 
 	ClassDB::bind_method(D_METHOD("set_tile_position", "tile_id", "pos"), &Self::set_tile_position);
-	ClassDB::bind_method(D_METHOD("get_tile_position"), &Self::get_tile_position);
+	ClassDB::bind_method(D_METHOD("get_tile_position", "tile_id"), &Self::get_tile_position);
 
 	ClassDB::bind_method(D_METHOD("set_tile_group_size", "tile_id", "size"), &Self::set_tile_group_size);
-	ClassDB::bind_method(D_METHOD("get_tile_group_size"), &Self::get_tile_group_size);
+	ClassDB::bind_method(D_METHOD("get_tile_group_size", "tile_id"), &Self::get_tile_group_size);
 
 	ClassDB::bind_method(D_METHOD("set_tile_random_rotation", "tile_id", "enabled"), &Self::set_tile_random_rotation);
-	ClassDB::bind_method(D_METHOD("get_tile_random_rotation"), &Self::get_tile_random_rotation);
+	ClassDB::bind_method(D_METHOD("get_tile_random_rotation", "tile_id"), &Self::get_tile_random_rotation);
 
 	ClassDB::bind_method(
 			D_METHOD("set_tile_connect_to_covered", "tile_id", "enabled"), &Self::set_tile_connect_to_covered
 	);
-	ClassDB::bind_method(D_METHOD("get_tile_connect_to_covered"), &Self::get_tile_connect_to_covered);
+	ClassDB::bind_method(D_METHOD("get_tile_connect_to_covered", "tile_id"), &Self::get_tile_connect_to_covered);
 
 	ClassDB::bind_method(D_METHOD("_get_tiles_data"), &Self::_b_get_tiles_data);
 	ClassDB::bind_method(D_METHOD("_set_tiles_data", "data"), &Self::_b_set_tiles_data);
@@ -509,6 +509,7 @@ void VoxelBlockyTextureAtlas::_bind_methods() {
 	BIND_ENUM_CONSTANT(TILE_TYPE_BLOB9);
 	BIND_ENUM_CONSTANT(TILE_TYPE_RANDOM);
 	BIND_ENUM_CONSTANT(TILE_TYPE_EXTENDED);
+	BIND_ENUM_CONSTANT(TILE_TYPE_BLOB9_RANDOM);
 	BIND_ENUM_CONSTANT(TILE_TYPE_MAX);
 }
 

@@ -27,6 +27,23 @@ namespace zylann::voxel {
 
 namespace blocky {
 
+// Deterministic hash used to pick random tile variants.
+// `world_cell` MUST be in world space (not block-local), otherwise every block would get the same pattern.
+// The side is mixed in so the faces of a same cell do not all pick the same variant.
+inline uint32_t hash_tile_cell(const Vector3i world_cell, const uint32_t side) {
+	uint32_t h = zylann::hash_djb2_one_32(static_cast<uint32_t>(world_cell.x));
+	h = zylann::hash_djb2_one_32(static_cast<uint32_t>(world_cell.y), h);
+	h = zylann::hash_djb2_one_32(static_cast<uint32_t>(world_cell.z), h);
+	h = zylann::hash_djb2_one_32(side, h);
+	// Avalanche the hash so its low bits do not produce a checkerboard.
+	h ^= h >> 16;
+	h *= 0x85ebca6b;
+	h ^= h >> 13;
+	h *= 0xc2b2ae35;
+	h ^= h >> 16;
+	return h;
+}
+
 inline bool contributes_to_ao(const BakedLibrary &lib, uint32_t voxel_id) {
 	if (voxel_id < lib.models.size()) {
 		const BakedModel &t = lib.models[voxel_id];
@@ -178,9 +195,8 @@ void emit_grid_voxel(
 				}
 				const Vector3f cell_pos = voxel_pos + Vector3f(cx, cy, cz) * inv;
 
-				// Integer cell coordinates, used by random and extended tiles
+				// Integer cell coordinates in world space, used by random and extended tiles
 				const Vector3i cell_world = (block_world_origin + padded_pos) * res + Vector3i(cx, cy, cz);
-				const Vector3i cell_local = padded_pos * res + Vector3i(cx, cy, cz);
 
 				for (unsigned int side = 0; side < Cube::SIDE_COUNT; ++side) {
 					if ((model.empty_sides_mask & (1 << side)) != 0) {
@@ -199,6 +215,9 @@ void emit_grid_voxel(
 							&model.sides_surfaces[side];
 					unsigned int surface_count = model.surface_count;
 
+					// UV offset selected by the tile logic, applied while appending vertices (no per-face surface copy).
+					Vector2f tile_uv_offset(0.f, 0.f);
+					bool has_tile_uv_offset = false;
 					const uint16_t tile_index = model.side_tiles[side];
 					if (tile_index != std::numeric_limits<uint16_t>::max()) {
 						const BakedLibrary::Tile &tile = library.tiles[tile_index];
@@ -231,14 +250,7 @@ void emit_grid_voxel(
 									ltpos.x = case_index % BLOB9_DEFAULT_LAYOUT_SIZE_X;
 									ltpos.y = case_index / BLOB9_DEFAULT_LAYOUT_SIZE_X;
 								} else {
-									uint32_t h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_world.x));
-									h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_world.y), h);
-									h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_world.z), h);
-									h ^= h >> 16;
-									h *= 0x85ebca6b;
-									h ^= h >> 13;
-									h *= 0xc2b2ae35;
-									h ^= h >> 16;
+									const uint32_t h = hash_tile_cell(cell_world, side);
 
 									uint32_t atlas_index;
 									if (case_index == 26) {
@@ -253,9 +265,7 @@ void emit_grid_voxel(
 							} break;
 
 							case TILE_RANDOM: {
-								uint32_t h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_local.x));
-								h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_local.y), h);
-								h = zylann::hash_djb2_one_32(static_cast<uint32_t>(cell_local.z), h);
+								const uint32_t h = hash_tile_cell(cell_world, side);
 								const uint32_t index = h % (tile.group_size_x * tile.group_size_y);
 								ltpos.x = index % tile.group_size_x;
 								ltpos.y = index / tile.group_size_x;
@@ -300,19 +310,8 @@ void emit_grid_voxel(
 						}
 
 						if (has_tile) {
-							static thread_local FixedArray<BakedModel::SideSurface, MAX_SURFACES> tls_tile_surfaces;
-							const BakedModel::SideSurface &src_surface = (*side_surfaces)[0];
-							BakedModel::SideSurface &dst_surface = tls_tile_surfaces[0];
-							dst_surface.indices = src_surface.indices;
-							dst_surface.positions = src_surface.positions;
-							dst_surface.tangents = src_surface.tangents;
-							dst_surface.uvs = src_surface.uvs;
-							const Vector2f uv_offset = to_vec2f(ltpos) * tile.atlas_uv_step;
-							for (Vector2f &uv : dst_surface.uvs) {
-								uv += uv_offset;
-							}
-							side_surfaces = &tls_tile_surfaces;
-							surface_count = 1;
+							tile_uv_offset = to_vec2f(ltpos) * tile.atlas_uv_step;
+							has_tile_uv_offset = true;
 						}
 					}
 
@@ -330,7 +329,7 @@ void emit_grid_voxel(
 						for (unsigned int i = 0; i < vertex_count; ++i) {
 							arrays.positions.push_back(ss.positions[i] * inv + cell_pos);
 							arrays.normals.push_back(to_vec3f(n));
-							arrays.uvs.push_back(ss.uvs[i]);
+							arrays.uvs.push_back(ss.uvs[i] + tile_uv_offset);
 							arrays.colors.push_back(color);
 						}
 						if (ss.tangents.size() > 0) {
@@ -728,6 +727,9 @@ void generate_mesh(
 					const FixedArray<BakedModel::SideSurface, MAX_SURFACES> *side_surfaces =
 							&((*model_sides_surfaces)[side]);
 
+					// UV offset selected by the tile logic, applied while appending vertices (no per-face surface copy).
+					Vector2f tile_uv_offset(0.f, 0.f);
+					bool has_tile_uv_offset = false;
 					const uint16_t tile_index = model.side_tiles[side];
 					if (tile_index != std::numeric_limits<uint16_t>::max()) {
 						// Note: tiles we handle here are expected to be non-single.
@@ -738,18 +740,7 @@ void generate_mesh(
 						// - +Y side: Y is -Z, X is +X
 						// - -Y side: Y is -Z, X is +X
 
-						const BakedModel::SideSurface &src_surface = (*side_surfaces)[0];
-
-						// TODO Candidate for temp allocator
-						static thread_local FixedArray<BakedModel::SideSurface, MAX_SURFACES> tls_tile_surfaces;
-						BakedModel::SideSurface &dst_surface = tls_tile_surfaces[0];
-						dst_surface.indices = src_surface.indices;
-						dst_surface.positions = src_surface.positions;
-						dst_surface.tangents = src_surface.tangents;
-						dst_surface.uvs = src_surface.uvs;
-
-						side_surfaces = &tls_tile_surfaces;
-						model_surface_count = 1;
+						// Tiles only change UVs. The model's own side surfaces are used as-is (all surfaces, any count).
 
 						const BakedLibrary::Tile &tile = library.tiles[tile_index];
 						Vector2i ltpos;
@@ -794,16 +785,7 @@ void generate_mesh(
 
 								const Vector3i world_pos = block_world_origin + Vector3i(x, y, z);
 
-								uint32_t h = zylann::hash_djb2_one_32(static_cast<uint32_t>(world_pos.x));
-								h = zylann::hash_djb2_one_32(static_cast<uint32_t>(world_pos.y), h);
-								h = zylann::hash_djb2_one_32(static_cast<uint32_t>(world_pos.z), h);
-
-								// Avalanche the hash so its low bits don't produce a checkerboard.
-								h ^= h >> 16;
-								h *= 0x85ebca6b;
-								h ^= h >> 13;
-								h *= 0xc2b2ae35;
-								h ^= h >> 16;
+								const uint32_t h = hash_tile_cell(world_pos, side);
 
 								uint32_t atlas_index;
 
@@ -823,9 +805,8 @@ void generate_mesh(
 							} break;
 
 							case TILE_RANDOM: {
-								uint32_t h = zylann::hash_djb2_one_32(x);
-								h = zylann::hash_djb2_one_32(y, h);
-								h = zylann::hash_djb2_one_32(z, h);
+								const Vector3i world_pos = block_world_origin + Vector3i(x, y, z);
+								const uint32_t h = hash_tile_cell(world_pos, side);
 								const uint32_t index = h % (tile.group_size_x * tile.group_size_y);
 
 								ltpos.x = index % tile.group_size_x;
@@ -893,10 +874,8 @@ void generate_mesh(
 						// would prevent support for faces of different sizes or cropped tiles. Maybe that could be
 						// improved.
 						// However, we don't really support rotation here.
-						const Vector2f uv_offset = to_vec2f(ltpos) * tile.atlas_uv_step;
-						for (Vector2f &uv : dst_surface.uvs) {
-							uv += uv_offset;
-						}
+						tile_uv_offset = to_vec2f(ltpos) * tile.atlas_uv_step;
+						has_tile_uv_offset = true;
 					}
 
 					// Might be only partially visible
@@ -996,7 +975,14 @@ void generate_mesh(
 						{
 							const int append_index = arrays.uvs.size();
 							arrays.uvs.resize(arrays.uvs.size() + vertex_count);
-							memcpy(arrays.uvs.data() + append_index, side_uvs.data(), vertex_count * sizeof(Vector2f));
+							Vector2f *uvs_w = arrays.uvs.data() + append_index;
+							if (has_tile_uv_offset) {
+								for (unsigned int i = 0; i < vertex_count; ++i) {
+									uvs_w[i] = side_uvs[i] + tile_uv_offset;
+								}
+							} else {
+								memcpy(uvs_w, side_uvs.data(), vertex_count * sizeof(Vector2f));
+							}
 						}
 
 						if (side_tangents.size() > 0) {

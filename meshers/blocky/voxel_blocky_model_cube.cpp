@@ -209,15 +209,22 @@ Cube::Side get_rotated_side(const Cube::Side src_side, const math::OrthoBasis or
 void rotate_ortho(
 		FixedArray<FixedArray<BakedModel::SideSurface, VoxelBlockyModel::MAX_SURFACES>, Cube::SIDE_COUNT>
 				&sides_surfaces,
+		// Baked tile indices are per side too, so they must follow the faces when the model is rotated
+		std::array<uint16_t, Cube::SIDE_COUNT> &side_tiles,
 		const unsigned int ortho_rotation_index
 ) {
 	const math::OrthoBasis ortho_basis = math::get_ortho_basis_from_index(ortho_rotation_index);
 	const Basis3f basis(to_vec3f(ortho_basis.x), to_vec3f(ortho_basis.y), to_vec3f(ortho_basis.z));
 
 	FixedArray<FixedArray<BakedModel::SideSurface, MAX_SURFACES>, Cube::SIDE_COUNT> rotated_sides_surfaces;
+	std::array<uint16_t, Cube::SIDE_COUNT> rotated_side_tiles;
+	rotated_side_tiles.fill(std::numeric_limits<uint16_t>::max());
 
 	for (unsigned int side = 0; side < Cube::SIDE_COUNT; ++side) {
 		FixedArray<BakedModel::SideSurface, MAX_SURFACES> &surfaces = sides_surfaces[side];
+
+		const Cube::Side dst_side = get_rotated_side(static_cast<Cube::Side>(side), ortho_basis);
+		rotated_side_tiles[dst_side] = side_tiles[side];
 
 		FixedArray<Vector3f, 4> normals;
 		for (Vector3f &n : normals) {
@@ -231,13 +238,13 @@ void rotate_ortho(
 			rotate_mesh_arrays(to_span(surface.positions), to_span(normals), to_span(surface.tangents), basis);
 			add(to_span(surface.positions), Vector3f(0.5));
 
-			const Cube::Side dst_side = get_rotated_side(static_cast<Cube::Side>(side), ortho_basis);
 			rotated_sides_surfaces[dst_side][surface_index] = std::move(surface);
 			++surface_index;
 		}
 	}
 
 	sides_surfaces = std::move(rotated_sides_surfaces);
+	side_tiles = rotated_side_tiles;
 }
 
 void bake_cube_geometry(
@@ -353,7 +360,9 @@ void bake_cube_geometry(
 	}
 
 	if (config.get_mesh_ortho_rotation_index() != 0) {
-		rotate_ortho(baked_data.model.sides_surfaces, config.get_mesh_ortho_rotation_index());
+		rotate_ortho(
+				baked_data.model.sides_surfaces, baked_data.model.side_tiles, config.get_mesh_ortho_rotation_index()
+		);
 	}
 
 	baked_data.empty = false;
@@ -459,8 +468,8 @@ void VoxelBlockyModelCube::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_atlas", "atlas"), &VoxelBlockyModelCube::set_atlas);
 	ClassDB::bind_method(D_METHOD("get_atlas"), &VoxelBlockyModelCube::get_atlas);
 
-	ClassDB::bind_method(D_METHOD("set_atlas_tile_id", "tile_id"), &VoxelBlockyModelCube::set_atlas_tile_id);
-	ClassDB::bind_method(D_METHOD("get_atlas_tile_id"), &VoxelBlockyModelCube::get_atlas_tile_id);
+	ClassDB::bind_method(D_METHOD("set_atlas_tile_id", "side", "tile_id"), &VoxelBlockyModelCube::set_atlas_tile_id);
+	ClassDB::bind_method(D_METHOD("get_atlas_tile_id", "side"), &VoxelBlockyModelCube::get_atlas_tile_id);
 
 	ADD_PROPERTY(
 			PropertyInfo(Variant::FLOAT, "height", PROPERTY_HINT_RANGE, "0.001,1,0.001"), "set_height", "get_height"
