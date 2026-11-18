@@ -9,6 +9,8 @@
 #include "voxel_blocky_model_editor_inspector_plugin.h"
 #include "voxel_blocky_tile_editor_property.h"
 #include "voxel_blocky_tile_selection_inspector_plugin.h"
+#include "voxel_blocky_cube_tile_editor_property.h"
+#include "voxel_blocky_cube_tile_picker.h"
 
 namespace zylann::voxel {
 
@@ -61,6 +63,24 @@ void VoxelBlockyLibraryEditorPlugin::init() {
 		base_control->add_child(_inspector_atlas_picker_dialog);
 	}
 	{
+		_cube_tile_picker = memnew(VoxelBlockyCubeTilePicker);
+		_cube_tile_picker->connect(
+				"cell_double_clicked",
+				callable_mp(this, &VoxelBlockyLibraryEditorPlugin::on_cube_tile_picker_double_clicked)
+		);
+
+		const float edscale = EDSCALE;
+
+		_cube_tile_picker_dialog = memnew(ConfirmationDialog);
+		_cube_tile_picker_dialog->add_child(_cube_tile_picker);
+		_cube_tile_picker_dialog->set_size(Vector2(500, 300) * edscale);
+		_cube_tile_picker_dialog->set_title("Select Tile...");
+		_cube_tile_picker_dialog->connect(
+				"confirmed", callable_mp(this, &VoxelBlockyLibraryEditorPlugin::on_cube_tile_picker_dialog_confirmed)
+		);
+		base_control->add_child(_cube_tile_picker_dialog);
+	}
+	{
 		Ref<VoxelBlockyTileSelectionInspectorPlugin> plugin;
 		plugin.instantiate();
 		plugin->set_plugin(this);
@@ -103,6 +123,28 @@ void VoxelBlockyLibraryEditorPlugin::on_inspector_atlas_picker_dialog_confirmed(
 void VoxelBlockyLibraryEditorPlugin::on_atlas_tile_picker_double_clicked() {
 	_inspector_atlas_picker_dialog->hide();
 	on_inspector_atlas_picker_dialog_confirmed();
+}
+
+void VoxelBlockyLibraryEditorPlugin::open_cube_tile_picker(
+		Ref<Texture2D> texture,
+		const Vector2i grid_size,
+		const Vector2i selected_tile,
+		VoxelBlockyCubeTileEditorProperty *property
+) {
+	_calling_cube_property.set(property);
+	_cube_tile_picker->setup(texture, grid_size, selected_tile);
+	_cube_tile_picker_dialog->popup_centered();
+}
+
+void VoxelBlockyLibraryEditorPlugin::on_cube_tile_picker_dialog_confirmed() {
+	VoxelBlockyCubeTileEditorProperty *property = _calling_cube_property.get();
+	ZN_ASSERT_RETURN(property != nullptr);
+	property->on_tile_picker_confirmed(_cube_tile_picker->get_selected_cell());
+}
+
+void VoxelBlockyLibraryEditorPlugin::on_cube_tile_picker_double_clicked() {
+	_cube_tile_picker_dialog->hide();
+	on_cube_tile_picker_dialog_confirmed();
 }
 
 } // namespace zylann::voxel

@@ -30,6 +30,19 @@ public:
 	void set_atlas_size_in_tiles(Vector2i s);
 	Vector2i get_atlas_size_in_tiles() const;
 
+	void set_use_library_tile_size(bool enabled);
+	bool get_use_library_tile_size() const;
+
+	// When true (default), editors preview this model's tiles with the library's texture instead of its own.
+	// Textures are only for previews: they never affect baking.
+	void set_use_library_texture(bool enabled);
+	bool get_use_library_texture() const;
+	void set_preview_texture(Ref<Texture2D> texture);
+	Ref<Texture2D> get_preview_texture() const;
+
+	Vector2i get_effective_atlas_size_in_tiles(const Vector2i library_size) const;
+	Ref<Texture2D> get_effective_preview_texture(const Ref<Texture2D> &library_texture) const;
+
 	void set_atlas(Ref<VoxelBlockyTextureAtlas> atlas);
 	Ref<VoxelBlockyTextureAtlas> get_atlas() const;
 
@@ -37,6 +50,7 @@ public:
 	bool is_empty() const override;
 
 	Ref<Mesh> get_preview_mesh() const override;
+	Ref<Mesh> get_preview_mesh_with_library_size(const Vector2i library_size) const;
 
 	void rotate_tiles_90(const math::Axis axis, const bool clockwise);
 	void rotate_tiles_ortho(const math::OrthoBasis ortho_basis);
@@ -56,6 +70,10 @@ private:
 	float _height = 1.f;
 
 	Vector2i _atlas_size_in_tiles;
+
+	bool _use_library_tile_size = true;
+	bool _use_library_texture = true;
+	Ref<Texture2D> _preview_texture;
 
 	uint8_t _mesh_ortho_rotation = 0;
 };

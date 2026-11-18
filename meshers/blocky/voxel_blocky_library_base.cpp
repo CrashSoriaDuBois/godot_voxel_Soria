@@ -33,6 +33,26 @@ void VoxelBlockyLibraryBase::set_bake_tangents(bool bt) {
 	_needs_baking = true;
 }
 
+void VoxelBlockyLibraryBase::set_cube_atlas_size_in_tiles(Vector2i size) {
+	ZN_ASSERT_RETURN(size.x > 0);
+	ZN_ASSERT_RETURN(size.y > 0);
+	if (size == _cube_atlas_size_in_tiles) {
+		return;
+	}
+	_cube_atlas_size_in_tiles = size;
+	_needs_baking = true;
+	emit_changed();
+}
+
+void VoxelBlockyLibraryBase::set_cube_preview_texture(Ref<Texture2D> texture) {
+	if (texture == _cube_preview_texture) {
+		return;
+	}
+	_cube_preview_texture = texture;
+	// Preview only: no re-bake needed, but editors showing the tile picker must refresh.
+	emit_changed();
+}
+
 TypedArray<Material> VoxelBlockyLibraryBase::_b_get_materials() const {
 	// Note, if at least one non-empty voxel has no material, there will be one null entry in this list to represent
 	// "The default material".
@@ -70,6 +90,11 @@ void VoxelBlockyLibraryBase::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("get_bake_tangents"), &VoxelBlockyLibraryBase::get_bake_tangents);
 	ClassDB::bind_method(D_METHOD("set_bake_tangents", "bake_tangents"), &VoxelBlockyLibraryBase::set_bake_tangents);
+
+	ClassDB::bind_method(D_METHOD("set_cube_atlas_size_in_tiles", "size"), &VoxelBlockyLibraryBase::set_cube_atlas_size_in_tiles);
+	ClassDB::bind_method(D_METHOD("get_cube_atlas_size_in_tiles"), &VoxelBlockyLibraryBase::get_cube_atlas_size_in_tiles);
+	ClassDB::bind_method(D_METHOD("set_cube_preview_texture", "texture"), &VoxelBlockyLibraryBase::set_cube_preview_texture);
+	ClassDB::bind_method(D_METHOD("get_cube_preview_texture"), &VoxelBlockyLibraryBase::get_cube_preview_texture);
 
 	ClassDB::bind_method(D_METHOD("bake"), &VoxelBlockyLibraryBase::_b_bake);
 

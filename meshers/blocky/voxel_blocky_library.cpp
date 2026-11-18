@@ -70,6 +70,7 @@ void VoxelBlockyLibrary::bake() {
 
 	StdVector<Ref<VoxelBlockyFluid>> indexed_fluids;
 	blocky::AtlasIndexer atlas_indexer(_baked_data.tiles);
+	atlas_indexer.cube_atlas_size_in_tiles = _cube_atlas_size_in_tiles;
 
 	_baked_data.models.resize(_voxel_models.size());
 	for (uint16_t model_index = 0; model_index < _voxel_models.size(); ++model_index) {
@@ -189,6 +190,7 @@ bool VoxelBlockyLibrary::_set(const StringName &p_name, const Variant &p_value) 
 
 	} else if (property_name == "atlas_size") {
 		_legacy_atlas_size = p_value;
+		_cube_atlas_size_in_tiles = Vector2i(_legacy_atlas_size, _legacy_atlas_size);
 		return true;
 	}
 
@@ -280,6 +282,16 @@ void VoxelBlockyLibrary::_bind_methods() {
 	ClassDB::bind_method(
 			D_METHOD("get_model_index_from_resource_name", "name"),
 			&VoxelBlockyLibrary::get_model_index_from_resource_name
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::VECTOR2I, "cube_atlas_size_in_tiles"),
+			"set_cube_atlas_size_in_tiles",
+			"get_cube_atlas_size_in_tiles"
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::OBJECT, "cube_preview_texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"),
+			"set_cube_preview_texture",
+			"get_cube_preview_texture"
 	);
 
 	ADD_PROPERTY(

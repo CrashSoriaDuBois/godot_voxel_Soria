@@ -59,6 +59,7 @@ void VoxelBlockyTypeLibrary::bake() {
 	blocky::MaterialIndexer material_indexer{ _indexed_materials };
 	StdVector<Ref<VoxelBlockyFluid>> indexed_fluids;
 	blocky::AtlasIndexer atlas_indexer(_baked_data.tiles);
+	atlas_indexer.cube_atlas_size_in_tiles = _cube_atlas_size_in_tiles;
 
 	_baked_data.models.resize(_id_map.size());
 
@@ -874,6 +875,16 @@ void VoxelBlockyTypeLibrary::_bind_methods() {
 			PropertyInfo(Variant::PACKED_STRING_ARRAY, "_id_map_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE),
 			"_set_id_map_data",
 			"_get_id_map_data"
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::VECTOR2I, "cube_atlas_size_in_tiles"),
+			"set_cube_atlas_size_in_tiles",
+			"get_cube_atlas_size_in_tiles"
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::OBJECT, "cube_preview_texture", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"),
+			"set_cube_preview_texture",
+			"get_cube_preview_texture"
 	);
 }
 

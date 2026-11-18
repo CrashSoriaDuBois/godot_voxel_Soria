@@ -64,6 +64,26 @@ int VoxelBlockyModelCube::get_atlas_tile_id(VoxelBlockyModel::Side side) const {
 
 bool VoxelBlockyModelCube::_set(const StringName &p_name, const Variant &p_value) {
 	const String property_name = p_name;
+	// These are dynamic properties so their visibility can depend on the "use library" flags.
+	if (property_name == "use_library_tile_size") {
+		set_use_library_tile_size(p_value);
+		return true;
+	}
+	if (property_name == "atlas_size_in_tiles") {
+		// The flag is saved before the size. If it is still set here, the resource was saved before the flag
+		// existed and has its own size, which must keep being used.
+		_use_library_tile_size = false;
+		set_atlas_size_in_tiles(p_value);
+		return true;
+	}
+	if (property_name == "use_library_texture") {
+		set_use_library_texture(p_value);
+		return true;
+	}
+	if (property_name == "preview_texture") {
+		set_preview_texture(p_value);
+		return true;
+	}
 
 	if (property_name.begins_with("tile_")) {
 		String s = property_name.substr(string_literal_length("tile_"), property_name.length());
@@ -80,6 +100,22 @@ bool VoxelBlockyModelCube::_set(const StringName &p_name, const Variant &p_value
 
 bool VoxelBlockyModelCube::_get(const StringName &p_name, Variant &r_ret) const {
 	const String property_name = p_name;
+	if (property_name == "use_library_tile_size") {
+		r_ret = _use_library_tile_size;
+		return true;
+	}
+	if (property_name == "atlas_size_in_tiles") {
+		r_ret = _atlas_size_in_tiles;
+		return true;
+	}
+	if (property_name == "use_library_texture") {
+		r_ret = _use_library_texture;
+		return true;
+	}
+	if (property_name == "preview_texture") {
+		r_ret = _preview_texture;
+		return true;
+	}
 
 	if (property_name.begins_with("tile_")) {
 		String s = property_name.substr(string_literal_length("tile_"), property_name.length());
@@ -94,6 +130,24 @@ bool VoxelBlockyModelCube::_get(const StringName &p_name, Variant &r_ret) const 
 }
 
 void VoxelBlockyModelCube::_get_property_list(List<PropertyInfo> *p_list) const {
+	p_list->push_back(PropertyInfo(Variant::BOOL, "use_library_tile_size"));
+	// The model's own values are only shown (and saved) when the model does not follow the library
+	p_list->push_back(PropertyInfo(
+			Variant::VECTOR2I,
+			"atlas_size_in_tiles",
+			PROPERTY_HINT_NONE,
+			"",
+			_use_library_tile_size ? PROPERTY_USAGE_NONE : PROPERTY_USAGE_DEFAULT
+	));
+	p_list->push_back(PropertyInfo(Variant::BOOL, "use_library_texture"));
+	p_list->push_back(PropertyInfo(
+			Variant::OBJECT,
+			"preview_texture",
+			PROPERTY_HINT_RESOURCE_TYPE,
+			"Texture2D",
+			_use_library_texture ? PROPERTY_USAGE_NONE : PROPERTY_USAGE_DEFAULT
+	));
+
 	p_list->push_back(PropertyInfo(Variant::NIL, "Cube tiles", PROPERTY_HINT_NONE, "tile_", PROPERTY_USAGE_GROUP));
 
 	p_list->push_back(PropertyInfo(Variant::VECTOR2I, "tile_left"));
@@ -128,6 +182,54 @@ void VoxelBlockyModelCube::set_atlas_size_in_tiles(Vector2i s) {
 
 Vector2i VoxelBlockyModelCube::get_atlas_size_in_tiles() const {
 	return _atlas_size_in_tiles;
+}
+
+void VoxelBlockyModelCube::set_use_library_tile_size(bool enabled) {
+	if (enabled == _use_library_tile_size) {
+		return;
+	}
+	_use_library_tile_size = enabled;
+	// Shows/hides the model's own size in the inspector
+	notify_property_list_changed();
+	emit_changed();
+}
+
+bool VoxelBlockyModelCube::get_use_library_tile_size() const {
+	return _use_library_tile_size;
+}
+
+void VoxelBlockyModelCube::set_use_library_texture(bool enabled) {
+	if (enabled == _use_library_texture) {
+		return;
+	}
+	_use_library_texture = enabled;
+	notify_property_list_changed();
+	emit_changed();
+}
+
+bool VoxelBlockyModelCube::get_use_library_texture() const {
+	return _use_library_texture;
+}
+
+void VoxelBlockyModelCube::set_preview_texture(Ref<Texture2D> texture) {
+	if (texture == _preview_texture) {
+		return;
+	}
+	_preview_texture = texture;
+	// Preview only: no re-bake needed, but editors showing the tile picker must refresh.
+	emit_changed();
+}
+
+Ref<Texture2D> VoxelBlockyModelCube::get_preview_texture() const {
+	return _preview_texture;
+}
+
+Vector2i VoxelBlockyModelCube::get_effective_atlas_size_in_tiles(const Vector2i library_size) const {
+	return _use_library_tile_size ? library_size : _atlas_size_in_tiles;
+}
+
+Ref<Texture2D> VoxelBlockyModelCube::get_effective_preview_texture(const Ref<Texture2D> &library_texture) const {
+	return _use_library_texture ? library_texture : _preview_texture;
 }
 
 void VoxelBlockyModelCube::set_atlas(Ref<VoxelBlockyTextureAtlas> atlas) {
@@ -373,7 +475,10 @@ void bake_cube_geometry(
 void VoxelBlockyModelCube::bake(blocky::ModelBakingContext &ctx) const {
 	ctx.model.clear();
 
-	bake_cube_geometry(*this, _atlas_size_in_tiles, ctx);
+	// Size comes from the library unless the model defines its own
+	const Vector2i atlas_size = get_effective_atlas_size_in_tiles(ctx.atlas_indexer.cube_atlas_size_in_tiles);
+	bake_cube_geometry(*this, atlas_size, ctx);
+
 	VoxelBlockyModel::bake(ctx);
 }
 
@@ -382,6 +487,11 @@ bool VoxelBlockyModelCube::is_empty() const {
 }
 
 Ref<Mesh> VoxelBlockyModelCube::get_preview_mesh() const {
+	// No library known here: assume the default library tile size.
+	return get_preview_mesh_with_library_size(Vector2i(16, 16));
+}
+
+Ref<Mesh> VoxelBlockyModelCube::get_preview_mesh_with_library_size(const Vector2i library_size) const {
 	const bool bake_tangents = false;
 
 	blocky::BakedModel baked_data;
@@ -402,7 +512,7 @@ Ref<Mesh> VoxelBlockyModelCube::get_preview_mesh() const {
 		atlas_indexer //
 	};
 
-	bake_cube_geometry(*this, _atlas_size_in_tiles, model_baking_context);
+	bake_cube_geometry(*this, get_effective_atlas_size_in_tiles(library_size), model_baking_context);
 
 	Ref<Mesh> mesh = make_mesh_from_baked_data(baked_data, bake_tangents);
 
@@ -465,6 +575,13 @@ void VoxelBlockyModelCube::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_atlas_size_in_tiles", "ts"), &VoxelBlockyModelCube::set_atlas_size_in_tiles);
 	ClassDB::bind_method(D_METHOD("get_atlas_size_in_tiles"), &VoxelBlockyModelCube::get_atlas_size_in_tiles);
 
+	ClassDB::bind_method(D_METHOD("set_use_library_tile_size", "enabled"), &VoxelBlockyModelCube::set_use_library_tile_size);
+	ClassDB::bind_method(D_METHOD("get_use_library_tile_size"), &VoxelBlockyModelCube::get_use_library_tile_size);
+	ClassDB::bind_method(D_METHOD("set_use_library_texture", "enabled"), &VoxelBlockyModelCube::set_use_library_texture);
+	ClassDB::bind_method(D_METHOD("get_use_library_texture"), &VoxelBlockyModelCube::get_use_library_texture);
+	ClassDB::bind_method(D_METHOD("set_preview_texture", "texture"), &VoxelBlockyModelCube::set_preview_texture);
+	ClassDB::bind_method(D_METHOD("get_preview_texture"), &VoxelBlockyModelCube::get_preview_texture);
+
 	ClassDB::bind_method(D_METHOD("set_atlas", "atlas"), &VoxelBlockyModelCube::set_atlas);
 	ClassDB::bind_method(D_METHOD("get_atlas"), &VoxelBlockyModelCube::get_atlas);
 
@@ -474,9 +591,9 @@ void VoxelBlockyModelCube::_bind_methods() {
 	ADD_PROPERTY(
 			PropertyInfo(Variant::FLOAT, "height", PROPERTY_HINT_RANGE, "0.001,1,0.001"), "set_height", "get_height"
 	);
-	ADD_PROPERTY(
-			PropertyInfo(Variant::VECTOR2I, "atlas_size_in_tiles"), "set_atlas_size_in_tiles", "get_atlas_size_in_tiles"
-	);
+//	ADD_PROPERTY(
+//			PropertyInfo(Variant::VECTOR2I, "atlas_size_in_tiles"), "set_atlas_size_in_tiles", "get_atlas_size_in_tiles"
+//	);
 	ADD_PROPERTY(
 			PropertyInfo(
 					Variant::OBJECT, "atlas", PROPERTY_HINT_RESOURCE_TYPE, VoxelBlockyTextureAtlas::get_class_static()

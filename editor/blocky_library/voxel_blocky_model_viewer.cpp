@@ -1,5 +1,6 @@
 #include "voxel_blocky_model_viewer.h"
 #include "../../constants/voxel_string_names.h"
+#include "../../meshers/blocky/voxel_blocky_model_cube.h"
 #include "../../util/godot/classes/array_mesh.h"
 #include "../../util/godot/classes/button.h"
 #include "../../util/godot/classes/editor_undo_redo_manager.h"
@@ -12,6 +13,7 @@
 #include "../../util/godot/core/string.h"
 #include "../../util/godot/editor_scale.h"
 #include "model_viewer.h"
+#include "voxel_blocky_editor_library_tracker.h"
 
 namespace zylann::voxel {
 
@@ -239,7 +241,15 @@ void VoxelBlockyModelViewer::set_undo_redo(EditorUndoRedoManager *urm) {
 void VoxelBlockyModelViewer::update_model() {
 	ZN_ASSERT_RETURN(_model.is_valid());
 	// Can be null
-	Ref<Mesh> mesh = _model->get_preview_mesh();
+	Ref<Mesh> mesh;
+	const VoxelBlockyModelCube *cube_model = Object::cast_to<VoxelBlockyModelCube>(_model.ptr());
+	if (cube_model != nullptr) {
+		const Ref<VoxelBlockyLibraryBase> library = get_last_inspected_blocky_library();
+		const Vector2i library_size = library.is_valid() ? library->get_cube_atlas_size_in_tiles() : Vector2i(16, 16);
+		mesh = cube_model->get_preview_mesh_with_library_size(library_size);
+	} else {
+		mesh = _model->get_preview_mesh();
+	}
 	_mesh_instance->set_mesh(mesh);
 
 	Ref<Mesh> collision_boxes_mesh = make_wireboxes_mesh(_model->get_collision_aabbs(), Color(0.3, 0.4, 1.0));

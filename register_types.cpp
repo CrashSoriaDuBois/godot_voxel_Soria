@@ -169,6 +169,8 @@
 #include "editor/blocky_library/types/voxel_blocky_type_viewer.h"
 #include "editor/blocky_library/voxel_blocky_model_editor_inspector_plugin.h"
 #include "editor/blocky_library/voxel_blocky_model_viewer.h"
+#include "editor/blocky_library/voxel_blocky_cube_tile_editor_property.h"
+#include "editor/blocky_library/voxel_blocky_cube_tile_picker.h"
 #include "editor/blocky_library/voxel_blocky_tile_editor_property.h"
 #include "editor/blocky_library/voxel_blocky_tile_selection_inspector_plugin.h"
 #include "editor/blocky_texture_atlas/voxel_blocky_texture_atlas_editor.h"
@@ -519,6 +521,8 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_internal_class<VoxelBlockyTextureAtlasEditorPlugin>();
 		ClassDB::register_internal_class<VoxelBlockyTileSelectionInspectorPlugin>();
 		ClassDB::register_internal_class<VoxelBlockyTileEditorProperty>();
+		ClassDB::register_internal_class<VoxelBlockyCubeTilePicker>();
+		ClassDB::register_internal_class<VoxelBlockyCubeTileEditorProperty>();
 
 		ClassDB::register_internal_class<VoxelGraphEditorInspectorPlugin>();
 		ClassDB::register_internal_class<VoxelGraphFunctionInspectorPlugin>();

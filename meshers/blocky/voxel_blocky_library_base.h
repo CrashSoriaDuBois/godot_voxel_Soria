@@ -5,6 +5,8 @@
 #include "../../util/containers/std_vector.h"
 #include "../../util/godot/classes/material.h"
 #include "../../util/godot/classes/resource.h"
+#include "../../util/godot/classes/texture_2d.h"
+#include "../../util/math/vector2i.h"
 #include "../../util/thread/rw_lock.h"
 #include "blocky_baked_library.h"
 
@@ -28,6 +30,18 @@ public:
 	}
 	void set_bake_tangents(bool bt);
 
+	// Tile grid size (in tiles) used by cube models that follow the library. Affects baking.
+	Vector2i get_cube_atlas_size_in_tiles() const {
+		return _cube_atlas_size_in_tiles;
+	}
+	void set_cube_atlas_size_in_tiles(Vector2i size);
+
+	// Texture used by editors to preview/select cube tiles of models that follow the library.
+	// It does NOT affect baking: it is up to the user to assign a texture matching the models' materials.
+	Ref<Texture2D> get_cube_preview_texture() const {
+		return _cube_preview_texture;
+	}
+	void set_cube_preview_texture(Ref<Texture2D> texture);
 	//
 
 	virtual void load_default();
@@ -64,6 +78,9 @@ protected:
 	int _legacy_atlas_size = 16;
 	bool _needs_baking = true;
 	bool _bake_tangents = true;
+
+	Vector2i _cube_atlas_size_in_tiles = Vector2i(16, 16);
+	Ref<Texture2D> _cube_preview_texture;
 
 	// Used in multithread context by the mesher. Don't modify that outside of bake().
 	RWLock _baked_data_rw_lock;
