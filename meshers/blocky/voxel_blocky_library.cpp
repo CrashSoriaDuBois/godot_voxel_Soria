@@ -19,6 +19,8 @@
 #include "voxel_blocky_model_empty.h"
 #include "voxel_blocky_model_fluid.h"
 #include "voxel_blocky_model_mesh.h"
+#include "voxel_blocky_model_rotated.h"
+#include "blocky_rotation_variants.h"
 #ifdef TOOLS_ENABLED
 #include "../../util/godot/classes/resource.h"
 #endif
@@ -199,7 +201,51 @@ bool VoxelBlockyLibrary::_set(const StringName &p_name, const Variant &p_value) 
 
 #ifdef TOOLS_ENABLED
 
+void VoxelBlockyLibrary::get_rotation_group_warnings(PackedStringArray &out_warnings) const {
+	for (unsigned int i = 0; i < _voxel_models.size(); ++i) {
+		const Ref<VoxelBlockyModel> &model = _voxel_models[i];
+		if (model.is_null()) {
+			continue;
+		}
+
+		const VoxelBlockyModelRotated *variant = Object::cast_to<VoxelBlockyModelRotated>(model.ptr());
+		if (variant != nullptr) {
+			// A variant must be at its place in the group of its source
+			const unsigned int v = variant->get_variant();
+			const Ref<VoxelBlockyModel> source = variant->get_source();
+			const bool placed = source.is_valid() && i >= v && _voxel_models[i - v] == source;
+			if (!placed) {
+				out_warnings.append(
+						String("Model {0} is a rotation variant but is not where its source model expects it.")
+								.format(varray(i))
+				);
+			}
+			continue;
+		}
+
+		const blocky::RotationMode mode = static_cast<blocky::RotationMode>(model->get_rotation_mode());
+		if (mode == blocky::ROTATION_MODE_NONE) {
+			continue;
+		}
+		const unsigned int variant_count = blocky::get_rotation_variant_count(mode);
+		for (unsigned int v = 1; v < variant_count; ++v) {
+			const unsigned int slot = i + v;
+			const VoxelBlockyModelRotated *expected = slot < _voxel_models.size()
+					? Object::cast_to<VoxelBlockyModelRotated>(_voxel_models[slot].ptr())
+					: nullptr;
+			if (expected == nullptr || expected->get_source() != model || expected->get_variant() != int(v)) {
+				out_warnings.append(
+						String("Model {0} has rotation mode '{1}' but slot {2} does not hold variant {3}. Use 'Update "
+							   "rotation variants' on the model.")
+								.format(varray(i, blocky::get_rotation_mode_name(mode), slot, v))
+				);
+			}
+		}
+	}
+}
+
 void VoxelBlockyLibrary::get_configuration_warnings(PackedStringArray &out_warnings) const {
+	get_rotation_group_warnings(out_warnings);
 	StdVector<int> null_indices;
 
 	bool has_solid_model = false;

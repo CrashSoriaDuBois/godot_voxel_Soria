@@ -238,6 +238,9 @@ void VoxelBlockyModel::bake(blocky::ModelBakingContext &ctx) const {
 	baked_data.light_emission = _light_emission;
 	baked_data.light_color_index = _light_color_index;
 
+	baked_data.rotation_mode = static_cast<blocky::RotationMode>(_rotation_mode);
+	baked_data.rotation_variant = 0;
+
 	blocky::BakedModel::Model &model = baked_data.model;
 
 	// Note: mesh rotation is not implemented here, it is done in derived classes.
@@ -549,6 +552,18 @@ int VoxelBlockyModel::get_mesh_ortho_rotation_index() const {
 	return _mesh_ortho_rotation;
 }
 
+void VoxelBlockyModel::set_rotation_mode(int mode) {
+	ZN_ASSERT_RETURN(mode >= 0 && mode < static_cast<int>(blocky::ROTATION_MODE_COUNT));
+	if (mode != _rotation_mode) {
+		_rotation_mode = mode;
+		emit_changed();
+	}
+}
+
+int VoxelBlockyModel::get_rotation_mode() const {
+	return _rotation_mode;
+}
+
 void VoxelBlockyModel::rotate_90(math::Axis axis, bool clockwise) {
 	math::OrthoBasis ortho_basis = math::get_ortho_basis_from_index(_mesh_ortho_rotation);
 	ortho_basis.rotate_90(axis, clockwise);
@@ -653,6 +668,9 @@ void VoxelBlockyModel::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_light_color_index", "value"), &VoxelBlockyModel::set_light_color_index);
 	ClassDB::bind_method(D_METHOD("get_light_color_index"), &VoxelBlockyModel::get_light_color_index);
 
+	ClassDB::bind_method(D_METHOD("set_rotation_mode", "mode"), &VoxelBlockyModel::set_rotation_mode);
+	ClassDB::bind_method(D_METHOD("get_rotation_mode"), &VoxelBlockyModel::get_rotation_mode);
+
 	// TODO Update to StringName in Godot 4
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "color"), "set_color", "get_color");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "transparency_index"), "set_transparency_index", "get_transparency_index");
@@ -668,6 +686,12 @@ void VoxelBlockyModel::_bind_methods() {
 	);
 
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "lod_skirts_enabled"), "set_lod_skirts_enabled", "get_lod_skirts_enabled");
+
+	ADD_PROPERTY(
+			PropertyInfo(Variant::INT, "rotation_mode", PROPERTY_HINT_ENUM, "None,3 axes,6 faces,24 rotations"),
+			"set_rotation_mode",
+			"get_rotation_mode"
+	);
 
 	ADD_GROUP("Lighting", "light_");
 	ADD_PROPERTY(

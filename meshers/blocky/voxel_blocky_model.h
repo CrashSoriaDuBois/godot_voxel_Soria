@@ -95,6 +95,9 @@ public:
 	void set_mesh_ortho_rotation_index(int i);
 	int get_mesh_ortho_rotation_index() const;
 
+	void set_rotation_mode(int mode);
+	int get_rotation_mode() const;
+
 	void set_lod_skirts_enabled(bool rt);
 	bool get_lod_skirts_enabled() const;
 
@@ -198,6 +201,7 @@ private:
 	bool _random_tickable = false;
 	uint32_t _tags_mask = 1;
 	uint8_t _mesh_ortho_rotation = 0;
+	uint8_t _rotation_mode = 0;
 
 	bool _lod_skirts = true;
 	uint8_t _light_emission = 0; // 0-15

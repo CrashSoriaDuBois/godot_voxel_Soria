@@ -42,6 +42,11 @@ public:
 		return _cube_preview_texture;
 	}
 	void set_cube_preview_texture(Ref<Texture2D> texture);
+	int get_model_rotation_mode(int model_index) const;
+	int get_model_rotation_variant(int model_index) const;
+	int get_model_rotation_group_first_index(int model_index) const;
+	int get_model_rotation_group_size(int model_index) const;
+	int get_rotated_model_index(int model_index, int ortho_rotation_index) const;
 	//
 
 	virtual void load_default();

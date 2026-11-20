@@ -5,6 +5,8 @@
 #include "../../util/math/triangle.h"
 #include "../../util/math/vector4f.h"
 #include "../../util/profiling.h"
+
+#include "blocky_rotation_variants.h"
 // #include "../../util/string/format.h" // DEBUG
 #include "voxel_blocky_model.h"
 // #include "voxel_mesher_blocky.h"
@@ -64,6 +66,64 @@ TypedArray<Material> VoxelBlockyLibraryBase::_b_get_materials() const {
 	return materials;
 }
 
+namespace {
+
+const blocky::BakedModel *get_baked_model_or_null(const blocky::BakedLibrary &baked_data, const int model_index) {
+	if (model_index < 0 || static_cast<size_t>(model_index) >= baked_data.models.size()) {
+		return nullptr;
+	}
+	return &baked_data.models[model_index];
+}
+
+} // namespace
+
+int VoxelBlockyLibraryBase::get_model_rotation_mode(int model_index) const {
+	RWLockRead lock(_baked_data_rw_lock);
+	const blocky::BakedModel *model = get_baked_model_or_null(_baked_data, model_index);
+	return model != nullptr ? model->rotation_mode : 0;
+}
+
+int VoxelBlockyLibraryBase::get_model_rotation_variant(int model_index) const {
+	RWLockRead lock(_baked_data_rw_lock);
+	const blocky::BakedModel *model = get_baked_model_or_null(_baked_data, model_index);
+	return model != nullptr ? model->rotation_variant : 0;
+}
+
+int VoxelBlockyLibraryBase::get_model_rotation_group_first_index(int model_index) const {
+	RWLockRead lock(_baked_data_rw_lock);
+	const blocky::BakedModel *model = get_baked_model_or_null(_baked_data, model_index);
+	return model != nullptr ? model_index - model->rotation_variant : -1;
+}
+
+int VoxelBlockyLibraryBase::get_model_rotation_group_size(int model_index) const {
+	RWLockRead lock(_baked_data_rw_lock);
+	const blocky::BakedModel *model = get_baked_model_or_null(_baked_data, model_index);
+	if (model == nullptr) {
+		return 0;
+	}
+	return blocky::get_rotation_variant_count(model->rotation_mode);
+}
+
+int VoxelBlockyLibraryBase::get_rotated_model_index(int model_index, int ortho_rotation_index) const {
+	RWLockRead lock(_baked_data_rw_lock);
+	const blocky::BakedModel *model = get_baked_model_or_null(_baked_data, model_index);
+	if (model == nullptr) {
+		return -1;
+	}
+	if (model->rotation_mode == blocky::ROTATION_MODE_NONE) {
+		return model_index;
+	}
+	const int first_index = model_index - model->rotation_variant;
+	const int variant = blocky::get_rotation_variant_from_ortho_index(model->rotation_mode, ortho_rotation_index);
+	const blocky::BakedModel *rotated_model = get_baked_model_or_null(_baked_data, first_index + variant);
+	// Broken group (variants are not where they should be)
+	if (rotated_model == nullptr || rotated_model->rotation_mode != model->rotation_mode ||
+		rotated_model->rotation_variant != variant) {
+		return -1;
+	}
+	return first_index + variant;
+}
+
 void VoxelBlockyLibraryBase::_b_bake() {
 	bake();
 }
@@ -95,6 +155,12 @@ void VoxelBlockyLibraryBase::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_cube_atlas_size_in_tiles"), &VoxelBlockyLibraryBase::get_cube_atlas_size_in_tiles);
 	ClassDB::bind_method(D_METHOD("set_cube_preview_texture", "texture"), &VoxelBlockyLibraryBase::set_cube_preview_texture);
 	ClassDB::bind_method(D_METHOD("get_cube_preview_texture"), &VoxelBlockyLibraryBase::get_cube_preview_texture);
+
+	ClassDB::bind_method(D_METHOD("get_model_rotation_mode"), &VoxelBlockyLibraryBase::get_model_rotation_mode); //alomejor esta mal
+	ClassDB::bind_method(D_METHOD("get_model_rotation_variant"), &VoxelBlockyLibraryBase::get_model_rotation_variant);
+	ClassDB::bind_method(D_METHOD("get_model_rotation_group_first_index"), &VoxelBlockyLibraryBase::get_model_rotation_group_first_index);
+	ClassDB::bind_method(D_METHOD("get_model_rotation_group_size"), &VoxelBlockyLibraryBase::get_model_rotation_group_size);
+	ClassDB::bind_method(D_METHOD("get_rotated_model_index"), &VoxelBlockyLibraryBase::get_rotated_model_index);
 
 	ClassDB::bind_method(D_METHOD("bake"), &VoxelBlockyLibraryBase::_b_bake);
 

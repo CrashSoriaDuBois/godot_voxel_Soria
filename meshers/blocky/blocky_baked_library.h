@@ -47,6 +47,14 @@ enum TileType : uint8_t {
 	TILE_MAX,
 };
 
+enum RotationMode : uint8_t {
+	ROTATION_MODE_NONE,
+	ROTATION_MODE_AXES_3,
+	ROTATION_MODE_FACES_6,
+	ROTATION_MODE_ORTHO_24,
+	ROTATION_MODE_COUNT,
+};
+
 // Plain data strictly used by the mesher.
 // It becomes distinct because it's going to be used in a multithread environment,
 // while the configuration that produced the data can be changed by the user at any time.
@@ -142,6 +150,10 @@ struct BakedModel {
 	bool is_random_tickable;
 	bool is_transparent;
 	bool cutout_sides_enabled = false;
+
+	RotationMode rotation_mode = ROTATION_MODE_NONE;
+	uint8_t rotation_variant = 0;
+
 	uint8_t fluid_index = NULL_FLUID_INDEX;
 	uint8_t fluid_level;
 	bool lod_skirts;
@@ -156,6 +168,9 @@ struct BakedModel {
 	inline void clear() {
 		model.clear();
 		empty = true;
+
+		rotation_mode = ROTATION_MODE_NONE;
+		rotation_variant = 0;
 	}
 };
 

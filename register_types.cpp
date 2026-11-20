@@ -23,6 +23,10 @@
 #include "meshers/blocky/voxel_blocky_model_cube.h"
 #include "meshers/blocky/voxel_blocky_model_empty.h"
 #include "meshers/blocky/voxel_blocky_model_fluid.h"
+#include "meshers/blocky/voxel_blocky_model_rotated.h"
+#include "editor/blocky_library/voxel_blocky_library_indices_dialog.h"
+#include "editor/blocky_library/voxel_blocky_rotation_inspector_plugin.h"
+
 #include "meshers/blocky/voxel_blocky_model_mesh.h"
 #include "meshers/blocky/voxel_blocky_texture_atlas.h"
 #include "meshers/blocky/voxel_mesher_blocky.h"
@@ -285,6 +289,7 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_class<VoxelBlockyModelMesh>();
 		ClassDB::register_class<VoxelBlockyModelEmpty>();
 		ClassDB::register_class<VoxelBlockyModelFluid>();
+		ClassDB::register_class<VoxelBlockyModelRotated>();
 		ClassDB::register_class<VoxelBlockyFluid>();
 		ClassDB::register_abstract_class<VoxelBlockyLibraryBase>();
 		ClassDB::register_class<VoxelBlockyLibrary>();
@@ -520,6 +525,8 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_internal_class<VoxelBlockyTextureAtlasEditor>();
 		ClassDB::register_internal_class<VoxelBlockyTextureAtlasEditorPlugin>();
 		ClassDB::register_internal_class<VoxelBlockyTileSelectionInspectorPlugin>();
+		ClassDB::register_internal_class<VoxelBlockyLibraryIndicesDialog>();
+		ClassDB::register_internal_class<VoxelBlockyRotationInspectorPlugin>();
 		ClassDB::register_internal_class<VoxelBlockyTileEditorProperty>();
 		ClassDB::register_internal_class<VoxelBlockyCubeTilePicker>();
 		ClassDB::register_internal_class<VoxelBlockyCubeTileEditorProperty>();

@@ -11,6 +11,8 @@
 #include "voxel_blocky_tile_selection_inspector_plugin.h"
 #include "voxel_blocky_cube_tile_editor_property.h"
 #include "voxel_blocky_cube_tile_picker.h"
+#include "voxel_blocky_library_indices_dialog.h"
+#include "voxel_blocky_rotation_inspector_plugin.h"
 
 namespace zylann::voxel {
 
@@ -90,10 +92,14 @@ void VoxelBlockyLibraryEditorPlugin::init() {
 	_type_library_ids_dialog = memnew(VoxelBlockyTypeLibraryIDSDialog);
 	base_control->add_child(_type_library_ids_dialog);
 
+	// Rotation groups
+	_library_indices_dialog = memnew(VoxelBlockyLibraryIndicesDialog);
+	base_control->add_child(_library_indices_dialog);
 	{
-		Ref<VoxelBlockyTypeLibraryEditorInspectorPlugin> plugin;
+		Ref<VoxelBlockyRotationInspectorPlugin> plugin;
 		plugin.instantiate();
-		plugin->set_ids_dialog(_type_library_ids_dialog);
+		plugin->set_indices_dialog(_library_indices_dialog);
+		plugin->set_undo_redo(undo_redo);
 		add_inspector_plugin(plugin);
 	}
 }

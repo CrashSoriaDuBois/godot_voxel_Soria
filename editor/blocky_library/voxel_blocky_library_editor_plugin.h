@@ -17,6 +17,7 @@ class VoxelBlockyCubeTileEditorProperty;
 class VoxelBlockyCubeTilePicker;
 class VoxelBlockyTextureAtlas;
 class VoxelBlockyTextureAtlasEditor;
+class VoxelBlockyLibraryIndicesDialog;
 
 class VoxelBlockyLibraryEditorPlugin : public EditorPlugin {
 	GDCLASS(VoxelBlockyLibraryEditorPlugin, EditorPlugin)
@@ -54,6 +55,8 @@ private:
 	VoxelBlockyCubeTilePicker *_cube_tile_picker = nullptr;
 	ConfirmationDialog *_cube_tile_picker_dialog = nullptr;
 	zylann::godot::ObjectWeakRef<VoxelBlockyCubeTileEditorProperty> _calling_cube_property;
+
+	VoxelBlockyLibraryIndicesDialog *_library_indices_dialog = nullptr;
 };
 
 } // namespace zylann::voxel

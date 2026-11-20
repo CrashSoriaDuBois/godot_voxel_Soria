@@ -30,6 +30,17 @@ public:
 	// Convenience method that returns the index of the added model
 	int add_model(Ref<VoxelBlockyModel> model);
 
+	unsigned int get_model_count() const {
+		return _voxel_models.size();
+	}
+	Ref<VoxelBlockyModel> get_model(const unsigned int index) const {
+		return index < _voxel_models.size() ? _voxel_models[index] : Ref<VoxelBlockyModel>();
+	}
+	// Copy of the array of models. Used by editors.
+	TypedArray<VoxelBlockyModel> get_models_array() const {
+		return _b_get_models();
+	}
+
 	//-------------------------
 	// Internal use
 
@@ -47,6 +58,7 @@ public:
 
 #ifdef TOOLS_ENABLED
 	void get_configuration_warnings(PackedStringArray &out_warnings) const override;
+	void get_rotation_group_warnings(PackedStringArray &out_warnings) const;
 #endif
 
 private:
