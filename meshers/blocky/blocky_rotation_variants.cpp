@@ -6,38 +6,18 @@ namespace zylann::voxel::blocky {
 
 namespace {
 
-// Directions where the up (+Y) axis of the model points, for the 6 faces mode
-const Vector3i *get_face_directions() {
-	static const Vector3i dirs[6] = { Vector3i(0, 1, 0),  Vector3i(0, -1, 0), Vector3i(1, 0, 0),
-									  Vector3i(-1, 0, 0), Vector3i(0, 0, 1),  Vector3i(0, 0, -1) };
-	return dirs;
-}
+// Orthogonal rotations (math::OrthoRotationID) of each variant, in order.
+// Y is up and -Z is forward.
+// 6 faces: forward, look up (X 90), turn around (Y 180), look down (X 270), turn right (Y 270), turn left (Y 90)
+const uint8_t g_faces_ortho_indices[6] = { 0, 4, 10, 12, 16, 22};
+// 3 axes: forward, look down, turn right
+const uint8_t g_axes_ortho_indices[3] = { 0, 4, 16 };
 
-struct VariantTables {
-	uint8_t faces[6];
-	uint8_t axes[3];
-
-	VariantTables() {
-		const Vector3i *dirs = get_face_directions();
-		for (unsigned int d = 0; d < 6; ++d) {
-			faces[d] = math::ORTHOGONAL_BASIS_IDENTITY_INDEX;
-			// Lowest rotation that sends +Y to the direction. The Y axis of the basis is where +Y ends up.
-			for (int i = 0; i < math::ORTHOGONAL_BASIS_COUNT; ++i) {
-				if (math::get_ortho_basis_from_index(i).y == dirs[d]) {
-					faces[d] = i;
-					break;
-				}
-			}
-		}
-		axes[0] = faces[0]; // +Y
-		axes[1] = faces[2]; // +X
-		axes[2] = faces[4]; // +Z
-	}
-};
-
-const VariantTables &get_tables() {
-	static const VariantTables tables;
-	return tables;
+// Direction where the forward (-Z) axis of the model points after a rotation. The Z axis of the basis is where +Z
+// ends up.
+Vector3i get_forward_after(const unsigned int ortho_index) {
+	const Vector3i z = math::get_ortho_basis_from_index(ortho_index).z;
+	return Vector3i(-z.x, -z.y, -z.z);
 }
 
 } // namespace
@@ -58,9 +38,9 @@ unsigned int get_rotation_variant_count(const RotationMode mode) {
 uint8_t get_rotation_variant_ortho_index(const RotationMode mode, const unsigned int variant) {
 	switch (mode) {
 		case ROTATION_MODE_AXES_3:
-			return variant < 3 ? get_tables().axes[variant] : math::ORTHOGONAL_BASIS_IDENTITY_INDEX;
+			return variant < 3 ? g_axes_ortho_indices[variant] : math::ORTHOGONAL_BASIS_IDENTITY_INDEX;
 		case ROTATION_MODE_FACES_6:
-			return variant < 6 ? get_tables().faces[variant] : math::ORTHOGONAL_BASIS_IDENTITY_INDEX;
+			return variant < 6 ? g_faces_ortho_indices[variant] : math::ORTHOGONAL_BASIS_IDENTITY_INDEX;
 		case ROTATION_MODE_ORTHO_24:
 			return variant < math::ORTHOGONAL_BASIS_COUNT ? variant : math::ORTHOGONAL_BASIS_IDENTITY_INDEX;
 		default:
@@ -77,25 +57,27 @@ unsigned int get_rotation_variant_from_ortho_index(const RotationMode mode, cons
 			return ortho_index;
 
 		case ROTATION_MODE_FACES_6: {
-			const Vector3i up = math::get_ortho_basis_from_index(ortho_index).y;
-			const Vector3i *dirs = get_face_directions();
-			for (unsigned int d = 0; d < 6; ++d) {
-				if (dirs[d] == up) {
-					return d;
+			// Variant where the forward direction ends up at the same place
+			const Vector3i forward = get_forward_after(ortho_index);
+			for (unsigned int v = 0; v < 6; ++v) {
+				if (get_forward_after(g_faces_ortho_indices[v]) == forward) {
+					return v;
 				}
 			}
 			return 0;
 		}
 
 		case ROTATION_MODE_AXES_3: {
-			const Vector3i up = math::get_ortho_basis_from_index(ortho_index).y;
-			if (up.y != 0) {
-				return 0;
+			// Variant where the forward direction ends up on the same axis (the sign is ignored)
+			const Vector3i forward = get_forward_after(ortho_index);
+			for (unsigned int v = 0; v < 3; ++v) {
+				const Vector3i other = get_forward_after(g_axes_ortho_indices[v]);
+				if ((forward.x != 0) == (other.x != 0) && (forward.y != 0) == (other.y != 0) &&
+					(forward.z != 0) == (other.z != 0)) {
+					return v;
+				}
 			}
-			if (up.x != 0) {
-				return 1;
-			}
-			return 2;
+			return 0;
 		}
 
 		default:
