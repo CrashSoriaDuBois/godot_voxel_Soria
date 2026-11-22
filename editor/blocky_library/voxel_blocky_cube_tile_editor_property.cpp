@@ -6,6 +6,7 @@
 #include "../../util/godot/editor_scale.h"
 #include "voxel_blocky_editor_library_tracker.h"
 #include "voxel_blocky_library_editor_plugin.h"
+#include "../../meshers/blocky/voxel_blocky_model_mesh.h"
 
 namespace zylann::voxel {
 
@@ -33,16 +34,25 @@ void VoxelBlockyCubeTileEditorProperty::_zn_update_property() {
 }
 
 bool VoxelBlockyCubeTileEditorProperty::resolve(const Object &obj, Resolved &out_resolved) const {
-	const VoxelBlockyModelCube *model = Object::cast_to<VoxelBlockyModelCube>(&obj);
-	ERR_FAIL_COND_V(model == nullptr, false);
+	// Cubes and meshes have the same tile settings
+	const VoxelBlockyModelCube *cube = Object::cast_to<VoxelBlockyModelCube>(&obj);
+
+	const VoxelBlockyModelMesh *mesh = Object::cast_to<VoxelBlockyModelMesh>(&obj);
+
+	ERR_FAIL_COND_V(cube == nullptr && mesh == nullptr, false);
 
 	// Models don't know their library. Without one, the defaults are assumed.
 	const Ref<VoxelBlockyLibraryBase> library = get_last_inspected_blocky_library();
 	const Vector2i library_size = library.is_valid() ? library->get_cube_atlas_size_in_tiles() : Vector2i(16, 16);
 	const Ref<Texture2D> library_texture = library.is_valid() ? library->get_cube_preview_texture() : Ref<Texture2D>();
 
-	out_resolved.grid_size = model->get_effective_atlas_size_in_tiles(library_size);
-	out_resolved.texture = model->get_effective_preview_texture(library_texture);
+	if (cube != nullptr) {
+		out_resolved.grid_size = cube->get_effective_atlas_size_in_tiles(library_size);
+		out_resolved.texture = cube->get_effective_preview_texture(library_texture);
+	} else {
+		out_resolved.grid_size = mesh->get_effective_atlas_size_in_tiles(library_size);
+		out_resolved.texture = mesh->get_effective_preview_texture(library_texture);
+	}
 	return true;
 }
 

@@ -14,6 +14,7 @@
 #include "../../util/godot/editor_scale.h"
 #include "model_viewer.h"
 #include "voxel_blocky_editor_library_tracker.h"
+#include "../../meshers/blocky/voxel_blocky_model_mesh.h"
 
 namespace zylann::voxel {
 
@@ -247,6 +248,15 @@ void VoxelBlockyModelViewer::update_model() {
 		const Ref<VoxelBlockyLibraryBase> library = get_last_inspected_blocky_library();
 		const Vector2i library_size = library.is_valid() ? library->get_cube_atlas_size_in_tiles() : Vector2i(16, 16);
 		mesh = cube_model->get_preview_mesh_with_library_size(library_size);
+
+	} else if (const VoxelBlockyModelMesh *mesh_model = Object::cast_to<VoxelBlockyModelMesh>(_model.ptr())) {
+		// Same for meshes using tiles
+		const Ref<VoxelBlockyLibraryBase> library = get_last_inspected_blocky_library();
+
+		const Vector2i library_size = library.is_valid() ? library->get_cube_atlas_size_in_tiles() : Vector2i(16, 16);
+
+		mesh = mesh_model->get_preview_mesh_with_library_size(library_size);
+
 	} else {
 		mesh = _model->get_preview_mesh();
 	}

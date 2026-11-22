@@ -1,4 +1,5 @@
 #include "voxel_blocky_model_mesh.h"
+#include "../../util/containers/container_funcs.h"
 #include "../../util/containers/std_unordered_map.h"
 #include "../../util/containers/std_vector.h"
 #include "../../util/godot/classes/array_mesh.h"
@@ -11,8 +12,10 @@
 #include "../../util/math/conv.h"
 #include "../../util/math/ortho_basis.h"
 #include "../../util/string/format.h"
+#include "blocky_atlas_indexer.h"
 #include "blocky_material_indexer.h"
 #include "blocky_model_baking_context.h"
+
 #include "voxel_blocky_library.h"
 #include "voxel_blocky_model_empty.h"
 
@@ -219,7 +222,9 @@ void bake_mesh_geometry(
 		const bool bake_tangents,
 		MaterialIndexer &material_indexer,
 		const unsigned int ortho_rotation,
-		const float side_vertex_tolerance
+		const float side_vertex_tolerance,
+		// Can be null
+		const TileSlotMapping *tile_slots
 ) {
 	baked_data.model.surface_count = surfaces.size();
 
@@ -260,6 +265,7 @@ void bake_mesh_geometry(
 		PackedVector3Array normals = arrays[Mesh::ARRAY_NORMAL];
 		PackedVector2Array uvs = arrays[Mesh::ARRAY_TEX_UV];
 		PackedFloat32Array tangents = arrays[Mesh::ARRAY_TANGENT];
+		PackedColorArray colors = arrays[Mesh::ARRAY_COLOR];
 
 		// Godot actually allows to create an ArrayMesh with invalid indices. We require valid indices for baking, so we
 		// have to check it.
@@ -281,9 +287,24 @@ void bake_mesh_geometry(
 			add(positions, Vector3(-0.5, -0.5, -0.5));
 			rotate_mesh_arrays_ortho(positions, normals, tangents, ortho_rotation);
 			add(positions, Vector3(0.5, 0.5, 0.5));
+
 		}
 
 		struct L {
+			// Slot of a triangle, from the color of its first vertex. `mixed` tells if its vertices have different
+			// ones.
+			static unsigned int get_triangle_tile_slot(
+					const PackedColorArray &colors,
+					const int a,
+					const int b,
+					const int c,
+					bool &mixed
+			) {
+				const unsigned int slot = get_tile_slot_from_color(colors[a]);
+				mixed = slot != get_tile_slot_from_color(colors[b]) || slot != get_tile_slot_from_color(colors[c]);
+				return slot;
+			}
+
 			static uint8_t get_sides(Vector3f pos, float tolerance) {
 				uint8_t mask = 0;
 				mask |= Math::is_equal_approx(pos.x, 0.f, tolerance) << Cube::SIDE_NEGATIVE_X;
@@ -362,10 +383,31 @@ void bake_mesh_geometry(
 		StdUnorderedMap<int, int> added_regular_indices;
 		FixedArray<Vector3f, 3> tri_positions;
 
+		const bool has_vertex_colors = tile_slots != nullptr && colors.size() == positions.size();
+		bool warned_mixed_colors = false;
+		bool warned_side_tiles = false;
+
 		for (int i = 0; i < indices.size(); i += 3) {
 			tri_positions[0] = to_vec3f(positions[indices[i]]);
 			tri_positions[1] = to_vec3f(positions[indices[i + 1]]);
 			tri_positions[2] = to_vec3f(positions[indices[i + 2]]);
+
+			// Tile used by the triangle. Meshes without (valid) vertex colors count as white.
+			unsigned int tile_slot = TILE_SLOT_WHITE;
+			if (has_vertex_colors) {
+				bool mixed = false;
+				tile_slot = L::get_triangle_tile_slot(colors, indices[i], indices[i + 1], indices[i + 2], mixed);
+				if (mixed && !warned_mixed_colors) {
+					ZN_PRINT_WARNING(format(
+							"Mesh surface {} has triangles whose vertices have different tile colors. The color of the "
+							"first vertex is used.",
+							surface_index
+					));
+					warned_mixed_colors = true;
+				}
+			}
+			const Vector2f tile_uv_offset =
+					tile_slots != nullptr ? tile_slots->uv_offsets[tile_slot] : Vector2f(0.f, 0.f);
 
 			Cube::SideAxis side;
 			if (L::get_triangle_side(
@@ -375,19 +417,40 @@ void bake_mesh_geometry(
 
 				BakedModel::SideSurface &side_surface = model.sides_surfaces[side][surface_index];
 
+				// Tiles that change at meshing time are chosen per side of the voxel
+				if (tile_slots != nullptr) {
+					const uint16_t dynamic_tile = tile_slots->dynamic_tile_indices[tile_slot];
+					if (dynamic_tile != std::numeric_limits<uint16_t>::max()) {
+						uint16_t &side_tile = model.side_tiles[side];
+						if (side_tile == std::numeric_limits<uint16_t>::max()) {
+							side_tile = dynamic_tile;
+						} else if (side_tile != dynamic_tile && !warned_side_tiles) {
+							ZN_PRINT_WARNING(
+									format("A side of a mesh has triangles using different dynamic tiles (surface {}). "
+										   "Only the "
+										   "first one is used.",
+										   surface_index)
+							);
+							warned_side_tiles = true;
+						}
+					}
+				}
+
 				int next_side_index = side_surface.positions.size();
 
 				for (int j = 0; j < 3; ++j) {
 					const int src_index = indices[i + j];
+					// Vertices used by triangles of different tiles can't be shared
+					const int dedupe_key = src_index * int(TILE_SLOT_COUNT) + int(tile_slot);
 					StdUnorderedMap<int, int> &added_indices = added_side_indices[side];
-					const auto existing_dst_index_it = added_indices.find(src_index);
+					const auto existing_dst_index_it = added_indices.find(dedupe_key);
 
 					if (existing_dst_index_it == added_indices.end()) {
 						// Add new vertex
 
 						side_surface.indices.push_back(next_side_index);
 						side_surface.positions.push_back(tri_positions[j]);
-						side_surface.uvs.push_back(to_vec2f(uvs[indices[i + j]]));
+						side_surface.uvs.push_back(to_vec2f(uvs[indices[i + j]]) + tile_uv_offset);
 
 						if (bake_tangents) {
 							// i is the first vertex of each triangle which increments by steps of 3.
@@ -399,7 +462,7 @@ void bake_mesh_geometry(
 							side_surface.tangents.push_back(tangents[ti + 3]);
 						}
 
-						added_indices.insert({ src_index, next_side_index });
+						added_indices.insert({ dedupe_key, next_side_index });
 						++next_side_index;
 
 					} else {
@@ -415,13 +478,14 @@ void bake_mesh_geometry(
 
 				for (int j = 0; j < 3; ++j) {
 					const int src_index = indices[i + j];
-					const auto existing_dst_index_it = added_regular_indices.find(src_index);
+					const int dedupe_key = src_index * int(TILE_SLOT_COUNT) + int(tile_slot);
+					const auto existing_dst_index_it = added_regular_indices.find(dedupe_key);
 
 					if (existing_dst_index_it == added_regular_indices.end()) {
 						surface.indices.push_back(next_regular_index);
 						surface.positions.push_back(tri_positions[j]);
 						surface.normals.push_back(to_vec3f(normals[indices[i + j]]));
-						surface.uvs.push_back(to_vec2f(uvs[indices[i + j]]));
+						surface.uvs.push_back(to_vec2f(uvs[indices[i + j]]) + tile_uv_offset);
 
 						if (bake_tangents) {
 							// i is the first vertex of each triangle which increments by steps of 3.
@@ -433,7 +497,7 @@ void bake_mesh_geometry(
 							surface.tangents.push_back(tangents[ti + 3]);
 						}
 
-						added_regular_indices.insert({ src_index, next_regular_index });
+						added_regular_indices.insert({ dedupe_key, next_regular_index });
 						++next_regular_index;
 
 					} else {
@@ -451,7 +515,9 @@ void bake_mesh_geometry(
 		const bool bake_tangents,
 		MaterialIndexer &material_indexer,
 		const float side_vertex_tolerance,
-		const bool side_cutout_enabled
+		const bool side_cutout_enabled,
+		// Can be null
+		const TileSlotMapping *tile_slots
 ) {
 	Ref<Mesh> mesh = config.get_mesh();
 
@@ -488,7 +554,8 @@ void bake_mesh_geometry(
 			bake_tangents,
 			material_indexer,
 			config.get_mesh_ortho_rotation_index(),
-			side_vertex_tolerance
+			side_vertex_tolerance,
+			tile_slots
 	);
 }
 
@@ -499,8 +566,18 @@ void VoxelBlockyModelMesh::bake(blocky::ModelBakingContext &ctx) const {
 	blocky::MaterialIndexer &materials = ctx.material_indexer;
 
 	baked_data.clear();
+
+	blocky::TileSlotMapping tile_slots;
+	make_tile_slot_mapping(tile_slots, ctx.atlas_indexer, ctx.atlas_indexer.cube_atlas_size_in_tiles);
+
 	blocky::bake_mesh_geometry(
-			*this, baked_data, ctx.tangents_enabled, materials, _side_vertex_tolerance, _side_cutout_enabled
+			*this,
+			baked_data,
+			ctx.tangents_enabled,
+			materials,
+			_side_vertex_tolerance,
+			_side_cutout_enabled,
+			&tile_slots
 	);
 	VoxelBlockyModel::bake(ctx);
 }
@@ -517,12 +594,21 @@ bool VoxelBlockyModelMesh::is_empty() const {
 }
 
 Ref<Mesh> VoxelBlockyModelMesh::get_preview_mesh() const {
+	// No library known here: assume the default tile grid size.
+	return get_preview_mesh_with_library_size(Vector2i(16, 16));
+}
+
+Ref<Mesh> VoxelBlockyModelMesh::get_preview_mesh_with_library_size(const Vector2i library_size) const {
 	const float bake_tangents = false;
 	blocky::BakedModel baked_data;
 	baked_data.color = get_color();
 	StdVector<Ref<Material>> materials;
 	blocky::MaterialIndexer material_indexer{ materials };
-	bake_mesh_geometry(*this, baked_data, bake_tangents, material_indexer, _side_vertex_tolerance, false);
+	StdVector<blocky::BakedLibrary::Tile> baked_tiles;
+	blocky::AtlasIndexer atlas_indexer(baked_tiles);
+	blocky::TileSlotMapping tile_slots;
+	make_tile_slot_mapping(tile_slots, atlas_indexer, library_size);
+	bake_mesh_geometry(*this, baked_data, bake_tangents, material_indexer, _side_vertex_tolerance, false, &tile_slots);
 
 	Ref<Mesh> mesh = make_mesh_from_baked_data(baked_data, bake_tangents);
 
@@ -558,6 +644,230 @@ bool VoxelBlockyModelMesh::is_side_cutout_enabled() const {
 	return _side_cutout_enabled;
 }
 
+VoxelBlockyModelMesh::VoxelBlockyModelMesh() {
+	fill(_atlas_tiles, -1);
+}
+
+void VoxelBlockyModelMesh::set_tile(int slot, Vector2i pos) {
+	ZN_ASSERT_RETURN(slot >= 0 && slot < int(blocky::TILE_SLOT_COUNT));
+	pos.x = math::max(pos.x, 0);
+	pos.y = math::max(pos.y, 0);
+	if (_tiles[slot] != pos) {
+		_tiles[slot] = pos;
+		emit_changed();
+	}
+}
+
+Vector2i VoxelBlockyModelMesh::get_tile(int slot) const {
+	ZN_ASSERT_RETURN_V(slot >= 0 && slot < int(blocky::TILE_SLOT_COUNT), Vector2i());
+	return _tiles[slot];
+}
+
+void VoxelBlockyModelMesh::set_atlas(Ref<VoxelBlockyTextureAtlas> atlas) {
+	if (atlas == _atlas) {
+		return;
+	}
+	_atlas = atlas;
+	// Tile properties may switch to using the atlas
+	notify_property_list_changed();
+	emit_changed();
+}
+
+Ref<VoxelBlockyTextureAtlas> VoxelBlockyModelMesh::get_atlas() const {
+	return _atlas;
+}
+
+void VoxelBlockyModelMesh::set_atlas_tile_id(int slot, int tile_id) {
+	ZN_ASSERT_RETURN(slot >= 0 && slot < int(blocky::TILE_SLOT_COUNT));
+	if (tile_id == _atlas_tiles[slot]) {
+		return;
+	}
+	_atlas_tiles[slot] = tile_id;
+	emit_changed();
+}
+
+int VoxelBlockyModelMesh::get_atlas_tile_id(int slot) const {
+	ZN_ASSERT_RETURN_V(slot >= 0 && slot < int(blocky::TILE_SLOT_COUNT), -1);
+	return _atlas_tiles[slot];
+}
+
+void VoxelBlockyModelMesh::set_atlas_size_in_tiles(Vector2i s) {
+	ZN_ASSERT_RETURN(s.x > 0);
+	ZN_ASSERT_RETURN(s.y > 0);
+	if (s != _atlas_size_in_tiles) {
+		_atlas_size_in_tiles = s;
+		emit_changed();
+	}
+}
+
+Vector2i VoxelBlockyModelMesh::get_atlas_size_in_tiles() const {
+	return _atlas_size_in_tiles;
+}
+
+void VoxelBlockyModelMesh::set_use_library_tile_size(bool enabled) {
+	if (enabled == _use_library_tile_size) {
+		return;
+	}
+	_use_library_tile_size = enabled;
+	// Shows/hides the model's own size in the inspector
+	notify_property_list_changed();
+	emit_changed();
+}
+
+bool VoxelBlockyModelMesh::get_use_library_tile_size() const {
+	return _use_library_tile_size;
+}
+
+void VoxelBlockyModelMesh::set_use_library_texture(bool enabled) {
+	if (enabled == _use_library_texture) {
+		return;
+	}
+	_use_library_texture = enabled;
+	notify_property_list_changed();
+	emit_changed();
+}
+
+bool VoxelBlockyModelMesh::get_use_library_texture() const {
+	return _use_library_texture;
+}
+
+void VoxelBlockyModelMesh::set_preview_texture(Ref<Texture2D> texture) {
+	if (texture == _preview_texture) {
+		return;
+	}
+	_preview_texture = texture;
+	// Preview only: no re-bake needed, but editors showing the tile picker must refresh.
+	emit_changed();
+}
+
+Ref<Texture2D> VoxelBlockyModelMesh::get_preview_texture() const {
+	return _preview_texture;
+}
+
+Vector2i VoxelBlockyModelMesh::get_effective_atlas_size_in_tiles(const Vector2i library_size) const {
+	return _use_library_tile_size ? library_size : _atlas_size_in_tiles;
+}
+
+Ref<Texture2D> VoxelBlockyModelMesh::get_effective_preview_texture(const Ref<Texture2D> &library_texture) const {
+	return _use_library_texture ? library_texture : _preview_texture;
+}
+
+void VoxelBlockyModelMesh::make_tile_slot_mapping(
+		blocky::TileSlotMapping &mapping,
+		blocky::AtlasIndexer &atlas_indexer,
+		const Vector2i library_size
+) const {
+	if (_atlas.is_valid()) {
+		blocky::make_atlas_tile_slot_mapping(mapping, _atlas, _atlas_tiles, atlas_indexer);
+	} else {
+		blocky::make_manual_tile_slot_mapping(mapping, _tiles, get_effective_atlas_size_in_tiles(library_size));
+	}
+}
+
+namespace {
+
+// Returns -1 if the name is not a slot
+int find_tile_slot(const String &name) {
+	for (unsigned int slot = 0; slot < blocky::TILE_SLOT_COUNT; ++slot) {
+		if (name == blocky::get_tile_slot_name(slot)) {
+			return slot;
+		}
+	}
+	return -1;
+}
+
+} // namespace
+
+bool VoxelBlockyModelMesh::_set(const StringName &p_name, const Variant &p_value) {
+	const String property_name = p_name;
+
+	// These are dynamic properties so their visibility can depend on the "use library" flags.
+	if (property_name == "use_library_tile_size") {
+		set_use_library_tile_size(p_value);
+		return true;
+	}
+	if (property_name == "atlas_size_in_tiles") {
+		set_atlas_size_in_tiles(p_value);
+		return true;
+	}
+	if (property_name == "use_library_texture") {
+		set_use_library_texture(p_value);
+		return true;
+	}
+	if (property_name == "preview_texture") {
+		set_preview_texture(p_value);
+		return true;
+	}
+
+	if (property_name.begins_with("tile_")) {
+		const int slot = find_tile_slot(property_name.substr(String("tile_").length(), property_name.length()));
+		if (slot >= 0) {
+			const Vector2i v = p_value;
+			set_tile(slot, v);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool VoxelBlockyModelMesh::_get(const StringName &p_name, Variant &r_ret) const {
+	const String property_name = p_name;
+
+	if (property_name == "use_library_tile_size") {
+		r_ret = _use_library_tile_size;
+		return true;
+	}
+	if (property_name == "atlas_size_in_tiles") {
+		r_ret = _atlas_size_in_tiles;
+		return true;
+	}
+	if (property_name == "use_library_texture") {
+		r_ret = _use_library_texture;
+		return true;
+	}
+	if (property_name == "preview_texture") {
+		r_ret = _preview_texture;
+		return true;
+	}
+
+	if (property_name.begins_with("tile_")) {
+		const int slot = find_tile_slot(property_name.substr(String("tile_").length(), property_name.length()));
+		if (slot >= 0) {
+			r_ret = get_tile(slot);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void VoxelBlockyModelMesh::_get_property_list(List<PropertyInfo> *p_list) const {
+	p_list->push_back(PropertyInfo(Variant::BOOL, "use_library_tile_size"));
+	// The model's own values are only shown (and saved) when the model does not follow the library
+	p_list->push_back(PropertyInfo(
+			Variant::VECTOR2I,
+			"atlas_size_in_tiles",
+			PROPERTY_HINT_NONE,
+			"",
+			_use_library_tile_size ? PROPERTY_USAGE_NONE : PROPERTY_USAGE_DEFAULT
+	));
+	p_list->push_back(PropertyInfo(Variant::BOOL, "use_library_texture"));
+	p_list->push_back(PropertyInfo(
+			Variant::OBJECT,
+			"preview_texture",
+			PROPERTY_HINT_RESOURCE_TYPE,
+			"Texture2D",
+			_use_library_texture ? PROPERTY_USAGE_NONE : PROPERTY_USAGE_DEFAULT
+	));
+
+	p_list->push_back(PropertyInfo(Variant::NIL, "Mesh tiles", PROPERTY_HINT_NONE, "tile_", PROPERTY_USAGE_GROUP));
+
+	for (unsigned int slot = 0; slot < blocky::TILE_SLOT_COUNT; ++slot) {
+		p_list->push_back(PropertyInfo(Variant::VECTOR2I, String("tile_") + String(blocky::get_tile_slot_name(slot))));
+	}
+}
+
 void VoxelBlockyModelMesh::_bind_methods() {
 	using Self = VoxelBlockyModelMesh;
 
@@ -572,11 +882,50 @@ void VoxelBlockyModelMesh::_bind_methods() {
 	);
 	ClassDB::bind_method(D_METHOD("is_side_cutout_enabled"), &VoxelBlockyModelMesh::is_side_cutout_enabled);
 
+	ClassDB::bind_method(D_METHOD("set_tile", "slot", "position"), &Self::set_tile);
+	ClassDB::bind_method(D_METHOD("get_tile", "slot"), &Self::get_tile);
+	ClassDB::bind_method(D_METHOD("set_atlas", "atlas"), &Self::set_atlas);
+	ClassDB::bind_method(D_METHOD("get_atlas"), &Self::get_atlas);
+	ClassDB::bind_method(D_METHOD("set_atlas_tile_id", "slot", "tile_id"), &Self::set_atlas_tile_id);
+	ClassDB::bind_method(D_METHOD("get_atlas_tile_id", "slot"), &Self::get_atlas_tile_id);
+	ClassDB::bind_method(D_METHOD("set_atlas_size_in_tiles", "size"), &Self::set_atlas_size_in_tiles);
+	ClassDB::bind_method(D_METHOD("get_atlas_size_in_tiles"), &Self::get_atlas_size_in_tiles);
+	ClassDB::bind_method(D_METHOD("set_use_library_tile_size", "enabled"), &Self::set_use_library_tile_size);
+	ClassDB::bind_method(D_METHOD("get_use_library_tile_size"), &Self::get_use_library_tile_size);
+	ClassDB::bind_method(D_METHOD("set_use_library_texture", "enabled"), &Self::set_use_library_texture);
+	ClassDB::bind_method(D_METHOD("get_use_library_texture"), &Self::get_use_library_texture);
+	ClassDB::bind_method(D_METHOD("set_preview_texture", "texture"), &Self::set_preview_texture);
+	ClassDB::bind_method(D_METHOD("get_preview_texture"), &Self::get_preview_texture);
+
 	ADD_PROPERTY(
 			PropertyInfo(Variant::OBJECT, "mesh", PROPERTY_HINT_RESOURCE_TYPE, Mesh::get_class_static()),
 			"set_mesh",
 			"get_mesh"
 	);
+
+	ADD_PROPERTY(
+			PropertyInfo(
+					Variant::OBJECT, "atlas", PROPERTY_HINT_RESOURCE_TYPE, VoxelBlockyTextureAtlas::get_class_static()
+			),
+			"set_atlas",
+			"get_atlas"
+	);
+
+	ADD_GROUP("Atlas tiles", "atlas_tile_id_");
+
+#define ADD_ATLAS_TILE_ID_PROPERTY(m_name, m_slot)                                                                     \
+	ADD_PROPERTYI(PropertyInfo(Variant::INT, m_name), "set_atlas_tile_id", "get_atlas_tile_id", m_slot);
+
+	ADD_ATLAS_TILE_ID_PROPERTY("atlas_tile_id_red", blocky::TILE_SLOT_RED);
+	ADD_ATLAS_TILE_ID_PROPERTY("atlas_tile_id_green", blocky::TILE_SLOT_GREEN);
+	ADD_ATLAS_TILE_ID_PROPERTY("atlas_tile_id_blue", blocky::TILE_SLOT_BLUE);
+	ADD_ATLAS_TILE_ID_PROPERTY("atlas_tile_id_yellow", blocky::TILE_SLOT_YELLOW);
+	ADD_ATLAS_TILE_ID_PROPERTY("atlas_tile_id_cyan", blocky::TILE_SLOT_CYAN);
+	ADD_ATLAS_TILE_ID_PROPERTY("atlas_tile_id_magenta", blocky::TILE_SLOT_MAGENTA);
+	ADD_ATLAS_TILE_ID_PROPERTY("atlas_tile_id_white", blocky::TILE_SLOT_WHITE);
+	ADD_ATLAS_TILE_ID_PROPERTY("atlas_tile_id_black", blocky::TILE_SLOT_BLACK);
+
+	ADD_GROUP("", "");
 	ADD_PROPERTY(
 			PropertyInfo(Variant::INT, "mesh_ortho_rotation_index", PROPERTY_HINT_RANGE, "0,24"),
 			"set_mesh_ortho_rotation_index",

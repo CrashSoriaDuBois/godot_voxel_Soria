@@ -5,6 +5,7 @@
 #include "voxel_blocky_cube_tile_editor_property.h"
 #include "voxel_blocky_editor_library_tracker.h"
 #include "voxel_blocky_tile_editor_property.h"
+#include "../../meshers/blocky/voxel_blocky_model_mesh.h"
 
 namespace zylann::voxel {
 
@@ -18,7 +19,8 @@ bool VoxelBlockyTileSelectionInspectorPlugin::_zn_can_handle(const Object *p_obj
 		set_last_inspected_blocky_library(const_cast<VoxelBlockyLibraryBase *>(library));
 		return false;
 	}
-	return Object::cast_to<VoxelBlockyModelCube>(p_object) != nullptr;
+	return Object::cast_to<VoxelBlockyModelCube>(p_object) != nullptr ||
+			Object::cast_to<VoxelBlockyModelMesh>(p_object) != nullptr;
 }
 
 bool VoxelBlockyTileSelectionInspectorPlugin::_zn_parse_property(
@@ -30,8 +32,18 @@ bool VoxelBlockyTileSelectionInspectorPlugin::_zn_parse_property(
 		const BitField<PropertyUsageFlags> p_usage,
 		const bool p_wide
 ) {
-	const VoxelBlockyModelCube *model = Object::cast_to<VoxelBlockyModelCube>(p_object);
-	Ref<VoxelBlockyTextureAtlas> atlas = model->get_atlas();
+	// Cubes and meshes have the same tile settings
+	Ref<VoxelBlockyTextureAtlas> atlas;
+
+	if (const VoxelBlockyModelCube *cube = Object::cast_to<VoxelBlockyModelCube>(p_object)) {
+		atlas = cube->get_atlas();
+
+	} else if (const VoxelBlockyModelMesh *mesh = Object::cast_to<VoxelBlockyModelMesh>(p_object)) {
+		atlas = mesh->get_atlas();
+
+	} else {
+		return false;
+	}
 	if (atlas.is_null()) {
 		// Manual tile positions: show a preview of the tile and pick it on a grid
 		if (p_type == Variant::VECTOR2I && p_path.begins_with("tile_")) {
@@ -44,7 +56,7 @@ bool VoxelBlockyTileSelectionInspectorPlugin::_zn_parse_property(
 	}
 
 	if (p_path.begins_with("atlas_tile_id_")) {
-		const int tile_id = model->get(p_path);
+		const int tile_id = p_object->get(p_path);
 
 		// Replace default editor with this one
 		VoxelBlockyTileEditorProperty *ed = memnew(VoxelBlockyTileEditorProperty);
