@@ -6,6 +6,7 @@
 #include "sub_grid_manager.h"
 #include "terrain/variable_lod/voxel_lod_terrain.h"
 #include "voxel_tool_sub_grid.h"
+#include "../meshers/blocky/blocky_rotation_variants.h"
 
 namespace zylann::voxel {
 
@@ -553,6 +554,14 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 	const Vector3i pix = snap_col(pb.get_column(0)), piy = snap_col(pb.get_column(1)), piz = snap_col(pb.get_column(2));
 	const int PM[3][3] = { { pix.x, piy.x, piz.x }, { pix.y, piy.y, piz.y }, { pix.z, piy.z, piz.z } };
 
+	math::OrthoBasis rotation;
+	rotation.x = pix;
+	rotation.y = piy;
+	rotation.z = piz;
+	Ref<VoxelMesherBlocky> blocky_mesher = _mesher;
+	Ref<VoxelBlockyLibraryBase> lib =
+			blocky_mesher.is_valid() ? blocky_mesher->get_library() : Ref<VoxelBlockyLibraryBase>();
+
 	const int cs = 1 << SubGridChunkMap::CHUNK_SIZE_PO2;
 
 	// Track which parent chunks get written so we can mark them dirty
@@ -573,6 +582,13 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 					uint32_t type_v = buf->get_voxel(x, y, z, VoxelBuffer::CHANNEL_TYPE);
 					if (type_v == 0)
 						continue;
+
+					uint32_t out_type = type_v;
+					if (lib.is_valid()) {
+						RWLockRead lock(lib->get_baked_data_rw_lock());
+						out_type = blocky::rotate_voxel_id(lib->get_baked_data(), type_v, rotation);
+					}
+
 					Vector3 local_center = Vector3(block_origin + Vector3i(x, y, z)) + Vector3(0.5f, 0.5f, 0.5f);
 					Vector3 parent_center = to_parent.xform(local_center);
 					// Subtract 0.5 to get corner, then floor
@@ -584,6 +600,16 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 					if (gm != nullptr && gm->get_type() == VoxelGridMetadata::TYPE_INDEX) {
 						VoxelGridMetadata rotated_grid;
 						static_cast<const VoxelGridMetadata &>(gm->get_custom()).rotate_into(PM, rotated_grid);
+
+						if (lib.is_valid()) {
+							RWLockRead lock(lib->get_baked_data_rw_lock());
+							const blocky::BakedLibrary &baked = lib->get_baked_data();
+							for (unsigned int i = 0; i < VoxelGridMetadata::cell_count(rotated_grid.res); ++i) {
+								rotated_grid.cells[i] =
+										uint16_t(blocky::rotate_voxel_id(baked, rotated_grid.cells[i], rotation));
+							}
+						}
+
 						parent_sg->get_chunk_map_mut().set_voxel_grid(parent_i, rotated_grid);
 					}
 
@@ -598,7 +624,7 @@ void VoxelSubGrid::_disassemble_child_to_parent() {
 						const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
 						uint32_t v;
 						if (channel == VoxelBuffer::CHANNEL_TYPE) {
-							v = type_v;
+							v = out_type;
 						} else if (channel == VoxelBuffer::CHANNEL_DATA6) {
 							if (buf->get_voxel(x, y, z, channel) != 0) {
 								entity_moves.push_back({ block_origin + Vector3i(x, y, z), parent_i });
@@ -1036,6 +1062,11 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(
 		{ ix.z, iy.z, iz.z },
 	};
 
+	math::OrthoBasis rotation;
+	rotation.x = ix;
+	rotation.y = iy;
+	rotation.z = iz;
+
 	// Local voxel-space bounding box of the whole hull, so rotated coordinates can be kept
 	// non-negative via the correct per-axis offset rather than naive matrix*index (which
 	// produces negative/mirrored results whenever a column is negative - that mirroring is
@@ -1093,11 +1124,13 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(
 					if (v == 0)
 						continue;
 
+					uint32_t rotated_v = v;
 					bool relevant = false;
 					if (lib.is_valid()) {
 						RWLockRead lock(lib->get_baked_data_rw_lock());
 						const blocky::BakedLibrary &baked = lib->get_baked_data();
-						relevant = baked.has_model(v) && baked.models[v].light_emission > 0;
+						rotated_v = blocky::rotate_voxel_id(baked, v, rotation);
+						relevant = baked.has_model(rotated_v) && baked.models[rotated_v].light_emission > 0;
 					}
 
 					Vector3i local_p = block_origin + Vector3i(x, y, z);
@@ -1111,6 +1144,16 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(
 					if (gm != nullptr && gm->get_type() == VoxelGridMetadata::TYPE_INDEX) {
 						VoxelGridMetadata rotated_grid;
 						static_cast<const VoxelGridMetadata &>(gm->get_custom()).rotate_into(M, rotated_grid);
+
+						if (lib.is_valid()) {
+							RWLockRead lock(lib->get_baked_data_rw_lock());
+							const blocky::BakedLibrary &baked = lib->get_baked_data();
+							for (unsigned int i = 0; i < VoxelGridMetadata::cell_count(rotated_grid.res); ++i) {
+								rotated_grid.cells[i] =
+										uint16_t(blocky::rotate_voxel_id(baked, rotated_grid.cells[i], rotation));
+							}
+						}
+
 						const unsigned int n = VoxelGridMetadata::cell_count(rotated_grid.res);
 						terrain->get_storage().try_set_voxel_grid(
 								target_pos,
@@ -1125,7 +1168,7 @@ void VoxelSubGrid::_paste_rotated_chunks_to_terrain(
 						const VoxelBuffer::ChannelId channel = SubGridChunkMap::SUBGRID_CHANNELS[c];
 						uint32_t cv;
 						if (channel == VoxelBuffer::CHANNEL_TYPE) {
-							cv = v;
+							cv = rotated_v;
 						} else if (channel == VoxelBuffer::CHANNEL_DATA6) {
 							if (buf->get_voxel(x, y, z, channel) != 0) {
 								entity_moves.push_back({ local_p, target_pos });

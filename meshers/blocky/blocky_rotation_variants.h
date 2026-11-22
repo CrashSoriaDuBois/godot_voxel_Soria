@@ -2,6 +2,7 @@
 #define VOXEL_BLOCKY_ROTATION_VARIANTS_H
 
 #include "blocky_baked_library.h"
+#include "../../util/math/ortho_basis.h"
 
 namespace zylann::voxel::blocky {
 
@@ -25,6 +26,8 @@ uint8_t get_rotation_variant_ortho_index(const RotationMode mode, const unsigned
 unsigned int get_rotation_variant_from_ortho_index(const RotationMode mode, const unsigned int ortho_index);
 
 const char *get_rotation_mode_name(const RotationMode mode);
+
+uint32_t rotate_voxel_id(const BakedLibrary &lib, uint32_t voxel_id, const math::OrthoBasis &rotation);
 
 } // namespace zylann::voxel::blocky
 

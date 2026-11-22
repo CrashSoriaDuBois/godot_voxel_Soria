@@ -98,4 +98,33 @@ const char *get_rotation_mode_name(const RotationMode mode) {
 	}
 }
 
+uint32_t rotate_voxel_id(const BakedLibrary &lib, const uint32_t id, const math::OrthoBasis &rotation) {
+	if (!lib.has_model(id)) {
+		return id;
+	}
+	const BakedModel &m = lib.models[id];
+	if (m.rotation_mode == ROTATION_MODE_NONE) {
+		return id;
+	}
+	const unsigned int count = get_rotation_variant_count(m.rotation_mode);
+	if (m.rotation_variant >= count || id < m.rotation_variant) {
+		return id;
+	}
+	const uint32_t base = id - m.rotation_variant;
+	// The group must be laid out as the header describes, otherwise leave the voxel alone
+	if (!lib.has_model(base + count - 1) || lib.models[base].rotation_mode != m.rotation_mode ||
+		lib.models[base].rotation_variant != 0) {
+		return id;
+	}
+
+	const math::OrthoBasis current =
+			math::get_ortho_basis_from_index(get_rotation_variant_ortho_index(m.rotation_mode, m.rotation_variant));
+	const math::OrthoBasis rotated = rotation * current;
+	const int rotated_index = math::get_index_from_ortho_basis(rotated);
+	if (rotated_index < 0) {
+		return id; // not a proper rotation (mirrored basis): don't guess
+	}
+	return base + get_rotation_variant_from_ortho_index(m.rotation_mode, static_cast<unsigned int>(rotated_index));
+}
+
 } // namespace zylann::voxel::blocky
