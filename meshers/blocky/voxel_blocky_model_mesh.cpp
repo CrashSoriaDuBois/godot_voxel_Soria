@@ -15,7 +15,7 @@
 #include "blocky_atlas_indexer.h"
 #include "blocky_material_indexer.h"
 #include "blocky_model_baking_context.h"
-
+#include "blocky_tile_orientation.h"
 #include "voxel_blocky_library.h"
 #include "voxel_blocky_model_empty.h"
 
@@ -288,6 +288,10 @@ void bake_mesh_geometry(
 			rotate_mesh_arrays_ortho(positions, normals, tangents, ortho_rotation);
 			add(positions, Vector3(0.5, 0.5, 0.5));
 
+			// The texture of faces rotates with them
+			get_side_tile_rotations(
+					math::get_ortho_basis_from_index(ortho_rotation), baked_data.model.side_tile_rotations
+			);
 		}
 
 		struct L {

@@ -4,6 +4,7 @@
 #include "blocky_atlas_indexer.h"
 #include "blocky_material_indexer.h"
 #include "blocky_model_baking_context.h"
+#include "blocky_tile_orientation.h"
 #include "voxel_blocky_model_mesh.h"
 #include <array>
 
@@ -64,6 +65,7 @@ int VoxelBlockyModelCube::get_atlas_tile_id(VoxelBlockyModel::Side side) const {
 
 bool VoxelBlockyModelCube::_set(const StringName &p_name, const Variant &p_value) {
 	const String property_name = p_name;
+
 	// These are dynamic properties so their visibility can depend on the "use library" flags.
 	if (property_name == "use_library_tile_size") {
 		set_use_library_tile_size(p_value);
@@ -100,6 +102,7 @@ bool VoxelBlockyModelCube::_set(const StringName &p_name, const Variant &p_value
 
 bool VoxelBlockyModelCube::_get(const StringName &p_name, Variant &r_ret) const {
 	const String property_name = p_name;
+
 	if (property_name == "use_library_tile_size") {
 		r_ret = _use_library_tile_size;
 		return true;
@@ -313,6 +316,8 @@ void rotate_ortho(
 				&sides_surfaces,
 		// Baked tile indices are per side too, so they must follow the faces when the model is rotated
 		std::array<uint16_t, Cube::SIDE_COUNT> &side_tiles,
+		// The texture of faces rotates with them
+		std::array<uint8_t, Cube::SIDE_COUNT> &side_tile_rotations,
 		const unsigned int ortho_rotation_index
 ) {
 	const math::OrthoBasis ortho_basis = math::get_ortho_basis_from_index(ortho_rotation_index);
@@ -347,6 +352,7 @@ void rotate_ortho(
 
 	sides_surfaces = std::move(rotated_sides_surfaces);
 	side_tiles = rotated_side_tiles;
+	get_side_tile_rotations(ortho_basis, side_tile_rotations);
 }
 
 void bake_cube_geometry(
@@ -463,7 +469,10 @@ void bake_cube_geometry(
 
 	if (config.get_mesh_ortho_rotation_index() != 0) {
 		rotate_ortho(
-				baked_data.model.sides_surfaces, baked_data.model.side_tiles, config.get_mesh_ortho_rotation_index()
+				baked_data.model.sides_surfaces,
+				baked_data.model.side_tiles,
+				baked_data.model.side_tile_rotations,
+				config.get_mesh_ortho_rotation_index()
 		);
 	}
 
@@ -575,9 +584,13 @@ void VoxelBlockyModelCube::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_atlas_size_in_tiles", "ts"), &VoxelBlockyModelCube::set_atlas_size_in_tiles);
 	ClassDB::bind_method(D_METHOD("get_atlas_size_in_tiles"), &VoxelBlockyModelCube::get_atlas_size_in_tiles);
 
-	ClassDB::bind_method(D_METHOD("set_use_library_tile_size", "enabled"), &VoxelBlockyModelCube::set_use_library_tile_size);
+	ClassDB::bind_method(
+			D_METHOD("set_use_library_tile_size", "enabled"), &VoxelBlockyModelCube::set_use_library_tile_size
+	);
 	ClassDB::bind_method(D_METHOD("get_use_library_tile_size"), &VoxelBlockyModelCube::get_use_library_tile_size);
-	ClassDB::bind_method(D_METHOD("set_use_library_texture", "enabled"), &VoxelBlockyModelCube::set_use_library_texture);
+	ClassDB::bind_method(
+			D_METHOD("set_use_library_texture", "enabled"), &VoxelBlockyModelCube::set_use_library_texture
+	);
 	ClassDB::bind_method(D_METHOD("get_use_library_texture"), &VoxelBlockyModelCube::get_use_library_texture);
 	ClassDB::bind_method(D_METHOD("set_preview_texture", "texture"), &VoxelBlockyModelCube::set_preview_texture);
 	ClassDB::bind_method(D_METHOD("get_preview_texture"), &VoxelBlockyModelCube::get_preview_texture);
@@ -591,9 +604,7 @@ void VoxelBlockyModelCube::_bind_methods() {
 	ADD_PROPERTY(
 			PropertyInfo(Variant::FLOAT, "height", PROPERTY_HINT_RANGE, "0.001,1,0.001"), "set_height", "get_height"
 	);
-//	ADD_PROPERTY(
-//			PropertyInfo(Variant::VECTOR2I, "atlas_size_in_tiles"), "set_atlas_size_in_tiles", "get_atlas_size_in_tiles"
-//	);
+
 	ADD_PROPERTY(
 			PropertyInfo(
 					Variant::OBJECT, "atlas", PROPERTY_HINT_RESOURCE_TYPE, VoxelBlockyTextureAtlas::get_class_static()

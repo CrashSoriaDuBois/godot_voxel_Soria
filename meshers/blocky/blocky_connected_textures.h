@@ -40,6 +40,42 @@ void generate_atlas_from_compact5(
 std::array<uint8_t, COMPACT5_TILE_COUNT> get_blob9_reference_cases_for_compact5();
 
 uint8_t get_connection_mask_from_case_index(const uint8_t case_index);
+
+// Tiles may be rotated on a side when the model is rotated (see blocky_tile_orientation.h). These functions express
+// tile jumps and tile coordinates in the orientation the tile actually has, `quarter_turns` being the value found in BakedModel::Model::side_tile_rotations.
+inline Vector3i rotate_tile_jump(const Vector3i jump, const uint8_t quarter_turns) {
+	switch (quarter_turns & 3) {
+		case 1:
+			return Vector3i(jump.y, -jump.x, jump.z);
+		case 2:
+			return Vector3i(-jump.x, -jump.y, jump.z);
+		case 3:
+			return Vector3i(-jump.y, jump.x, jump.z);
+		default:
+			return jump;
+	}
+}
+
+inline void rotate_tile_coords(int &u, int &v, const uint8_t quarter_turns) {
+	const int pu = u;
+	const int pv = v;
+	switch (quarter_turns & 3) {
+		case 1:
+			u = pv;
+			v = -pu;
+			break;
+		case 2:
+			u = -pu;
+			v = -pv;
+			break;
+		case 3:
+			u = -pv;
+			v = pu;
+			break;
+		default:
+			break;
+	}
+}
 uint8_t get_case_index_from_connection_mask(const uint8_t cm);
 
 template <typename TModelID>

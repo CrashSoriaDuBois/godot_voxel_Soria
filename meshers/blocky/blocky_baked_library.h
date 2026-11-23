@@ -49,8 +49,11 @@ enum TileType : uint8_t {
 
 enum RotationMode : uint8_t {
 	ROTATION_MODE_NONE,
+	// One variant per axis
 	ROTATION_MODE_AXES_3,
+	// One variant per face direction
 	ROTATION_MODE_FACES_6,
+	// One variant per orthogonal rotation
 	ROTATION_MODE_ORTHO_24,
 	ROTATION_MODE_COUNT,
 };
@@ -102,6 +105,9 @@ struct BakedModel {
 		// Model sides: they are separated because this way we can occlude them easily.
 		FixedArray<FixedArray<SideSurface, MAX_SURFACES>, Cube::SIDE_COUNT> sides_surfaces;
 		std::array<uint16_t, Cube::SIDE_COUNT> side_tiles;
+		// Quarter turns of the orientation of tiles on each side, compared to the standard one (see
+		// blocky_tile_orientation.h). Non-zero when the model is rotated.
+		std::array<uint8_t, Cube::SIDE_COUNT> side_tile_rotations;
 		unsigned int surface_count = 0;
 		// Cached information to check this case early.
 		// Bits are indexed with the Cube::Side enum.
@@ -129,6 +135,9 @@ struct BakedModel {
 			for (uint16_t &t : side_tiles) {
 				t = std::numeric_limits<uint16_t>::max();
 			}
+			for (uint8_t &r : side_tile_rotations) {
+				r = 0;
+			}
 			for (Surface &surface : surfaces) {
 				surface.clear();
 			}
@@ -150,7 +159,7 @@ struct BakedModel {
 	bool is_random_tickable;
 	bool is_transparent;
 	bool cutout_sides_enabled = false;
-
+	// Rotation group this model belongs to, if any. The first model of the group is at `index - rotation_variant`.
 	RotationMode rotation_mode = ROTATION_MODE_NONE;
 	uint8_t rotation_variant = 0;
 

@@ -239,7 +239,7 @@ void emit_grid_voxel(
 										bm,
 										id,
 										(cy + 1) + (cx + 1) * S + (cz + 1) * S * S,
-										tj[side],
+										rotate_tile_jump(tj[side], model.side_tile_rotations[side]),
 										static_cast<Cube::Side>(side),
 										library,
 										tile.connect_to_covered
@@ -300,6 +300,7 @@ void emit_grid_voxel(
 										v = -cell_world.y;
 										break;
 								}
+								rotate_tile_coords(u, v, model.side_tile_rotations[side]);
 								ltpos.x = positive_mod(u, tile.group_size_x);
 								ltpos.y = positive_mod(v, tile.group_size_y);
 							} break;
@@ -439,10 +440,12 @@ static void merge_navmesh_polygons(
 	// Step 4: union-find to group triangles across dissolvable edges
 	Vector<int> parent;
 	parent.resize(tri_count);
-	for (int i = 0; i < tri_count; i++) parent.write[i] = i;
+	for (int i = 0; i < tri_count; i++)
+		parent.write[i] = i;
 
 	std::function<int(int)> find = [&](int x) -> int {
-		if (parent[x] != x) parent.write[x] = find(parent[x]);
+		if (parent[x] != x)
+			parent.write[x] = find(parent[x]);
 		return parent[x];
 	};
 
@@ -451,7 +454,8 @@ static void merge_navmesh_polygons(
 			continue;
 		int ra = find(kv.value[0]);
 		int rb = find(kv.value[1]);
-		if (ra != rb) parent.write[ra] = rb;
+		if (ra != rb)
+			parent.write[ra] = rb;
 	}
 
 	// Step 5: group triangles by root
@@ -751,7 +755,8 @@ void generate_mesh(
 								break;
 
 							case TILE_BLOB9: {
-								const Vector3i tile_jump = tile_jumps_per_side[side];
+								const Vector3i tile_jump =
+										rotate_tile_jump(tile_jumps_per_side[side], model.side_tile_rotations[side]);
 								const uint32_t connection_mask = fetch_connection_mask(
 										type_buffer,
 										voxel,
@@ -768,7 +773,8 @@ void generate_mesh(
 							} break;
 
 							case TILE_BLOB9_RANDOM: {
-								const Vector3i tile_jump = tile_jumps_per_side[side];
+								const Vector3i tile_jump =
+										rotate_tile_jump(tile_jumps_per_side[side], model.side_tile_rotations[side]);
 
 								const uint32_t connection_mask = fetch_connection_mask(
 										type_buffer,
@@ -858,6 +864,7 @@ void generate_mesh(
 									return r < 0 ? r + modulus : r;
 								};
 
+								rotate_tile_coords(u, v, model.side_tile_rotations[side]);
 								ltpos.x = positive_mod(u, tile.group_size_x);
 								ltpos.y = positive_mod(v, tile.group_size_y);
 							} break;
@@ -1009,13 +1016,13 @@ void generate_mesh(
 
 							// compute light factor for this voxel face
 							float light_factor = 1.0f;
-						//	if (has_light) {
+							//	if (has_light) {
 						//	 Sample light from the air voxel on the other side of this face. comment out to stop test light propagation
 						//		const int neighbor_light_idx = voxel_index + side_neighbor_lut[side];
 						//		const uint8_t light_val = light_buffer[neighbor_light_idx];
 						//		const float raw = get_light_intensity(light_val) / 15.0f;
 						//		light_factor = 0.05f + raw * 0.95f;
-						//	}
+							//	}
 
 							if (bake_occlusion) {
 								for (unsigned int i = 0; i < vertex_count; ++i) {
@@ -1104,22 +1111,24 @@ void generate_mesh(
 								}
 							}
 							// WALL faces - include only if neighbor is air with solid below (step down)
-							if (navmesh_surface != nullptr && surface.collision_enabled 
-								&& side != Cube::SIDE_TOP && side != Cube::SIDE_BOTTOM) {
-    
+							if (navmesh_surface != nullptr && surface.collision_enabled && side != Cube::SIDE_TOP &&
+								side != Cube::SIDE_BOTTOM) {
 								// Must have air above itself
-								const uint32_t above_self = type_buffer[voxel_index + side_neighbor_lut[Cube::SIDE_TOP]];
+								const uint32_t above_self =
+										type_buffer[voxel_index + side_neighbor_lut[Cube::SIDE_TOP]];
 								const bool self_is_surface = (above_self == AIR_ID || !library.has_model(above_self));
 
 								if (self_is_surface) {
 									const uint32_t horiz_neighbor = type_buffer[voxel_index + side_neighbor_lut[side]];
-									const bool horiz_is_air = (horiz_neighbor == AIR_ID || !library.has_model(horiz_neighbor));
+									const bool horiz_is_air =
+											(horiz_neighbor == AIR_ID || !library.has_model(horiz_neighbor));
 
 									if (horiz_is_air) {
-										const uint32_t below_neighbor = type_buffer[
-											voxel_index + side_neighbor_lut[side] + side_neighbor_lut[Cube::SIDE_BOTTOM]
-										];
-										const bool has_solid_below = (below_neighbor != AIR_ID && library.has_model(below_neighbor));
+										const uint32_t below_neighbor = type_buffer
+												[voxel_index + side_neighbor_lut[side] +
+												 side_neighbor_lut[Cube::SIDE_BOTTOM]];
+										const bool has_solid_below =
+												(below_neighbor != AIR_ID && library.has_model(below_neighbor));
 
 										if (has_solid_below) {
 											StdVector<Vector3f> &dst_positions = navmesh_surface->positions;
@@ -1386,7 +1395,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 	// The flood fill is NOT done here. It is done in mesh_block_task::build_mesh()
 	// on the large 46^3 buffer BEFORE calling mesher->build().
 	// Here we only read whatever light data was placed into CHANNEL_DATA5.
-	 const int padded_volume = block_size.x * block_size.y * block_size.z;
+	const int padded_volume = block_size.x * block_size.y * block_size.z;
 	 bool has_light = false;/*
 	{
 		Span<const uint8_t> existing_light;
@@ -1475,7 +1484,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 						tint_sampler,
 						to_span_const(cache.light_buffer),
 						has_light,
-						grids    
+						grids
 				);
 				if (input.lod_index > 0) {
 					blocky::append_skirts(
@@ -1500,7 +1509,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 						tint_sampler,
 						to_span_const(cache.light_buffer),
 						has_light,
-						grids    
+						grids
 				);
 				if (input.lod_index > 0) {
 					blocky::append_skirts(model_ids, block_size, arrays_per_material, library_baked_data, tint_sampler);
@@ -1533,12 +1542,12 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 		}
 	}
 
-//	if (input.light_dirty && has_light) {
+	//	if (input.light_dirty && has_light) {
 	//	const int pad = VoxelMesherBlocky::PADDING;
 	//	const Vector3i inner = block_size - Vector3i(pad, pad, pad) * 2;
 	//	const int inner_volume = inner.x * inner.y * inner.z;
 	//	output.light_surface.data.resize(inner_volume);
-//
+	//
 	//	for (int z = 0; z < inner.z; z++) {
 	//		for (int x = 0; x < inner.x; x++) {
 	//			for (int y = 0; y < inner.y; y++) {
@@ -1567,7 +1576,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 		PackedVector3Array merged_verts;
 		TypedArray<PackedInt32Array> merged_polys;
 		blocky::merge_navmesh_polygons(tri_soup, merged_verts, merged_polys);
-		
+
 		Ref<NavigationMesh> nav_mesh;
 		nav_mesh.instantiate();
 		nav_mesh->set_cell_size(0.5f);
