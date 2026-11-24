@@ -309,6 +309,41 @@ void bake_mesh_geometry(
 				return slot;
 			}
 
+			// Side of the voxel a triangle faces, if its vertex normals are close enough to an axis
+			static bool get_triangle_facing(
+					const PackedVector3Array &normals,
+					const int a,
+					const int b,
+					const int c,
+					Cube::SideAxis &out_side
+			) {
+				const Vector3f n = to_vec3f(normals[a]) + to_vec3f(normals[b]) + to_vec3f(normals[c]);
+				const float ax = std::fabs(n.x);
+				const float ay = std::fabs(n.y);
+				const float az = std::fabs(n.z);
+				const float length = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+				if (length < 0.0001f) {
+					return false;
+				}
+				Vector3i dir;
+				float largest;
+				if (ax >= ay && ax >= az) {
+					largest = ax;
+					dir = Vector3i(n.x > 0.f ? 1 : -1, 0, 0);
+				} else if (ay >= az) {
+					largest = ay;
+					dir = Vector3i(0, n.y > 0.f ? 1 : -1, 0);
+				} else {
+					largest = az;
+					dir = Vector3i(0, 0, n.z > 0.f ? 1 : -1);
+				}
+				if (largest < 0.95f * length) {
+					return false;
+				}
+				out_side = static_cast<Cube::SideAxis>(Cube::dir_to_side(dir));
+				return true;
+			}
+
 			static uint8_t get_sides(Vector3f pos, float tolerance) {
 				uint8_t mask = 0;
 				mask |= Math::is_equal_approx(pos.x, 0.f, tolerance) << Cube::SIDE_NEGATIVE_X;
@@ -390,6 +425,10 @@ void bake_mesh_geometry(
 		const bool has_vertex_colors = tile_slots != nullptr && colors.size() == positions.size();
 		bool warned_mixed_colors = false;
 		bool warned_side_tiles = false;
+
+		const bool inner_dynamic_tiles = tile_slots != nullptr && tile_slots->inner_dynamic_tiles;
+		// Vertex deduplication for each group of inner triangles (see BakedModel::Model::InnerTileGroup)
+		StdVector<StdUnorderedMap<int, int>> added_group_indices;
 
 		for (int i = 0; i < indices.size(); i += 3) {
 			tri_positions[0] = to_vec3f(positions[indices[i]]);
@@ -478,34 +517,67 @@ void bake_mesh_geometry(
 			} else {
 				// That triangle is not on the face
 
-				int next_regular_index = surface.positions.size();
+				// Triangles using dynamic tiles may be kept apart to connect, depending on the direction they face
+				BakedModel::Surface *dst_surface = &surface;
+				StdUnorderedMap<int, int> *dst_added = &added_regular_indices;
+
+				if (inner_dynamic_tiles) {
+					const uint16_t dynamic_tile = tile_slots->dynamic_tile_indices[tile_slot];
+					Cube::SideAxis facing;
+					if (dynamic_tile != std::numeric_limits<uint16_t>::max() &&
+						L::get_triangle_facing(normals, indices[i], indices[i + 1], indices[i + 2], facing)) {
+						// Find or create the group
+						unsigned int group_index = 0;
+						for (; group_index < model.inner_tile_groups.size(); ++group_index) {
+							const BakedModel::Model::InnerTileGroup &existing = model.inner_tile_groups[group_index];
+							if (existing.side == facing && existing.tile_index == dynamic_tile) {
+								break;
+							}
+						}
+						if (group_index == model.inner_tile_groups.size()) {
+							BakedModel::Model::InnerTileGroup new_group;
+							new_group.side = facing;
+							new_group.tile_index = dynamic_tile;
+							model.inner_tile_groups.push_back(std::move(new_group));
+						}
+						if (added_group_indices.size() <= group_index) {
+							added_group_indices.resize(group_index + 1);
+						}
+						dst_surface = &model.inner_tile_groups[group_index].surfaces[surface_index];
+						// Overrides of materials and collision are applied afterwards to groups, by the base class bake
+						dst_surface->material_id = surface.material_id;
+						dst_added = &added_group_indices[group_index];
+					}
+				}
+
+				int next_regular_index = dst_surface->positions.size();
 
 				for (int j = 0; j < 3; ++j) {
 					const int src_index = indices[i + j];
 					const int dedupe_key = src_index * int(TILE_SLOT_COUNT) + int(tile_slot);
-					const auto existing_dst_index_it = added_regular_indices.find(dedupe_key);
+					const auto existing_dst_index_it = (*dst_added).find(dedupe_key);
 
-					if (existing_dst_index_it == added_regular_indices.end()) {
-						surface.indices.push_back(next_regular_index);
-						surface.positions.push_back(tri_positions[j]);
-						surface.normals.push_back(to_vec3f(normals[indices[i + j]]));
-						surface.uvs.push_back(to_vec2f(uvs[indices[i + j]]) + tile_uv_offset);
+					if (existing_dst_index_it == (*dst_added).end()) {
+						dst_surface->indices.push_back(next_regular_index);
+						dst_surface->positions.push_back(tri_positions[j]);
+						dst_surface->normals.push_back(to_vec3f(normals[indices[i + j]]));
+						dst_surface->uvs.push_back(to_vec2f(uvs[indices[i + j]]) + tile_uv_offset);
 
 						if (bake_tangents) {
 							// i is the first vertex of each triangle which increments by steps of 3.
 							// There are 4 floats per tangent.
 							int ti = indices[i + j] * 4;
-							surface.tangents.push_back(tangents[ti]);
-							surface.tangents.push_back(tangents[ti + 1]);
-							surface.tangents.push_back(tangents[ti + 2]);
-							surface.tangents.push_back(tangents[ti + 3]);
+							dst_surface->tangents.push_back(tangents[ti]);
+							dst_surface->tangents.push_back(tangents[ti + 1]);
+							dst_surface->tangents.push_back(tangents[ti + 2]);
+							dst_surface->tangents.push_back(tangents[ti + 3]);
 						}
 
-						added_regular_indices.insert({ dedupe_key, next_regular_index });
+						(*dst_added).insert({ dedupe_key, next_regular_index });
 						++next_regular_index;
 
 					} else {
-						surface.indices.push_back(existing_dst_index_it->second);
+						dst_surface->indices.push_back(existing_dst_index_it->second);
 					}
 				}
 			}
@@ -612,6 +684,8 @@ Ref<Mesh> VoxelBlockyModelMesh::get_preview_mesh_with_library_size(const Vector2
 	blocky::AtlasIndexer atlas_indexer(baked_tiles);
 	blocky::TileSlotMapping tile_slots;
 	make_tile_slot_mapping(tile_slots, atlas_indexer, library_size);
+	// Previews are made from surfaces and sides only, inner triangles must stay in the surfaces
+	tile_slots.inner_dynamic_tiles = false;
 	bake_mesh_geometry(*this, baked_data, bake_tangents, material_indexer, _side_vertex_tolerance, false, &tile_slots);
 
 	Ref<Mesh> mesh = make_mesh_from_baked_data(baked_data, bake_tangents);
@@ -646,6 +720,17 @@ void VoxelBlockyModelMesh::set_side_cutout_enabled(bool enabled) {
 
 bool VoxelBlockyModelMesh::is_side_cutout_enabled() const {
 	return _side_cutout_enabled;
+}
+
+void VoxelBlockyModelMesh::set_inner_connected_tiles(bool enabled) {
+	if (enabled != _inner_connected_tiles) {
+		_inner_connected_tiles = enabled;
+		emit_changed();
+	}
+}
+
+bool VoxelBlockyModelMesh::is_inner_connected_tiles() const {
+	return _inner_connected_tiles;
 }
 
 VoxelBlockyModelMesh::VoxelBlockyModelMesh() {
@@ -761,6 +846,7 @@ void VoxelBlockyModelMesh::make_tile_slot_mapping(
 		blocky::AtlasIndexer &atlas_indexer,
 		const Vector2i library_size
 ) const {
+	mapping.inner_dynamic_tiles = _inner_connected_tiles;
 	if (_atlas.is_valid()) {
 		blocky::make_atlas_tile_slot_mapping(mapping, _atlas, _atlas_tiles, atlas_indexer);
 	} else {
@@ -885,6 +971,10 @@ void VoxelBlockyModelMesh::_bind_methods() {
 			D_METHOD("set_side_cutout_enabled", "enabled"), &VoxelBlockyModelMesh::set_side_cutout_enabled
 	);
 	ClassDB::bind_method(D_METHOD("is_side_cutout_enabled"), &VoxelBlockyModelMesh::is_side_cutout_enabled);
+	ClassDB::bind_method(
+			D_METHOD("set_inner_connected_tiles", "enabled"), &VoxelBlockyModelMesh::set_inner_connected_tiles
+	);
+	ClassDB::bind_method(D_METHOD("is_inner_connected_tiles"), &VoxelBlockyModelMesh::is_inner_connected_tiles);
 
 	ClassDB::bind_method(D_METHOD("set_tile", "slot", "position"), &Self::set_tile);
 	ClassDB::bind_method(D_METHOD("get_tile", "slot"), &Self::get_tile);
@@ -930,6 +1020,12 @@ void VoxelBlockyModelMesh::_bind_methods() {
 	ADD_ATLAS_TILE_ID_PROPERTY("atlas_tile_id_black", blocky::TILE_SLOT_BLACK);
 
 	ADD_GROUP("", "");
+
+	ADD_PROPERTY(
+			PropertyInfo(Variant::BOOL, "inner_connected_tiles"),
+			"set_inner_connected_tiles",
+			"is_inner_connected_tiles"
+	);
 	ADD_PROPERTY(
 			PropertyInfo(Variant::INT, "mesh_ortho_rotation_index", PROPERTY_HINT_RANGE, "0,24"),
 			"set_mesh_ortho_rotation_index",

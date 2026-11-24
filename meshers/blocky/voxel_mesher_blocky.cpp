@@ -11,13 +11,13 @@
 #include "../../util/containers/container_funcs.h"
 #include "../../util/godot/core/string.h"
 #include "../../util/profiling.h"
+#include "../../util/string/format.h"
 #include "blocky_connected_textures.h"
 #include "blocky_fluids_meshing_impl.h"
+#include "blocky_light.h"
 #include "blocky_lod_skirts.h"
 #include "blocky_shadow_occluders.h"
-#include "blocky_light.h"
 #include <queue>
-#include "../../util/string/format.h"
 
 #include "../../storage/metadata/voxel_grid_metadata.h"
 
@@ -71,7 +71,7 @@ inline uint8_t get_light_color(uint8_t v) {
 inline uint8_t get_light_intensity(uint8_t v) {
 	return v & 0xF;
 }
-//voxel subgrid
+// voxel subgrid
 
 struct GridContext {
 	StdVector<uint16_t> slot_by_index; // padded volume; 0 = not a grid, else entries index + 1
@@ -720,6 +720,156 @@ void generate_mesh(
 
 				const Color modulate_color = voxel.color * tint_sampler.evaluate(Vector3i(x, y, z));
 
+				// Offset to the UVs of tiles that change at meshing time, for a side of this voxel
+				const auto get_tile_uv_offset = [&](const unsigned int side, const uint16_t tile_index) -> Vector2f {
+					// Note: tiles we handle here are expected to be non-single.
+					// Single tiles are suppoed to bake into regular surfaces.
+
+					// Tile orientation:
+					// - -X, +X, -Z, +Z sides: Y up, X right
+					// - +Y side: Y is -Z, X is +X
+					// - -Y side: Y is -Z, X is +X
+
+					// Tiles only change UVs. The model's own side surfaces are used as-is (all surfaces, any count).
+
+					const BakedLibrary::Tile &tile = library.tiles[tile_index];
+					Vector2i ltpos;
+
+					switch (tile.type) {
+						case TILE_SINGLE:
+							// Not expected
+							break;
+
+						case TILE_BLOB9: {
+							const Vector3i tile_jump =
+									rotate_tile_jump(tile_jumps_per_side[side], model.side_tile_rotations[side]);
+							const uint32_t connection_mask = fetch_connection_mask(
+									type_buffer,
+									voxel,
+									voxel_id,
+									voxel_index,
+									tile_jump,
+									static_cast<Cube::Side>(side),
+									library,
+									tile.connect_to_covered
+							);
+							const uint32_t case_index = get_case_index_from_connection_mask(connection_mask);
+							ltpos.x = case_index % BLOB9_DEFAULT_LAYOUT_SIZE_X;
+							ltpos.y = case_index / BLOB9_DEFAULT_LAYOUT_SIZE_X;
+						} break;
+
+						case TILE_BLOB9_RANDOM: {
+							const Vector3i tile_jump =
+									rotate_tile_jump(tile_jumps_per_side[side], model.side_tile_rotations[side]);
+
+							const uint32_t connection_mask = fetch_connection_mask(
+									type_buffer,
+									voxel,
+									voxel_id,
+									voxel_index,
+									tile_jump,
+									static_cast<Cube::Side>(side),
+									library,
+									tile.connect_to_covered
+							);
+
+							const uint32_t case_index = get_case_index_from_connection_mask(connection_mask);
+
+							const Vector3i world_pos = block_world_origin + Vector3i(x, y, z);
+
+							const uint32_t h = hash_tile_cell(world_pos, side);
+
+							uint32_t atlas_index;
+
+							if (case_index == 26) {
+								// Four plain variants.
+								static constexpr uint8_t PLAIN_VARIANTS[4] = { 26, 47, 74, 95 };
+
+								atlas_index = PLAIN_VARIANTS[h % 4];
+
+							} else {
+								// Two variants for the other Blob9 configurations.
+								atlas_index = case_index + (h % 2) * BLOB9_RANDOM_HALF_TILE_COUNT;
+							}
+
+							ltpos.x = atlas_index % BLOB9_DEFAULT_LAYOUT_SIZE_X;
+							ltpos.y = atlas_index / BLOB9_DEFAULT_LAYOUT_SIZE_X;
+						} break;
+
+						case TILE_RANDOM: {
+							const Vector3i world_pos = block_world_origin + Vector3i(x, y, z);
+							const uint32_t h = hash_tile_cell(world_pos, side);
+							const uint32_t index = h % (tile.group_size_x * tile.group_size_y);
+
+							ltpos.x = index % tile.group_size_x;
+							ltpos.y = index / tile.group_size_x;
+							// TODO Random rotation? Not sure if I want to support this in the end.
+							// That would also only work well with square tiles.
+						} break;
+
+						case TILE_EXTENDED: {
+							const Vector3i world_pos = block_world_origin + Vector3i(x, y, z);
+
+							int u = 0;
+							int v = 0;
+
+							switch (side) {
+								case Cube::SIDE_LEFT: // +X
+									u = -world_pos.z;
+									v = -world_pos.y;
+									break;
+
+								case Cube::SIDE_RIGHT: // -X
+									u = world_pos.z;
+									v = -world_pos.y;
+									break;
+
+								case Cube::SIDE_TOP: // +Y
+									u = world_pos.x;
+									v = world_pos.z;
+									break;
+
+								case Cube::SIDE_BOTTOM: // -Y
+									u = world_pos.x;
+									v = -world_pos.z;
+									break;
+
+								case Cube::SIDE_BACK: // -Z
+									u = -world_pos.x;
+									v = -world_pos.y;
+									break;
+
+								case Cube::SIDE_FRONT: // +Z
+									u = world_pos.x;
+									v = -world_pos.y;
+									break;
+							}
+
+							const auto positive_mod = [](int value, int modulus) {
+								const int r = value % modulus;
+								return r < 0 ? r + modulus : r;
+							};
+
+							rotate_tile_coords(u, v, model.side_tile_rotations[side]);
+							ltpos.x = positive_mod(u, tile.group_size_x);
+							ltpos.y = positive_mod(v, tile.group_size_y);
+						} break;
+
+						default:
+#ifdef DEV_ENABLED
+							ZN_CRASH_MSG("Unhandled tile type");
+#endif
+							break;
+					}
+
+					// Source UVs are expected to match the first tile. We then offset to the selected tile.
+					// We could assume UVs are always the same (a full square), which could save memory, but that
+					// would prevent support for faces of different sizes or cropped tiles. Maybe that could be
+					// improved.
+					// However, we don't really support rotation here.
+					return to_vec2f(ltpos) * tile.atlas_uv_step;
+				};
+
 				// Sides
 				for (unsigned int side = 0; side < Cube::SIDE_COUNT; ++side) {
 					if ((visible_sides_mask & (1 << side)) == 0) {
@@ -731,157 +881,13 @@ void generate_mesh(
 					const FixedArray<BakedModel::SideSurface, MAX_SURFACES> *side_surfaces =
 							&((*model_sides_surfaces)[side]);
 
-					// UV offset selected by the tile logic, applied while appending vertices (no per-face surface copy).
+					// UV offset selected by the tile logic, applied while appending vertices (no per-face surface
+					// copy).
 					Vector2f tile_uv_offset(0.f, 0.f);
 					bool has_tile_uv_offset = false;
 					const uint16_t tile_index = model.side_tiles[side];
 					if (tile_index != std::numeric_limits<uint16_t>::max()) {
-						// Note: tiles we handle here are expected to be non-single.
-						// Single tiles are suppoed to bake into regular surfaces.
-
-						// Tile orientation:
-						// - -X, +X, -Z, +Z sides: Y up, X right
-						// - +Y side: Y is -Z, X is +X
-						// - -Y side: Y is -Z, X is +X
-
-						// Tiles only change UVs. The model's own side surfaces are used as-is (all surfaces, any count).
-
-						const BakedLibrary::Tile &tile = library.tiles[tile_index];
-						Vector2i ltpos;
-
-						switch (tile.type) {
-							case TILE_SINGLE:
-								// Not expected
-								break;
-
-							case TILE_BLOB9: {
-								const Vector3i tile_jump =
-										rotate_tile_jump(tile_jumps_per_side[side], model.side_tile_rotations[side]);
-								const uint32_t connection_mask = fetch_connection_mask(
-										type_buffer,
-										voxel,
-										voxel_id,
-										voxel_index,
-										tile_jump,
-										static_cast<Cube::Side>(side),
-										library,
-										tile.connect_to_covered
-								);
-								const uint32_t case_index = get_case_index_from_connection_mask(connection_mask);
-								ltpos.x = case_index % BLOB9_DEFAULT_LAYOUT_SIZE_X;
-								ltpos.y = case_index / BLOB9_DEFAULT_LAYOUT_SIZE_X;
-							} break;
-
-							case TILE_BLOB9_RANDOM: {
-								const Vector3i tile_jump =
-										rotate_tile_jump(tile_jumps_per_side[side], model.side_tile_rotations[side]);
-
-								const uint32_t connection_mask = fetch_connection_mask(
-										type_buffer,
-										voxel,
-										voxel_id,
-										voxel_index,
-										tile_jump,
-										static_cast<Cube::Side>(side),
-										library,
-										tile.connect_to_covered
-								);
-
-								const uint32_t case_index = get_case_index_from_connection_mask(connection_mask);
-
-								const Vector3i world_pos = block_world_origin + Vector3i(x, y, z);
-
-								const uint32_t h = hash_tile_cell(world_pos, side);
-
-								uint32_t atlas_index;
-
-								if (case_index == 26) {
-									// Four plain variants.
-									static constexpr uint8_t PLAIN_VARIANTS[4] = { 26, 47, 74, 95 };
-
-									atlas_index = PLAIN_VARIANTS[h % 4];
-
-								} else {
-									// Two variants for the other Blob9 configurations.
-									atlas_index = case_index + (h % 2) * BLOB9_RANDOM_HALF_TILE_COUNT;
-								}
-
-								ltpos.x = atlas_index % BLOB9_DEFAULT_LAYOUT_SIZE_X;
-								ltpos.y = atlas_index / BLOB9_DEFAULT_LAYOUT_SIZE_X;
-							} break;
-
-							case TILE_RANDOM: {
-								const Vector3i world_pos = block_world_origin + Vector3i(x, y, z);
-								const uint32_t h = hash_tile_cell(world_pos, side);
-								const uint32_t index = h % (tile.group_size_x * tile.group_size_y);
-
-								ltpos.x = index % tile.group_size_x;
-								ltpos.y = index / tile.group_size_x;
-								// TODO Random rotation? Not sure if I want to support this in the end.
-								// That would also only work well with square tiles.
-							} break;
-
-							case TILE_EXTENDED: {
-								const Vector3i world_pos = block_world_origin + Vector3i(x, y, z);
-
-								int u = 0;
-								int v = 0;
-
-								switch (side) {
-									case Cube::SIDE_LEFT: // +X
-										u = -world_pos.z;
-										v = -world_pos.y;
-										break;
-
-									case Cube::SIDE_RIGHT: // -X
-										u = world_pos.z;
-										v = -world_pos.y;
-										break;
-
-									case Cube::SIDE_TOP: // +Y
-										u = world_pos.x;
-										v = world_pos.z;
-										break;
-
-									case Cube::SIDE_BOTTOM: // -Y
-										u = world_pos.x;
-										v = -world_pos.z;
-										break;
-
-									case Cube::SIDE_BACK: // -Z
-										u = -world_pos.x;
-										v = -world_pos.y;
-										break;
-
-									case Cube::SIDE_FRONT: // +Z
-										u = world_pos.x;
-										v = -world_pos.y;
-										break;
-								}
-
-								const auto positive_mod = [](int value, int modulus) {
-									const int r = value % modulus;
-									return r < 0 ? r + modulus : r;
-								};
-
-								rotate_tile_coords(u, v, model.side_tile_rotations[side]);
-								ltpos.x = positive_mod(u, tile.group_size_x);
-								ltpos.y = positive_mod(v, tile.group_size_y);
-							} break;
-
-							default:
-#ifdef DEV_ENABLED
-								ZN_CRASH_MSG("Unhandled tile type");
-#endif
-								break;
-						}
-
-						// Source UVs are expected to match the first tile. We then offset to the selected tile.
-						// We could assume UVs are always the same (a full square), which could save memory, but that
-						// would prevent support for faces of different sizes or cropped tiles. Maybe that could be
-						// improved.
-						// However, we don't really support rotation here.
-						tile_uv_offset = to_vec2f(ltpos) * tile.atlas_uv_step;
+						tile_uv_offset = get_tile_uv_offset(side, tile_index);
 						has_tile_uv_offset = true;
 					}
 
@@ -1219,6 +1225,71 @@ void generate_mesh(
 
 					index_offset += vertex_count;
 				}
+
+				// Inside faces that use tiles which change at meshing time (connected tiles on faces that are not on a
+				// side of the voxel, like stairs or ladders). They connect like the sides do.
+				for (const BakedModel::Model::InnerTileGroup &group : model.inner_tile_groups) {
+					const Vector2f group_uv_offset = get_tile_uv_offset(group.side, group.tile_index);
+
+					for (unsigned int surface_index = 0; surface_index < model_surface_count; ++surface_index) {
+						const BakedModel::Surface &surface = group.surfaces[surface_index];
+						if (surface.positions.size() == 0) {
+							continue;
+						}
+
+						VoxelMesherBlocky::Arrays &arrays = out_arrays_per_material[surface.material_id];
+
+						ZN_ASSERT(surface.material_id < index_offsets.size());
+						int &index_offset = index_offsets[surface.material_id];
+
+						const StdVector<Vector3f> &positions = surface.positions;
+						const unsigned int vertex_count = positions.size();
+
+						const StdVector<Vector3f> &normals = surface.normals;
+						const StdVector<Vector2f> &uvs = surface.uvs;
+						const StdVector<float> &tangents = surface.tangents;
+
+						const Vector3f pos(x - 1, y - 1, z - 1);
+
+						if (tangents.size() > 0) {
+							const int append_index = arrays.tangents.size();
+							arrays.tangents.resize(arrays.tangents.size() + vertex_count * 4);
+							memcpy(arrays.tangents.data() + append_index,
+								   tangents.data(),
+								   (vertex_count * 4) * sizeof(float));
+						}
+
+						for (unsigned int i = 0; i < vertex_count; ++i) {
+							arrays.normals.push_back(normals[i]);
+							arrays.uvs.push_back(uvs[i] + group_uv_offset);
+							arrays.positions.push_back(positions[i] + pos);
+							arrays.colors.push_back(modulate_color);
+						}
+
+						const StdVector<int> &indices = surface.indices;
+						const unsigned int index_count = indices.size();
+
+						for (unsigned int i = 0; i < index_count; ++i) {
+							arrays.indices.push_back(index_offset + indices[i]);
+						}
+
+						if (collision_surface != nullptr && surface.collision_enabled) {
+							StdVector<Vector3f> &dst_positions = collision_surface->positions;
+							StdVector<int> &dst_indices = collision_surface->indices;
+
+							for (unsigned int i = 0; i < vertex_count; ++i) {
+								dst_positions.push_back(positions[i] + pos);
+							}
+							for (unsigned int i = 0; i < index_count; ++i) {
+								dst_indices.push_back(collision_surface_index_offset + indices[i]);
+							}
+
+							collision_surface_index_offset += vertex_count;
+						}
+
+						index_offset += vertex_count;
+					}
+				}
 			}
 		}
 	}
@@ -1396,7 +1467,7 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 	// on the large 46^3 buffer BEFORE calling mesher->build().
 	// Here we only read whatever light data was placed into CHANNEL_DATA5.
 	const int padded_volume = block_size.x * block_size.y * block_size.z;
-	 bool has_light = false;/*
+	bool has_light = false;/*
 	{
 		Span<const uint8_t> existing_light;
 		has_light = voxels.get_channel_as_bytes_read_only(VoxelBuffer::CHANNEL_DATA5, existing_light);
@@ -1557,9 +1628,9 @@ void VoxelMesherBlocky::build(VoxelMesher::Output &output, const VoxelMesher::In
 	//			}
 	//		}
 	//	}
-		//output.light_surface.was_computed = true;
+	//output.light_surface.was_computed = true;
 	//} else {
-		//output.light_surface.was_computed = false;
+	//output.light_surface.was_computed = false;
 	// }
 
 	if (navmesh_surface != nullptr && !navmesh_surface_.positions.empty()) {

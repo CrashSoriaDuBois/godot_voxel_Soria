@@ -108,6 +108,18 @@ struct BakedModel {
 		// Quarter turns of the orientation of tiles on each side, compared to the standard one (see
 		// blocky_tile_orientation.h). Non-zero when the model is rotated.
 		std::array<uint8_t, Cube::SIDE_COUNT> side_tile_rotations;
+
+		// Triangles of the inside of the model (not lying on a side of the voxel) that use tiles which change at
+		// meshing time,
+		// grouped by the side of the voxel they face and by tile. They connect like sides do (decided by the mesher).
+		struct InnerTileGroup {
+			uint8_t side = 0;
+			uint16_t tile_index = 0;
+			// Same indexing as `surfaces`
+			FixedArray<Surface, MAX_SURFACES> surfaces;
+		};
+		StdVector<InnerTileGroup> inner_tile_groups;
+
 		unsigned int surface_count = 0;
 		// Cached information to check this case early.
 		// Bits are indexed with the Cube::Side enum.
@@ -138,6 +150,8 @@ struct BakedModel {
 			for (uint8_t &r : side_tile_rotations) {
 				r = 0;
 			}
+			inner_tile_groups.clear();
+
 			for (Surface &surface : surfaces) {
 				surface.clear();
 			}

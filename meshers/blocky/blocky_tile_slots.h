@@ -46,6 +46,10 @@ struct TileSlotMapping {
 	// It only applies to triangles lying on a side of the voxel, because these tiles are chosen per side.
 	uint16_t dynamic_tile_indices[TILE_SLOT_COUNT];
 
+	// If true, triangles that are not on a side of the voxel but use dynamic tiles are kept apart, so tiles can connect
+	// on them too (stairs, ladders...). See BakedModel::Model::InnerTileGroup.
+	bool inner_dynamic_tiles = false;
+
 	TileSlotMapping();
 };
 

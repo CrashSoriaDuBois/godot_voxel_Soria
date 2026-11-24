@@ -269,6 +269,13 @@ void VoxelBlockyModel::bake(blocky::ModelBakingContext &ctx) const {
 			surface.collision_enabled = surface_params.collision_enabled;
 		}
 	}
+	// Groups of inner triangles use the same materials and collision settings as the surfaces they come from
+	for (blocky::BakedModel::Model::InnerTileGroup &group : model.inner_tile_groups) {
+		for (unsigned int surface_index = 0; surface_index < model.surface_count; ++surface_index) {
+			group.surfaces[surface_index].material_id = model.surfaces[surface_index].material_id;
+			group.surfaces[surface_index].collision_enabled = model.surfaces[surface_index].collision_enabled;
+		}
+	}
 }
 
 TypedArray<AABB> VoxelBlockyModel::_b_get_collision_aabbs() const {

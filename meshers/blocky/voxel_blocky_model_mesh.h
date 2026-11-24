@@ -27,6 +27,11 @@ public:
 	void set_side_cutout_enabled(bool enabled);
 	bool is_side_cutout_enabled() const;
 
+	// If enabled, triangles of the inside of the model that use dynamic tiles (blob, random, extended) get connected like sides do, for the direction they
+	// face (stairs, ladders...). Their UVs must be authored like the ones of the side facing the same direction. It costs more work when meshing voxels of this model.
+	void set_inner_connected_tiles(bool enabled);
+	bool is_inner_connected_tiles() const;
+
 	VoxelBlockyModelMesh();
 
 	// Tiles
@@ -75,6 +80,7 @@ private:
 	// be processed by the neighbor side culling system.
 	float _side_vertex_tolerance = 0.001f;
 	bool _side_cutout_enabled = false;
+	bool _inner_connected_tiles = false;
 
 	bool _set(const StringName &p_name, const Variant &p_value);
 	bool _get(const StringName &p_name, Variant &r_ret) const;
